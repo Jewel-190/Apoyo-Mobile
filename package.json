@@ -49,6 +49,7 @@
     "react-native-worklets": "0.5.1"
   },
   "devDependencies": {
+    "@types/node": "^25.5.0",
     "@types/react": "~19.1.0",
     "cross-env": "^7.0.3",
     "eslint": "^9.25.0",
