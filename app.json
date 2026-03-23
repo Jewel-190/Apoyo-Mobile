@@ -1,0 +1,55 @@
+{
+  "expo": {
+    "name": "APOYOCAPSTONE",
+    "slug": "APOYOCAPSTONE",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/apoyologo.png",
+    "scheme": "apoyocapstone",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/apoyologo.png",
+        "backgroundColor": "#E6F4FE"
+      },
+      "edgeToEdgeEnabled": false,
+      "package": "com.anonymous.APOYOCAPSTONE"
+    },
+    "web": {
+      "output": "static",
+      "favicon": "./assets/images/apoyologo.png"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/apoyologo.png",
+          "imageWidth": 200,
+          "resizeMode": "contain",
+          "backgroundColor": "#ffffff",
+          "dark": {
+            "backgroundColor": "#000000"
+          }
+        }
+      ],
+      "expo-font"
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    },
+    "extra": {
+      "supabaseUrl": "https://yrlkynetbegvwmqaiuvr.supabase.co",
+      "supabaseAnonKey": "sb_publishable_opaD6jDXjj2pUFRv38MXuQ_V9_n0qd0",
+      "router": {},
+      "eas": {
+        "projectId": "e32695cb-f3be-4258-bb91-fa0462de7519"
+      }
+    }
+  }
+}
