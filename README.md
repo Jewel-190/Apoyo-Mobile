@@ -2,7 +2,9 @@
 
 Kaunahang Commitment
 
-pangalawa 
+pangalawa Jewel
 
-pangatlo
+pangatlo Jewel
+
+Pangapat Jewel
 
