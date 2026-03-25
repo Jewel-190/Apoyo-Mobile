@@ -8,3 +8,5 @@ pangatlo Jewel
 
 Pangapat Jewel
 
+Panglima Jewel
+
