@@ -8,7 +8,11 @@
     "android": "cross-env EXPO_ROUTER_APP_ROOT=./app expo start --android",
     "ios": "cross-env EXPO_ROUTER_APP_ROOT=./app expo start --ios",
     "web": "cross-env EXPO_ROUTER_APP_ROOT=./app expo start --web",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "supabase": ".\\.tools\\supabase\\supabase.exe",
+    "supabase:login": "npm run supabase -- login",
+    "supabase:link": "npm run supabase -- link --project-ref",
+    "supabase:functions:deploy:cleanup": "npm run supabase -- functions deploy storage-cleanup --no-verify-jwt"
   },
   "dependencies": {
     "@expo-google-fonts/instrument-sans": "^0.4.2",

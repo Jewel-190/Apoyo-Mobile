@@ -13,8 +13,7 @@ import {
   Text,
   View,
 } from "react-native";
-import BottomNavBar, { NAV_TOTAL_HEIGHT, TabKey } from "../../components/BottomNavBar";
-import { supabase } from "../../lib/supabase";
+import BottomNavBar from "../../components/BottomNavBar";
 
 const FONT = "SF Pro Rounded";
 
@@ -34,9 +33,6 @@ function accentColor(cat: Category): string {
   return "#9B59D0"; // purple
 }
 
-const STORAGE_KEY_VERIFIED_V2 = "apoyo_verified_v2";
-const STORAGE_KEY_VERIFIED_V1 = "apoyo_verified_v1";
-const CACHE_USER = "apoyo_user_cache";
 const STORAGE_KEY_NOTIFS = "apoyo_notifications_v1";
 const STORAGE_KEY_STATUS_LIST = "apoyo_status_applications_v1";
 
@@ -182,53 +178,9 @@ async function syncNotifsFromStatus(): Promise<NotifItem[]> {
 
 export default function Notification() {
   const router = useRouter();
-  const [verified, setVerified] = useState(false);
   const [items, setItems] = useState<NotifItem[]>([]);
 
   const hasResults = useMemo(() => items.length > 0, [items]);
-
-  const loadVerified = async () => {
-    try {
-      // Keep UI responsive by using cached profile first.
-      const cached = await AsyncStorage.getItem(CACHE_USER);
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        if (typeof parsed?.verified === "boolean") {
-          setVerified(parsed.verified);
-        }
-      }
-
-      // Then refresh from source of truth in DB.
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-
-      if (user?.id) {
-        const { data } = await supabase
-          .from("users")
-          .select("verified")
-          .eq("id", user.id)
-          .single();
-
-        if (typeof data?.verified === "boolean") {
-          setVerified(data.verified === true);
-
-          try {
-            const current = await AsyncStorage.getItem(CACHE_USER);
-            const next = current ? JSON.parse(current) : {};
-            next.verified = data.verified === true;
-            await AsyncStorage.setItem(CACHE_USER, JSON.stringify(next));
-          } catch {}
-          return;
-        }
-      }
-    } catch {}
-
-    // Legacy fallback for older installs that still rely on v1/v2 flags.
-    const v2 = await AsyncStorage.getItem(STORAGE_KEY_VERIFIED_V2);
-    const v1 = await AsyncStorage.getItem(STORAGE_KEY_VERIFIED_V1);
-    setVerified(v2 === "1" || v1 === "1");
-  };
 
   const persist = async (next: NotifItem[]) => {
     setItems(next);
@@ -273,7 +225,6 @@ export default function Notification() {
 
   useFocusEffect(
     useCallback(() => {
-      loadVerified();
       load();
     }, [])
   );
@@ -357,16 +308,7 @@ export default function Notification() {
         )}
       </ScrollView>
 
-      <BottomNavBar 
-        activeTab="notification" 
-        onBeforeNavigate={(tabKey: TabKey) => {
-          if (!verified) {
-            alert("Please verify your account to access this feature.");
-            return false;
-          }
-          return true;
-        }}
-      />
+      <BottomNavBar activeTab="notification" />
     </SafeAreaView>
   );
 }

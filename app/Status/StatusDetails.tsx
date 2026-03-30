@@ -54,6 +54,7 @@ function normalizeStatus(raw?: string): ServiceStatus {
   if (!raw) return "Pending";
   const s = raw.toString().trim().toLowerCase();
   if (s === "submitted" || s === "pending") return "Pending";
+  if (s === "resubmitted") return "Pending";
   if (s === "in progress" || s === "in_progress" || s === "inprogress" || s === "processing") return "In Progress";
   if (s === "action required" || s === "action_required" || s === "action") return "Action Required";
   if (s === "approved" || s === "accepted") return "Approved";

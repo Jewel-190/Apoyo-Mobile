@@ -21,7 +21,7 @@ import {
   Text,
   View,
 } from "react-native";
-import BottomNavBar, { NAV_TOTAL_HEIGHT, TabKey } from "../../components/BottomNavBar";
+import BottomNavBar, { NAV_TOTAL_HEIGHT } from "../../components/BottomNavBar";
 
 const FONT = "SF Pro Rounded";
 
@@ -38,11 +38,6 @@ const BADGE_PROGRESS = "#B9E3FF";
 const BADGE_ACTION = "#FFD59E";
 const BADGE_APPROVED = "#C8F1C8";
 const BADGE_DRAFT = "#D4D4D4";
-
-/* ========= STORAGE + ROUTES ========= */
-const STORAGE_KEY_VERIFIED_V2 = "apoyo_verified_v2";
-const STORAGE_KEY_VERIFIED_V1 = "apoyo_verified_v1";
-const CACHE_USER = "apoyo_user_cache";
 
 const ROUTE_TIMELINE = "/Status/StatusDetails";
 const STORAGE_KEY_STATUS_LIST = "apoyo_status_applications_v1";
@@ -71,11 +66,23 @@ type ApplicationItem = {
   createdAt?: number;
 };
 
+const REQUEST_STATUSES = [
+  "draft",
+  "pending",
+  "in progress",
+  "action required",
+  "resubmitted",
+  "approved",
+  // keep legacy compatibility
+  "submitted",
+] as const;
+
 // Normalize raw DB/cached status values to `ServiceStatus`
 function normalizeStatus(raw?: string): ServiceStatus {
   if (!raw) return "Pending";
   const s = raw.toString().trim().toLowerCase();
   if (s === "submitted" || s === "pending") return "Pending";
+  if (s === "resubmitted") return "Pending";
   if (s === "in progress" || s === "in_progress" || s === "inprogress" || s === "processing") return "In Progress";
   if (s === "action required" || s === "action_required" || s === "action") return "Action Required";
   if (s === "approved" || s === "accepted") return "Approved";
@@ -156,7 +163,6 @@ const BODY_PAD_BOTTOM = NAV_TOTAL_HEIGHT + 26;
 
 export default function Status() {
   const router = useRouter();
-  const [verified, setVerified] = useState(false);
   const [activeFilter, setActiveFilter] = useState<FilterKey>("all");
   const [apps, setApps] = useState<ApplicationItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -165,50 +171,7 @@ export default function Status() {
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ApplicationItem | null>(null);
 
-  const loadVerified = async () => {
-    try {
-      // Keep UI responsive by using cached profile first.
-      const cached = await AsyncStorage.getItem(CACHE_USER);
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        if (typeof parsed?.verified === "boolean") {
-          setVerified(parsed.verified);
-        }
-      }
-
-      // Then refresh from source of truth in DB.
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-
-      if (user?.id) {
-        const { data } = await supabase
-          .from("users")
-          .select("verified")
-          .eq("id", user.id)
-          .single();
-
-        if (typeof data?.verified === "boolean") {
-          setVerified(data.verified === true);
-
-          try {
-            const current = await AsyncStorage.getItem(CACHE_USER);
-            const next = current ? JSON.parse(current) : {};
-            next.verified = data.verified === true;
-            await AsyncStorage.setItem(CACHE_USER, JSON.stringify(next));
-          } catch {}
-          return;
-        }
-      }
-    } catch {}
-
-    // Legacy fallback for older installs that still rely on v1/v2 flags.
-    const v2 = await AsyncStorage.getItem(STORAGE_KEY_VERIFIED_V2);
-    const v1 = await AsyncStorage.getItem(STORAGE_KEY_VERIFIED_V1);
-    setVerified(v2 === "1" || v1 === "1");
-  };
-
-  // Fetch drafts and recent submitted hospitalization_requests and treatment_requests for this user
+  // Fetch request rows in all status states for this user
   const fetchDraftsFromSupabase = async (): Promise<ApplicationItem[]> => {
     try {
       const { data: userData } = await supabase.auth.getUser();
@@ -219,7 +182,7 @@ export default function Status() {
           .from("hospitalization_requests")
           .select("id, status, created_at, updated_at")
           .eq("user_id", userData.user.id)
-          .in("status", ["draft", "submitted"]),
+          .in("status", [...REQUEST_STATUSES]),
       ];
 
       // treatment requests
@@ -228,7 +191,7 @@ export default function Status() {
           .from("treatment_requests")
           .select("id, status, created_at, updated_at")
           .eq("user_id", userData.user.id)
-          .in("status", ["draft", "submitted"]),
+          .in("status", [...REQUEST_STATUSES]),
       ];
 
       // medical requests
@@ -237,7 +200,7 @@ export default function Status() {
           .from("medical_requests")
           .select("id, status, created_at, updated_at")
           .eq("user_id", userData.user.id)
-          .in("status", ["draft", "submitted"]),
+          .in("status", [...REQUEST_STATUSES]),
       ];
 
       // financial requests
@@ -246,7 +209,7 @@ export default function Status() {
           .from("financial_requests")
           .select("id, status, created_at, updated_at")
           .eq("user_id", userData.user.id)
-          .in("status", ["draft", "submitted"]),
+          .in("status", [...REQUEST_STATUSES]),
       ];
 
       // monetary requests
@@ -255,7 +218,7 @@ export default function Status() {
           .from("monetary_requests")
           .select("id, status, created_at, updated_at")
           .eq("user_id", userData.user.id)
-          .in("status", ["draft", "submitted"]),
+          .in("status", [...REQUEST_STATUSES]),
       ];
 
       // burial site requests
@@ -264,7 +227,7 @@ export default function Status() {
           .from("burial_requests")
           .select("id, status, created_at, updated_at")
           .eq("user_id", userData.user.id)
-          .in("status", ["draft", "submitted"]),
+          .in("status", [...REQUEST_STATUSES]),
       ];
 
       // cremation requests
@@ -273,7 +236,7 @@ export default function Status() {
           .from("cremation_requests")
           .select("id, status, created_at, updated_at")
           .eq("user_id", userData.user.id)
-          .in("status", ["draft", "submitted"]),
+          .in("status", [...REQUEST_STATUSES]),
       ];
 
       // columbarium requests
@@ -282,7 +245,7 @@ export default function Status() {
           .from("columbarium_requests")
           .select("id, status, created_at, updated_at")
           .eq("user_id", userData.user.id)
-          .in("status", ["draft", "submitted"]),
+          .in("status", [...REQUEST_STATUSES]),
       ];
 
       const items: ApplicationItem[] = [];
@@ -489,18 +452,9 @@ export default function Status() {
 
   useFocusEffect(
     useCallback(() => {
-      loadVerified();
       loadApps();
     }, [])
   );
-
-  const handleBeforeNavigate = (tabKey: TabKey, route: string): boolean => {
-    if (!verified) {
-      alert("Please verify your account to access this feature.");
-      return false;
-    }
-    return true;
-  };
 
   const filtered = useMemo(() => {
     if (activeFilter === "all") return apps;
@@ -656,13 +610,6 @@ export default function Status() {
 
                   <Pressable
                     onPress={() => {
-                      if (!verified) {
-                        alert(
-                          "Please verify your account to access this feature."
-                        );
-                        return;
-                      }
-
                       // If it's a draft, navigate to the appropriate form to continue editing
                       if (a.status === "Draft") {
                         // a.id is prefixed with 'draft_' so strip it to get the real request id
@@ -839,7 +786,7 @@ export default function Status() {
         </Pressable>
       </Modal>
 
-      <BottomNavBar activeTab="status" maskColor="transparent" onBeforeNavigate={handleBeforeNavigate} />
+      <BottomNavBar activeTab="status" maskColor="transparent" />
     </SafeAreaView>
   );
 }

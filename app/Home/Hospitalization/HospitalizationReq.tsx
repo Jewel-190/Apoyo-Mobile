@@ -1,4 +1,4 @@
-﻿import { Feather, Ionicons } from "@expo/vector-icons";
+﻿import { Ionicons } from "@expo/vector-icons";
 import * as DocumentPicker from "expo-document-picker";
 import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -11,7 +11,6 @@ import {
   Animated,
   Easing,
   Image,
-  LayoutAnimation,
   Modal,
   PanResponder,
   Pressable,
@@ -21,7 +20,6 @@ import {
   StyleSheet,
   Text,
   TextInput,
-  UIManager,
   View,
   ActivityIndicator,
   BackHandler,
@@ -32,12 +30,6 @@ import { supabase } from "../../../lib/supabase";
 
 const HOSPITAL_PNG = require("../../../assets/images/Hospital.png");
 const TRASHCAN_PNG = require("../../../assets/images/Trashcan.png");
-const CLINICAL_ABSTRACT_PNG = require("../../../assets/images/ClinicalAbstract.png");
-const HOSPITAL_BILL_PNG = require("../../../assets/images/HospitalBill.png");
-const SAMPLE_LETTER_PNG = require("../../../assets/images/SampleLetter.png");
-const VOTERS_CERT_PNG = require("../../../assets/images/VotersCert.png");
-const ENDORSEMENT_PNG = require("../../../assets/images/Endorsement.png");
-const INDIGENCY_PNG = require("../../../assets/images/Indigency.png");
 
 const FONT = "SF Pro Rounded";
 
@@ -191,12 +183,6 @@ async function uploadFileToStorage(
     size: file.size,
     mimeType: file.mimeType,
   };
-}
-
-// Delete file from Supabase Storage
-async function deleteFileFromStorage(filePath: string): Promise<void> {
-  const { error } = await supabase.storage.from(BUCKET_NAME).remove([filePath]);
-  if (error) throw error;
 }
 
 // Get signed URL for a file (for viewing)
@@ -404,16 +390,6 @@ export default function HospitalizationReq() {
   const [requesterPresentAddress, setRequesterPresentAddress] = useState<string>("");
   // When true, requester fields are populated from verified `users` record and must not be changed
   const [requesterLocked, setRequesterLocked] = useState<boolean>(false);
-  const [openTipId, setOpenTipId] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (
-      Platform.OS === "android" &&
-      UIManager.setLayoutAnimationEnabledExperimental
-    ) {
-      UIManager.setLayoutAnimationEnabledExperimental(true);
-    }
-  }, []);
 
   // Load user and existing draft
   useEffect(() => {
@@ -441,16 +417,16 @@ export default function HospitalizationReq() {
       }
       setUserId(user.id);
 
-      // If not editing an existing request, try to prefill from verified `users` profile
+      // If not editing an existing request, try to prefill from `users` profile
       if (!existingRequestId) {
         try {
           const { data: profile, error: profileError } = await supabase
             .from("users")
-            .select("first_name,middle_name,last_name,suffix,contact_number,email,address,verified")
+            .select("first_name,middle_name,last_name,suffix,contact_number,email,address")
             .eq("id", user.id)
             .single();
 
-          if (profile && profile.verified) {
+          if (profile) {
             const parts = [profile.first_name, profile.middle_name, profile.last_name].filter(Boolean);
             const name = `${parts.join(" ")}${profile.suffix ? " " + profile.suffix : ""}`.trim();
             setRequesterName(name);
@@ -548,11 +524,10 @@ export default function HospitalizationReq() {
       // ignore parse errors
     }
 
-    const sid = /^\d+$/.test(String(serviceId)) ? Number(serviceId) : undefined;
     const insertPayload = {
       user_id: userId,
       status: "draft",
-      ...(sid ? { service_id: sid } : {}),
+      service_id: "hospital",
       ...requesterPayload,
     };
 
@@ -596,20 +571,9 @@ export default function HospitalizationReq() {
         .update({ [columnName]: JSON.stringify(fileMetadata) })
         .eq("id", reqId);
 
-      // If there is a previous file for this type and it's different, remove it
-      const previousPath = uploadedPaths[fileType];
-
       // Update local state first so UI reflects new upload
       setFile(file);
       setUploadedPaths(prev => ({ ...prev, [fileType]: fileMetadata.path }));
-
-      if (previousPath && previousPath !== fileMetadata.path) {
-        try {
-          await deleteFileFromStorage(previousPath);
-        } catch (e) {
-          console.log("Failed to delete previous file from storage:", previousPath, e);
-        }
-      }
     } catch (err: any) {
       Alert.alert("Upload Error", err.message || "Failed to upload file");
     } finally {
@@ -624,10 +588,7 @@ export default function HospitalizationReq() {
 
     try {
       setIsSaving(true);
-      
-      // Delete from storage
-      await deleteFileFromStorage(filePath);
-      
+
       // Update database
       const columnName = getColumnName(fileType);
       await supabase
@@ -719,10 +680,6 @@ export default function HospitalizationReq() {
   const [previewName, setPreviewName] = useState<string>("");
   const [previewIsPdf, setPreviewIsPdf] = useState<boolean>(false);
   const [loadingPreview, setLoadingPreview] = useState(false);
-  // Sample image full-screen preview (local assets)
-  const [samplePreviewOpen, setSamplePreviewOpen] = useState(false);
-  const [samplePreviewImage, setSamplePreviewImage] = useState<any | null>(null);
-  const [samplePreviewTitle, setSamplePreviewTitle] = useState<string>("");
   // Back confirmation modal (Android hardware back)
   const [backConfirmOpen, setBackConfirmOpen] = useState(false);
 
@@ -804,7 +761,7 @@ export default function HospitalizationReq() {
       const { error } = await supabase
         .from("hospitalization_requests")
         .update({ 
-          status: "submitted",
+          status: "pending",
           submitted_at: new Date().toISOString()
         })
         .eq("id", requestId);
@@ -882,330 +839,50 @@ export default function HospitalizationReq() {
   const pickIndigencyCert = () => handleFilePick("indigency", setIndigencyCertFile);
   const pickAttachment = () => handleFilePick("attachment", setAttachmentFile);
 
-  const requirementTips = useMemo(
-    () => ({
-      abstract: {
-        title: "Tips on Getting Clinical / Medical Abstract",
-        items: [
-          {
-            id: "where",
-            title: "Where to Get It",
-            details:
-              "Go to the Medical Records Department of the hospital where the patient was admitted.",
-          },
-          {
-            id: "bring",
-            title: "What to Bring",
-            details:
-              "Bring a valid ID, hospital card, and authorization letter with IDs if claiming for someone else.",
-          },
-          {
-            id: "how",
-            title: "How to Get It",
-            details:
-              "Fill out the request form, pay the processing fee, and return on the scheduled claim date.",
-          },
-          {
-            id: "sample",
-            title: "Sample Document",
-            details: "",
-            image: CLINICAL_ABSTRACT_PNG,
-          },
-        ],
-      },
-      bill: {
-        title: "Tips on Getting Partial Hospital Bill",
-        items: [
-          {
-            id: "where",
-            title: "Where to Get It",
-            details:
-              "Request this from the Billing Section of the hospital where confinement happened.",
-          },
-          {
-            id: "bring",
-            title: "What to Bring",
-            details:
-              "Prepare valid ID, hospital card, and authorization requirements when claiming for another person.",
-          },
-          {
-            id: "how",
-            title: "How to Get It",
-            details:
-              "Ask for a Statement of Account or finalized bill, settle any required payments, then claim the printed bill.",
-          },
-          {
-            id: "sample",
-            title: "Sample Document",
-            details: "",
-            image: HOSPITAL_BILL_PNG,
-          },
-        ],
-      },
-      letter: {
-        title: "Tips on Personal Letter",
-        items: [
-          {
-            id: "format",
-            title: "Format for Personal Letter",
-            details:
-              "Include date, full name, contact details, reason for assistance, brief hospitalization details, requested amount, and signature.",
-          },
-          {
-            id: "sample",
-            title: "Sample Document",
-            details: "",
-            image: SAMPLE_LETTER_PNG,
-          },
-        ],
-      },
-      voterId: {
-        title: "Tips on Getting Voter's Certificate",
-        items: [
-          {
-            id: "where",
-            title: "Where to Get It",
-            details:
-              "Go to the COMELEC Office (Office of the Election Officer) in your city.",
-          },
-          {
-            id: "bring",
-            title: "What to Bring",
-            details:
-              "Bring a valid government ID, request form, and authorization letter if claiming on behalf of another person.",
-          },
-          {
-            id: "how",
-            title: "How to Get It",
-            details:
-              "Have your record verified, pay any required fee, submit receipt and form, then claim the certificate.",
-          },
-          {
-            id: "sample",
-            title: "Sample Document",
-            details: "",
-            image: VOTERS_CERT_PNG,
-          },
-        ],
-      },
-      birthCert: {
-        title: "Tips on Accepted Valid IDs",
-        items: [
-          {
-            id: "list",
-            title: "List of Accepted IDs",
-            details:
-              "Accepted IDs include PhilID/ePhilID, Passport, Driver's License, UMID, PRC, Postal ID, Voter's ID/Certificate, SSS/GSIS, Senior Citizen ID, PWD ID, TIN, and PhilHealth.",
-          },
-          {
-            id: "sample",
-            title: "Sample Document",
-            details: "",
-            image: VOTERS_CERT_PNG,
-          },
-        ],
-      },
-      barangay: {
-        title: "Tips on Getting Barangay Endorsement",
-        items: [
-          {
-            id: "where",
-            title: "Where to Get It",
-            details:
-              "Request this from your local Barangay Hall where you are currently residing.",
-          },
-          {
-            id: "bring",
-            title: "What to Bring",
-            details:
-              "Bring a valid ID, Certificate of Indigency, and proof of need such as medical abstract or hospital bill.",
-          },
-          {
-            id: "how",
-            title: "How to Get It",
-            details:
-              "Ask the Barangay Secretary for an endorsement letter, verify recipient details, and ensure signed/sealed issuance.",
-          },
-          {
-            id: "sample",
-            title: "Sample Document",
-            details: "",
-            image: ENDORSEMENT_PNG,
-          },
-        ],
-      },
-      indigency: {
-        title: "Tips on Getting Certificate of Indigency",
-        items: [
-          {
-            id: "where",
-            title: "Where to Get It",
-            details:
-              "Get this from your Barangay Hall or from CSWDO depending on local process.",
-          },
-          {
-            id: "bring",
-            title: "What to Bring",
-            details:
-              "Prepare valid ID, proof of residency, cedula, and optional request letter for medical assistance.",
-          },
-          {
-            id: "how",
-            title: "How to Get It",
-            details:
-              "Fill out the request form, pay applicable fee, and claim the signed certificate on release.",
-          },
-          {
-            id: "sample",
-            title: "Sample Document",
-            details: "",
-            image: INDIGENCY_PNG,
-          },
-        ],
-      },
-    }),
-    []
-  );
-
-  const renderTips = (fieldKey: keyof typeof requirementTips) => {
-    const tipGroup = requirementTips[fieldKey];
-    return (
-      <>
-        <Text style={styles.tipSectionTitle}>{tipGroup.title}</Text>
-        {tipGroup.items.map((tip) => {
-          const scopedId = `${fieldKey}-${tip.id}`;
-          const expanded = openTipId === scopedId;
-          return (
-            <View key={scopedId} style={styles.tipCard}>
-              <Pressable
-                onPress={() => {
-                  LayoutAnimation.configureNext(
-                    LayoutAnimation.Presets.easeInEaseOut
-                  );
-                  setOpenTipId((prev) => (prev === scopedId ? null : scopedId));
-                }}
-                style={({ pressed }) => [
-                  styles.tipHead,
-                  pressed && { opacity: 0.86 },
-                ]}
-              >
-                <Text style={styles.tipTitle}>{tip.title}</Text>
-                <Feather
-                  name={expanded ? "arrow-down-right" : "arrow-up-right"}
-                  size={20}
-                  color="#D0D0D0"
-                />
-              </Pressable>
-              {expanded ? (
-                <>
-                  {tip.details ? <Text style={styles.tipBody}>{tip.details}</Text> : null}
-                  {tip.image ? (
-                    <View style={styles.tipImageContainer}>
-                      <Pressable onPress={() => {
-                        setSamplePreviewImage(tip.image);
-                        setSamplePreviewTitle(tip.title || "Sample Document");
-                        setSamplePreviewOpen(true);
-                      }} style={({pressed})=>[pressed && {opacity:0.9}]}
-                      >
-                        <Image source={tip.image} style={styles.tipImage} resizeMode="contain" />
-                      </Pressable>
-                    </View>
-                  ) : null}
-                </>
-              ) : null}
-            </View>
-          );
-        })}
-      </>
-    );
-  };
-
-  const requiredStepOrder = [
-    "abstract",
-    "bill",
-    "indigency",
-    "barangay",
-    "voterId",
-    "letter",
-    "birthCert",
-  ] as const;
-  type RequiredStepKey = (typeof requiredStepOrder)[number];
-
-  const [currentStep, setCurrentStep] = useState(0);
-  const [stepInitialized, setStepInitialized] = useState(false);
-
-  const stepLabels: Record<RequiredStepKey, string> = {
-    abstract: "Submit Clinical / Medical Abstract",
-    bill: "Submit Partial Hospital Bill",
-    indigency: "Submit Certificate of Indigency",
-    barangay: "Submit Barangay Endorsement",
-    voterId: "Submit Patient's Voter's ID / Certificate",
-    letter: "Submit Letter of Request to the Mayor",
-    birthCert: "Submit Valid ID / Birth Certificate",
-  };
-
-  const getFileByKey = (key: RequiredStepKey): PickedFile | null => {
-    if (key === "abstract") return abstractFile;
-    if (key === "bill") return billFile;
-    if (key === "indigency") return indigencyCertFile;
-    if (key === "barangay") return barangayEndorsementFile;
-    if (key === "voterId") return voterIdFile;
-    if (key === "letter") return letterFile;
-    return birthCertFile;
-  };
-
-  const pickForKey = (key: RequiredStepKey) => {
-    if (key === "abstract") return pickAbstract();
-    if (key === "bill") return pickBill();
-    if (key === "indigency") return pickIndigencyCert();
-    if (key === "barangay") return pickBarangayEndorsement();
-    if (key === "voterId") return pickVoterId();
-    if (key === "letter") return pickLetter();
-    return pickBirthCert();
-  };
-
-  useEffect(() => {
-    if (isLoading || stepInitialized) return;
-
-    const firstMissingIndex = requiredStepOrder.findIndex((key) => !getFileByKey(key));
-    setCurrentStep(firstMissingIndex === -1 ? requiredStepOrder.length : firstMissingIndex);
-    setStepInitialized(true);
-  }, [
-    isLoading,
-    stepInitialized,
-    abstractFile,
-    billFile,
-    indigencyCertFile,
-    barangayEndorsementFile,
-    voterIdFile,
-    letterFile,
-    birthCertFile,
-  ]);
-
-  const totalSteps = requiredStepOrder.length + 1;
-  const infoStepIndex = requiredStepOrder.length;
-  const isInfoStep = currentStep === infoStepIndex;
-  const currentStepKey = requiredStepOrder[Math.min(currentStep, requiredStepOrder.length - 1)];
-  const currentFile = isInfoStep ? null : getFileByKey(currentStepKey);
-  const isLastStep = isInfoStep;
-  const canProceedStep = isInfoStep ? true : (!!currentFile && !isSaving && !isSubmitting);
-
-  const onPreviousStep = () => {
-    if (currentStep > 0) {
-      setCurrentStep((prev) => Math.max(prev - 1, 0));
-      return;
-    }
-    setBackConfirmOpen(true);
-  };
-
-  const onNextStep = () => {
-    if (!canProceedStep) return;
-    if (isLastStep) {
-      onSubmit();
-      return;
-    }
-    setCurrentStep((prev) => Math.min(prev + 1, requiredStepOrder.length));
-  };
+  const requiredFileSections = [
+    {
+      key: "letter" as const,
+      label: "Submit Letter of Request to the Mayor",
+      file: letterFile,
+      onPick: pickLetter,
+    },
+    {
+      key: "voterId" as const,
+      label: "Submit Patient's Voter's ID / Certificate",
+      file: voterIdFile,
+      onPick: pickVoterId,
+    },
+    {
+      key: "barangay" as const,
+      label: "Submit Barangay Endorsement",
+      file: barangayEndorsementFile,
+      onPick: pickBarangayEndorsement,
+    },
+    {
+      key: "indigency" as const,
+      label: "Submit Certificate of Indigency",
+      file: indigencyCertFile,
+      onPick: pickIndigencyCert,
+    },
+    {
+      key: "birthCert" as const,
+      label: "Submit Valid ID / Birth Certificate",
+      file: birthCertFile,
+      onPick: pickBirthCert,
+    },
+    {
+      key: "abstract" as const,
+      label: "Submit Clinical / Medical Abstract",
+      file: abstractFile,
+      onPick: pickAbstract,
+    },
+    {
+      key: "bill" as const,
+      label: "Submit Partial Hospital Bill",
+      file: billFile,
+      onPick: pickBill,
+    },
+  ];
 
   // Hardware back handler for Android: confirm navigation to Home
   // Only active when this screen is focused
@@ -1231,7 +908,7 @@ export default function HospitalizationReq() {
 
       const sub = BackHandler.addEventListener("hardwareBackPress", onBackPress);
       return () => sub.remove();
-    }, [previewOpen, removeOpen, currentStep])
+    }, [previewOpen, removeOpen])
   );
 
   // Show loading screen
@@ -1301,7 +978,6 @@ export default function HospitalizationReq() {
         </View>
 
         <Text style={styles.sectionTitle}>Service Requirements</Text>
-        <Text style={styles.stepTitle}>Step {currentStep + 1} out of {totalSteps}</Text>
 
         <View style={styles.noteRow}>
           {isSaving ? (
@@ -1319,15 +995,15 @@ export default function HospitalizationReq() {
           </Text>
         </View>
 
-        {!isInfoStep ? (
-          <>
+        {requiredFileSections.map((section) => (
+          <View key={section.key}>
             <Text style={styles.reqLabel}>
-              {stepLabels[currentStepKey]} <Text style={styles.reqStar}>*</Text>
+              {section.label} <Text style={styles.reqStar}>*</Text>
             </Text>
 
-            {!currentFile ? (
+            {!section.file ? (
               <Pressable
-                onPress={() => pickForKey(currentStepKey)}
+                onPress={section.onPick}
                 style={({ pressed }) => [
                   styles.dropBox,
                   pressed && { opacity: 0.92 },
@@ -1346,72 +1022,63 @@ export default function HospitalizationReq() {
             ) : (
               <View style={styles.dropBoxFilled}>
                 <SwipeDeletePill
-                  file={currentFile}
-                  onRequestRemove={() => openRemove(currentStepKey)}
-                  thumbnailUri={signedUrls[currentStepKey]}
-                  onPress={() => openPreview(currentStepKey, currentFile.name)}
+                  file={section.file}
+                  onRequestRemove={() => openRemove(section.key)}
+                  thumbnailUri={signedUrls[section.key]}
+                  onPress={() => openPreview(section.key, section.file!.name)}
                 />
               </View>
             )}
+          </View>
+        ))}
 
-            {renderTips(currentStepKey)}
-          </>
-        ) : null}
+        <Text style={styles.additionalTitle}>Additional Information</Text>
 
-        {isInfoStep ? (
-          <>
-            <Text style={styles.additionalTitle}>Additional Information</Text>
+        <Text style={styles.reqLabel}>
+          Description or Other Relevant Information (optional)
+        </Text>
+        <TextInput
+          style={styles.textArea}
+          placeholder="Provide any additional details or requirements."
+          placeholderTextColor={"#A0A9A9"}
+          multiline
+          maxLength={400}
+          value={additionalInfo}
+          onChangeText={handleAdditionalChange}
+          textAlignVertical="top"
+          editable={!isSaving}
+        />
+        <Text style={styles.charCount}>
+          {additionalInfo.length}/400 characters
+        </Text>
 
-            <Text style={styles.reqLabel}>
-              Description or Other Relevant Information (optional)
-            </Text>
-            <TextInput
-              style={styles.textArea}
-              placeholder="Provide any additional details or requirements."
-              placeholderTextColor={"#A0A9A9"}
-              multiline
-              maxLength={400}
-              value={additionalInfo}
-              onChangeText={handleAdditionalChange}
-              textAlignVertical="top"
-              editable={!isSaving}
+        <Text style={styles.reqLabel}>Attachments (optional)</Text>
+
+        {!attachmentFile ? (
+          <Pressable
+            onPress={pickAttachment}
+            style={({ pressed }) => [styles.dropBox, pressed && { opacity: 0.92 }]}
+          >
+            <View style={styles.plusCol}>
+              <Ionicons name="add" size={26} color={TEAL} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.dropTitle}>Attach requested files.</Text>
+              <Text style={styles.dropSub}>
+                Files supported (jpeg, pdf, png) Max 5 MB
+              </Text>
+            </View>
+          </Pressable>
+        ) : (
+          <View style={styles.dropBoxFilled}>
+            <SwipeDeletePill
+              file={attachmentFile}
+              onRequestRemove={() => openRemove("attachment")}
+              thumbnailUri={signedUrls.attachment}
+              onPress={() => openPreview("attachment", attachmentFile.name)}
             />
-            <Text style={styles.charCount}>
-              {additionalInfo.length}/400 characters
-            </Text>
-
-            <Text style={styles.reqLabel}>Attachments (optional)</Text>
-
-            {!attachmentFile ? (
-              <Pressable
-                onPress={pickAttachment}
-                style={({ pressed }) => [
-                  styles.dropBox,
-                  pressed && { opacity: 0.92 },
-                ]}
-              >
-                <View style={styles.plusCol}>
-                  <Ionicons name="add" size={26} color={TEAL} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.dropTitle}>Attach requested files.</Text>
-                  <Text style={styles.dropSub}>
-                    Files supported (jpeg, pdf, png) Max 5 MB
-                  </Text>
-                </View>
-              </Pressable>
-            ) : (
-              <View style={styles.dropBoxFilled}>
-                <SwipeDeletePill
-                  file={attachmentFile}
-                  onRequestRemove={() => openRemove("attachment")}
-                  thumbnailUri={signedUrls.attachment}
-                  onPress={() => openPreview("attachment", attachmentFile.name)}
-                />
-              </View>
-            )}
-          </>
-        ) : null}
+          </View>
+        )}
 
         <View style={{ height: 140 }} />
       </ScrollView>
@@ -1419,30 +1086,28 @@ export default function HospitalizationReq() {
       <View style={styles.bottomBar}>
         <View style={{ flexDirection: "row", gap: 12 }}>
           <Pressable
-            onPress={onPreviousStep}
+            onPress={() => setBackConfirmOpen(true)}
             style={({ pressed }) => [styles.prevBtn, pressed && { opacity: 0.92 }]}
           >
-            <Text style={styles.prevText}>{currentStep === 0 ? "Back" : "Previous"}</Text>
+            <Text style={styles.prevText}>Back</Text>
           </Pressable>
 
           <Pressable
-            onPress={onNextStep}
-            disabled={isLastStep ? !canSubmit : !canProceedStep}
-            onPressIn={isLastStep ? (canSubmit ? submitAnim.pressIn : undefined) : (canProceedStep ? submitAnim.pressIn : undefined)}
-            onPressOut={isLastStep ? (canSubmit ? submitAnim.pressOut : undefined) : (canProceedStep ? submitAnim.pressOut : undefined)}
+            onPress={onSubmit}
+            disabled={!canSubmit}
+            onPressIn={canSubmit ? submitAnim.pressIn : undefined}
+            onPressOut={canSubmit ? submitAnim.pressOut : undefined}
             style={{ flex: 1 }}
           >
             <Animated.View
               style={[
                 styles.nextBtn,
-                (isLastStep ? !canSubmit : !canProceedStep) && styles.nextBtnDisabled,
+                !canSubmit && styles.nextBtnDisabled,
                 { transform: [{ scale: submitAnim.scale }] },
               ]}
             >
-              <Text
-                style={[styles.nextText, (isLastStep ? !canSubmit : !canProceedStep) && styles.nextTextDisabled]}
-              >
-                {isLastStep ? "Submit" : "Next"}
+              <Text style={[styles.nextText, !canSubmit && styles.nextTextDisabled]}>
+                Submit
               </Text>
             </Animated.View>
           </Pressable>
@@ -1551,27 +1216,6 @@ export default function HospitalizationReq() {
           <ActivityIndicator size="large" color="#FFF" />
         </View>
       )}
-      {/* Sample Image Fullscreen Modal */}
-      <Modal transparent visible={samplePreviewOpen} animationType="fade">
-        <Pressable style={styles.previewOverlay} onPress={() => setSamplePreviewOpen(false)}>
-          <View style={styles.previewHeader}>
-            <Text style={styles.previewTitle} numberOfLines={1}>{samplePreviewTitle}</Text>
-            <Pressable onPress={() => setSamplePreviewOpen(false)} style={({ pressed }) => [styles.previewCloseBtn, pressed && { opacity: 0.7 }]}>
-              <Ionicons name="close" size={24} color="#FFF" />
-            </Pressable>
-          </View>
-
-          <Pressable style={styles.previewContent} onPress={() => {}}>
-            {samplePreviewImage && (
-              <Image
-                source={samplePreviewImage}
-                style={styles.previewImage}
-                resizeMode="contain"
-              />
-            )}
-          </Pressable>
-        </Pressable>
-      </Modal>
     </SafeAreaView>
   );
 }
@@ -1708,6 +1352,13 @@ const styles = StyleSheet.create({
     fontFamily: FONT,
     fontWeight: "700",
     fontSize: 13,
+    color: TEXT_DARK,
+  },
+  tipSectionHeading: {
+    marginTop: 16,
+    fontFamily: FONT,
+    fontWeight: "800",
+    fontSize: 14,
     color: TEXT_DARK,
   },
   tipCard: {

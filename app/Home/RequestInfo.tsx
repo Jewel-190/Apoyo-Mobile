@@ -208,7 +208,7 @@ export default function RequestInfo() {
     setShowAgreement(true);
   };
 
-  // On mount, try to load verified users profile and lock requester fields
+  // On mount, try to load users profile and lock requester fields
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -222,7 +222,7 @@ export default function RequestInfo() {
         const { data: profile, error } = await supabase
           .from("users")
           .select(
-            "first_name,middle_name,last_name,suffix,contact_number,email,address,verified"
+            "first_name,middle_name,last_name,suffix,contact_number,email,address"
           )
           .eq("id", user.id)
           .single();
@@ -231,10 +231,6 @@ export default function RequestInfo() {
 
         if (error || !profile) {
           setProfileLoadError(error?.message || "No profile returned");
-          return;
-        }
-        if (!profile.verified) {
-          setProfileLoadError("Profile not verified");
           return;
         }
 
@@ -262,7 +258,7 @@ export default function RequestInfo() {
         }));
         setProfileLocked(true);
       } catch (e) {
-        console.log("Failed to load verified profile:", e);
+        console.log("Failed to load profile:", e);
         if (mounted) setProfileLoadError(String(e));
       } finally {
         if (mounted) setIsProfileLoading(false);

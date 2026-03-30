@@ -2,8 +2,8 @@ import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { LinearGradient } from "expo-linear-gradient";
 import { Image as ExpoImage } from "expo-image";
-import { useLocalSearchParams, useRouter } from "expo-router";
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "expo-router";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   Dimensions,
   Image,
@@ -18,8 +18,7 @@ import {
   TextInput,
   View,
 } from "react-native";
-import BottomNavBar, { NAV_TOTAL_HEIGHT, TabKey } from "../../components/BottomNavBar";
-import VerifyModal from "../../components/VerifyModal";
+import BottomNavBar, { NAV_TOTAL_HEIGHT } from "../../components/BottomNavBar";
 import { supabase } from "../../lib/supabase";
 
 const { width } = Dimensions.get("window");
@@ -54,6 +53,14 @@ const ICON_MONETARY = require("../../assets/images/Monetary.png");
 const ICON_BURIAL = require("../../assets/images/Burial.png");
 const ICON_CREMATION = require("../../assets/images/Cremation.png");
 const ICON_COLOMBARIUM = require("../../assets/images/Colombarium.png");
+const CLINICAL_ABSTRACT_PNG = require("../../assets/images/ClinicalAbstract.png");
+const HOSPITAL_BILL_PNG = require("../../assets/images/HospitalBill.png");
+const SAMPLE_LETTER_PNG = require("../../assets/images/SampleLetter.png");
+const DEATH_CERT_PNG = require("../../assets/images/DeathCert.png");
+const CREMATION_CERT_PNG = require("../../assets/images/CremationCert.png");
+const VOTERS_CERT_PNG = require("../../assets/images/VotersCert.png");
+const ENDORSEMENT_PNG = require("../../assets/images/Endorsement.png");
+const INDIGENCY_PNG = require("../../assets/images/Indigency.png");
 
 type ChipKey = "all" | "medical" | "financial" | "burial";
 type Accent = "blue" | "yellow" | "purple";
@@ -67,6 +74,7 @@ type Service = {
 };
 
 type ReqItem = { id: string; title: string; details?: string };
+type ReqTipItem = { id: string; title: string; details: string; image?: any };
 
 type DetailsPage = {
   headerTitle: string;
@@ -81,28 +89,21 @@ type DetailsPage = {
   applyLabel: string;
 };
 
-type GateTarget =
-  | { type: "service"; serviceId: string }
-  | { type: "route"; path: string }
-  | null;
-
 export default function Assistance() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ verified?: string }>();
 
   const [chip, setChip] = useState<ChipKey>("all");
-  const [verified, setVerified] = useState(false);
-
-  const [showVerifyModal, setShowVerifyModal] = useState(false);
 
   const [openDetailsId, setOpenDetailsId] = useState<string | null>(null);
 
   const [openReq, setOpenReq] = useState<
     Record<string, Record<string, boolean>>
   >({});
+  const [openReqTipId, setOpenReqTipId] = useState<string | null>(null);
+  const [samplePreviewOpen, setSamplePreviewOpen] = useState(false);
+  const [samplePreviewImage, setSamplePreviewImage] = useState<any>(null);
+  const [samplePreviewTitle, setSamplePreviewTitle] = useState("Sample Document");
 
-  const successHandledOnce = useRef(false);
-  const pendingTarget = useRef<GateTarget>(null);
   const [displayName, setDisplayName] = useState("");
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
 
@@ -398,8 +399,39 @@ export default function Assistance() {
         reminderTitle: "Reminder",
         reminderBody:
           "For burial assistance, the request must be processed by an immediate family member, and documents must be consistent with the deceased's records.",
-        requirementsTitle: "",
-        requirements: [],
+        requirementsTitle: "Requirements",
+        requirements: [
+          {
+            id: "letter",
+            title: "Letter of Request to the Mayor",
+            details:
+              "Formal request letter addressed to the City Mayor stating the type of burial monetary assistance needed.",
+          },
+          {
+            id: "voterId",
+            title: "Patient's Voter's ID / Certificate",
+            details:
+              "Proof that the applicant or deceased is connected to a registered voter of the City of Dasmariñas.",
+          },
+          {
+            id: "birthCert",
+            title: "Valid ID / Birth Certificate",
+            details:
+              "Valid government-issued ID or birth certificate of the deceased and requestor.",
+          },
+          {
+            id: "barangay",
+            title: "Barangay Endorsement",
+            details:
+              "Barangay-issued endorsement supporting the burial assistance request.",
+          },
+          {
+            id: "indigency",
+            title: "Certificate of Indigency",
+            details:
+              "Certification proving financial incapacity, issued by the barangay or local social welfare office.",
+          },
+        ],
         applyLabel: "Apply Now",
       },
 
@@ -413,8 +445,33 @@ export default function Assistance() {
         reminderTitle: "Reminder",
         reminderBody:
           "Requests must be filed by an immediate family member and documents must be complete upon submission.",
-        requirementsTitle: "",
-        requirements: [],
+        requirementsTitle: "Requirements",
+        requirements: [
+          {
+            id: "deathCert",
+            title: "Death Certificate",
+            details:
+              "Certified copy of the death certificate of the deceased.",
+          },
+          {
+            id: "validId",
+            title: "Valid ID of Deceased",
+            details:
+              "Any valid government-issued ID of the deceased.",
+          },
+          {
+            id: "barangay",
+            title: "Barangay Endorsement of the Deceased",
+            details:
+              "Barangay endorsement confirming residency and request for burial site support.",
+          },
+          {
+            id: "indigency",
+            title: "Indigency Certificate of the Deceased",
+            details:
+              "Indigency certificate proving financial need for burial site assistance.",
+          },
+        ],
         applyLabel: "Apply Now",
       },
 
@@ -429,8 +486,33 @@ export default function Assistance() {
         reminderTitle: "Reminder",
         reminderBody:
           "Requests must be filed by an immediate family member and documents must be complete upon submission.",
-        requirementsTitle: "",
-        requirements: [],
+        requirementsTitle: "Requirements",
+        requirements: [
+          {
+            id: "deathCert",
+            title: "Death Certificate",
+            details:
+              "Certified copy of the death certificate of the deceased.",
+          },
+          {
+            id: "validId",
+            title: "Valid ID of Deceased",
+            details:
+              "Any valid government-issued ID of the deceased.",
+          },
+          {
+            id: "barangay",
+            title: "Barangay Endorsement of the Deceased",
+            details:
+              "Barangay endorsement confirming request for cremation assistance.",
+          },
+          {
+            id: "indigency",
+            title: "Indigency Certificate of the Deceased",
+            details:
+              "Indigency certificate proving financial need for cremation support.",
+          },
+        ],
         applyLabel: "Apply Now",
       },
 
@@ -445,8 +527,39 @@ export default function Assistance() {
         reminderTitle: "Reminder",
         reminderBody:
           "Requests must be filed by an immediate family member and documents must be complete upon submission.",
-        requirementsTitle: "",
-        requirements: [],
+        requirementsTitle: "Requirements",
+        requirements: [
+          {
+            id: "deathCert",
+            title: "Death Certificate",
+            details:
+              "Certified copy of the death certificate of the deceased.",
+          },
+          {
+            id: "validId",
+            title: "Valid ID of Deceased",
+            details:
+              "Any valid government-issued ID of the deceased.",
+          },
+          {
+            id: "cremationCert",
+            title: "Certificate of Cremation",
+            details:
+              "Official cremation certificate issued by the crematorium.",
+          },
+          {
+            id: "barangay",
+            title: "Barangay Endorsement of the Deceased",
+            details:
+              "Barangay endorsement confirming request for columbarium support.",
+          },
+          {
+            id: "indigency",
+            title: "Indigency Certificate of the Deceased",
+            details:
+              "Indigency certificate proving financial need for columbarium allocation.",
+          },
+        ],
         applyLabel: "Apply Now",
       },
     }),
@@ -460,7 +573,6 @@ export default function Assistance() {
       if (cached) {
         const parsed = JSON.parse(cached);
         if (parsed.first_name) setDisplayName(parsed.first_name);
-        if (typeof parsed.verified === "boolean") setVerified(parsed.verified);
         if (parsed.avatar_url) {
           setAvatarUrl(parsed.avatar_url);
           ExpoImage.prefetch(parsed.avatar_url);
@@ -472,77 +584,24 @@ export default function Assistance() {
       if (user) {
         const { data } = await supabase
           .from("users")
-          .select("first_name, middle_name, last_name, contact_number, email, verified, avatar_url")
+          .select("first_name, middle_name, last_name, contact_number, email, avatar_url")
           .eq("id", user.id)
           .single();
         
         if (data) {
           if (data.first_name) setDisplayName(data.first_name);
-          setVerified(data.verified === true);
           if (data.avatar_url) {
             setAvatarUrl(data.avatar_url);
             ExpoImage.prefetch(data.avatar_url);
           } else {
             setAvatarUrl(null);
           }
-          // Update cache (preserve all fields for Verify-acc)
+          // Update cached profile for quick subsequent loads
           await AsyncStorage.setItem(CACHE_USER, JSON.stringify(data));
         }
       }
     })();
   }, []);
-
-  useEffect(() => {
-    (async () => {
-      if (params?.verified === "1" && !successHandledOnce.current) {
-        successHandledOnce.current = true;
-
-        // Refresh verified status from database
-        const { data: { user } } = await supabase.auth.getUser();
-        if (user) {
-          const { data } = await supabase
-            .from("users")
-            .select("verified")
-            .eq("id", user.id)
-            .single();
-          if (data?.verified) {
-            setVerified(true);
-            // Update cache
-            const cached = await AsyncStorage.getItem(CACHE_USER);
-            if (cached) {
-              const parsed = JSON.parse(cached);
-              parsed.verified = true;
-              await AsyncStorage.setItem(CACHE_USER, JSON.stringify(parsed));
-            }
-          }
-        }
-
-        // Handle any pending navigation target
-        const target = pendingTarget.current;
-        pendingTarget.current = null;
-
-        if (target) {
-          setTimeout(() => {
-            if (target.type === "route") {
-              router.push(target.path as any);
-            } else if (target.type === "service") {
-              openDetails(target.serviceId);
-            }
-          }, 300);
-        }
-      }
-    })();
-  }, [params?.verified]);
-
-  const requireVerify = (target?: GateTarget) => {
-    if (target) pendingTarget.current = target;
-    setShowVerifyModal(true);
-  };
-
-  const guardedNavigate = (path: string) => {
-    if (!verified) return requireVerify({ type: "route", path });
-    router.push(path as any);
-  };
 
   // Check if user has an existing draft for a service type
   const checkForDraft = async (serviceId: string): Promise<string | null> => {
@@ -567,21 +626,27 @@ export default function Assistance() {
 
       const { data, error } = await supabase
         .from(table)
-        .select("id")
+        .select("id, status, submitted_at, created_at")
         .eq("user_id", userData.user.id)
-        .eq("status", "draft")
-        .limit(1);
+        .order("created_at", { ascending: false })
+        .limit(10);
 
       if (error || !data || data.length === 0) return null;
-      return data[0]?.id?.toString() || null;
+
+      const draftLike = data.find((row: any) => {
+        const raw = (row?.status ?? "").toString().trim().toLowerCase();
+        const isDraftStatus = raw === "draft";
+        const isUnsubmitted = !row?.submitted_at;
+        return isDraftStatus || isUnsubmitted;
+      });
+
+      return draftLike?.id?.toString() || null;
     } catch {
       return null;
     }
   };
 
   const guardedOpenService = async (serviceId: string) => {
-    if (!verified) return requireVerify({ type: "service", serviceId });
-
     if (serviceId === "cremation") {
       const draftId = await checkForDraft(serviceId);
       if (draftId) {
@@ -648,8 +713,487 @@ export default function Assistance() {
   const stripe = (a: Accent) =>
     a === "blue" ? GRAD.blue : a === "yellow" ? GRAD.yellow : GRAD.purple;
 
+  const requirementTipsByService: Record<string, Record<string, ReqTipItem[]>> = useMemo(
+    () => ({
+      hospital: {
+        pl: [
+          {
+            id: "format",
+            title: "Format for Personal Letter",
+            details:
+              "Include date, full name, contact details, reason for assistance, brief hospitalization details, requested amount, and signature.",
+          },
+          {
+            id: "sample",
+            title: "Sample Document",
+            details: "Use a clear and formal letter addressed to the City Mayor.",
+            image: SAMPLE_LETTER_PNG,
+          },
+        ],
+        voter: [
+          {
+            id: "where",
+            title: "Where to Get It",
+            details:
+              "Go to the COMELEC Office (Office of the Election Officer) in your city.",
+          },
+          {
+            id: "bring",
+            title: "What to Bring",
+            details:
+              "Bring a valid government ID, request form, and authorization letter if claiming on behalf of another person.",
+          },
+          {
+            id: "how",
+            title: "How to Get It",
+            details:
+              "Have your record checked, pay any required fee, submit receipt and form, then claim the certificate.",
+          },
+          {
+            id: "sample",
+            title: "Sample Document",
+            details: "",
+            image: VOTERS_CERT_PNG,
+          },
+        ],
+        endorse: [
+          {
+            id: "barangay",
+            title: "Barangay Endorsement Tips",
+            details:
+              "Request this at your Barangay Hall, bring valid ID and supporting medical documents, and ensure signed/sealed issuance.",
+            image: ENDORSEMENT_PNG,
+          },
+          {
+            id: "indigency",
+            title: "Certificate of Indigency Tips",
+            details:
+              "Get this from Barangay Hall or CSWDO, bring proof of residency and valid ID, then claim the signed certificate.",
+            image: INDIGENCY_PNG,
+          },
+        ],
+        validid: [
+          {
+            id: "accepted",
+            title: "Accepted IDs",
+            details:
+              "Accepted IDs include PhilID/ePhilID, Passport, Driver's License, UMID, PRC, Postal ID, Voter's ID/Certificate, SSS/GSIS, Senior Citizen ID, PWD ID, TIN, and PhilHealth.",
+          },
+          {
+            id: "sample",
+            title: "Sample Document",
+            details: "",
+            image: VOTERS_CERT_PNG,
+          },
+        ],
+        abstract: [
+          {
+            id: "where",
+            title: "Where to Get It",
+            details:
+              "Go to the Medical Records Department of the hospital where the patient was admitted.",
+          },
+          {
+            id: "bring",
+            title: "What to Bring",
+            details:
+              "Bring a valid ID, hospital card, and authorization letter with IDs if claiming for someone else.",
+          },
+          {
+            id: "how",
+            title: "How to Get It",
+            details:
+              "Fill out the request form, pay the processing fee, and return on the scheduled claim date.",
+          },
+          {
+            id: "sample",
+            title: "Sample Document",
+            details: "",
+            image: CLINICAL_ABSTRACT_PNG,
+          },
+        ],
+        bill: [
+          {
+            id: "where",
+            title: "Where to Get It",
+            details:
+              "Request this from the Billing Section of the hospital where confinement happened.",
+          },
+          {
+            id: "bring",
+            title: "What to Bring",
+            details:
+              "Prepare valid ID, hospital card, and authorization requirements when claiming for another person.",
+          },
+          {
+            id: "how",
+            title: "How to Get It",
+            details:
+              "Ask for a Statement of Account or finalized bill, settle any required payments, then claim the printed bill.",
+          },
+          {
+            id: "sample",
+            title: "Sample Document",
+            details: "",
+            image: HOSPITAL_BILL_PNG,
+          },
+        ],
+      },
+      treatment: {
+        pl: [
+          {
+            id: "format",
+            title: "Format for Personal Letter",
+            details:
+              "State your treatment/procedure request, patient details, diagnosis summary, and contact information.",
+            image: SAMPLE_LETTER_PNG,
+          },
+        ],
+        voter: [
+          {
+            id: "where",
+            title: "How to Get Voter's Certificate",
+            details:
+              "Request this at the local COMELEC office and bring a valid ID for verification.",
+            image: VOTERS_CERT_PNG,
+          },
+        ],
+        endorse: [
+          {
+            id: "barangay",
+            title: "Barangay Endorsement",
+            details:
+              "Ask your barangay for an endorsement letter supporting your treatment request.",
+            image: ENDORSEMENT_PNG,
+          },
+          {
+            id: "indigency",
+            title: "Certificate of Indigency",
+            details:
+              "Secure an indigency certificate from the barangay or CSWDO for financial need verification.",
+            image: INDIGENCY_PNG,
+          },
+        ],
+        validid: [
+          {
+            id: "accepted",
+            title: "Accepted IDs",
+            details:
+              "Any government-issued ID may be used. If unavailable, submit a birth certificate.",
+          },
+        ],
+        medcert: [
+          {
+            id: "request",
+            title: "Medical Certificate",
+            details:
+              "Request an updated certificate with diagnosis and recommended treatment from your attending physician.",
+          },
+        ],
+        rx: [
+          {
+            id: "request",
+            title: "Doctor's Prescription",
+            details:
+              "Submit a signed and dated prescription reflecting current treatment needs.",
+          },
+        ],
+        lab: [
+          {
+            id: "request",
+            title: "Laboratory Request",
+            details:
+              "Provide lab requests/results relevant to the treatment to support medical necessity.",
+          },
+        ],
+      },
+      operations: {
+        pl: [
+          {
+            id: "format",
+            title: "Format for Personal Letter",
+            details:
+              "Specify the operation, estimated cost, and assistance amount requested in your letter.",
+            image: SAMPLE_LETTER_PNG,
+          },
+        ],
+        voter: [
+          {
+            id: "where",
+            title: "How to Get Voter's Certificate",
+            details:
+              "Request this at COMELEC and make sure the name matches your submitted IDs.",
+            image: VOTERS_CERT_PNG,
+          },
+        ],
+        endorse: [
+          {
+            id: "barangay",
+            title: "Barangay Endorsement",
+            details:
+              "Request endorsement from your barangay and ensure it clearly states operation assistance.",
+            image: ENDORSEMENT_PNG,
+          },
+          {
+            id: "indigency",
+            title: "Certificate of Indigency",
+            details:
+              "Obtain an indigency certificate for financial assessment.",
+            image: INDIGENCY_PNG,
+          },
+        ],
+        validid: [
+          {
+            id: "accepted",
+            title: "Accepted IDs",
+            details:
+              "Use any valid government ID or a birth certificate when applicable.",
+          },
+        ],
+        medcert: [
+          {
+            id: "request",
+            title: "Medical Certificate",
+            details:
+              "Include diagnosis and recommendation for surgery, chemotherapy, dialysis, or related procedure.",
+          },
+        ],
+        rx: [
+          {
+            id: "request",
+            title: "Doctor's Prescription",
+            details:
+              "Provide current prescription and treatment plan signed by the physician.",
+          },
+        ],
+        quote: [
+          {
+            id: "request",
+            title: "Quotation of Expenses",
+            details:
+              "Submit an itemized quotation from the hospital/clinic that matches the required operation.",
+          },
+        ],
+      },
+      "emergency-finance": {
+        pl: [
+          {
+            id: "format",
+            title: "Format for Personal Letter",
+            details:
+              "Describe the emergency situation, requested amount, and immediate use of funds.",
+            image: SAMPLE_LETTER_PNG,
+          },
+        ],
+        voter: [
+          {
+            id: "where",
+            title: "How to Get Voter's Certificate",
+            details:
+              "Claim this from COMELEC with a valid ID and correct personal details.",
+            image: VOTERS_CERT_PNG,
+          },
+        ],
+        endorse: [
+          {
+            id: "barangay",
+            title: "Barangay Endorsement",
+            details:
+              "Secure barangay endorsement that references your emergency financial need.",
+            image: ENDORSEMENT_PNG,
+          },
+          {
+            id: "indigency",
+            title: "Certificate of Indigency",
+            details:
+              "Provide proof of financial hardship via barangay or social welfare indigency certification.",
+            image: INDIGENCY_PNG,
+          },
+        ],
+        validid: [
+          {
+            id: "accepted",
+            title: "Accepted IDs",
+            details:
+              "Submit any valid government-issued ID. Birth certificate is accepted when needed.",
+          },
+        ],
+      },
+      "burial-money": {
+        letter: [
+          {
+            id: "format",
+            title: "Format for Personal Letter",
+            details:
+              "State the deceased's name, date of death, and specific burial monetary aid being requested.",
+            image: SAMPLE_LETTER_PNG,
+          },
+        ],
+        voterId: [
+          {
+            id: "where",
+            title: "How to Get Voter's Certificate",
+            details:
+              "Request from COMELEC and ensure details are consistent with other documents.",
+            image: VOTERS_CERT_PNG,
+          },
+        ],
+        birthCert: [
+          {
+            id: "accepted",
+            title: "Accepted Document",
+            details:
+              "You may submit a valid ID or birth certificate of the deceased/requestor.",
+          },
+        ],
+        barangay: [
+          {
+            id: "where",
+            title: "Barangay Endorsement",
+            details:
+              "Request endorsement at the barangay hall and verify signature and seal.",
+            image: ENDORSEMENT_PNG,
+          },
+        ],
+        indigency: [
+          {
+            id: "where",
+            title: "Certificate of Indigency",
+            details:
+              "Get this from barangay or CSWDO after financial assessment.",
+            image: INDIGENCY_PNG,
+          },
+        ],
+      },
+      "burial-site": {
+        deathCert: [
+          {
+            id: "where",
+            title: "Where to Get It",
+            details:
+              "Request a certified death certificate from the Local Civil Registrar.",
+            image: DEATH_CERT_PNG,
+          },
+        ],
+        validId: [
+          {
+            id: "accepted",
+            title: "Accepted IDs",
+            details:
+              "Submit any valid government-issued ID of the deceased.",
+          },
+        ],
+        barangay: [
+          {
+            id: "where",
+            title: "Barangay Endorsement",
+            details:
+              "Request endorsement from your barangay for burial site assistance.",
+            image: ENDORSEMENT_PNG,
+          },
+        ],
+        indigency: [
+          {
+            id: "where",
+            title: "Certificate of Indigency",
+            details:
+              "Submit indigency certification from barangay or local social welfare office.",
+            image: INDIGENCY_PNG,
+          },
+        ],
+      },
+      cremation: {
+        deathCert: [
+          {
+            id: "where",
+            title: "Where to Get It",
+            details:
+              "Request a certified death certificate from the Local Civil Registrar.",
+            image: DEATH_CERT_PNG,
+          },
+        ],
+        validId: [
+          {
+            id: "accepted",
+            title: "Accepted IDs",
+            details:
+              "Submit any valid government-issued ID of the deceased.",
+          },
+        ],
+        barangay: [
+          {
+            id: "where",
+            title: "Barangay Endorsement",
+            details:
+              "Request endorsement from your barangay for cremation assistance.",
+            image: ENDORSEMENT_PNG,
+          },
+        ],
+        indigency: [
+          {
+            id: "where",
+            title: "Certificate of Indigency",
+            details:
+              "Submit indigency certification from barangay or local social welfare office.",
+            image: INDIGENCY_PNG,
+          },
+        ],
+      },
+      colombarium: {
+        deathCert: [
+          {
+            id: "where",
+            title: "Where to Get It",
+            details:
+              "Request a certified death certificate from the Local Civil Registrar.",
+            image: DEATH_CERT_PNG,
+          },
+        ],
+        validId: [
+          {
+            id: "accepted",
+            title: "Accepted IDs",
+            details:
+              "Submit any valid government-issued ID of the deceased.",
+          },
+        ],
+        cremationCert: [
+          {
+            id: "where",
+            title: "Certificate of Cremation",
+            details:
+              "Request a certified cremation certificate from the crematorium that handled the service.",
+            image: CREMATION_CERT_PNG,
+          },
+        ],
+        barangay: [
+          {
+            id: "where",
+            title: "Barangay Endorsement",
+            details:
+              "Request endorsement from your barangay for columbarium allocation support.",
+            image: ENDORSEMENT_PNG,
+          },
+        ],
+        indigency: [
+          {
+            id: "where",
+            title: "Certificate of Indigency",
+            details:
+              "Submit indigency certification from barangay or local social welfare office.",
+            image: INDIGENCY_PNG,
+          },
+        ],
+      },
+    }),
+    []
+  );
+
   const openDetails = (id: string) => {
     setOpenDetailsId(id);
+    setOpenReqTipId(null);
+    setSamplePreviewOpen(false);
+    setSamplePreviewImage(null);
     setOpenReq((prev) => ({ ...prev, [id]: prev[id] || {} }));
   };
 
@@ -714,7 +1258,7 @@ export default function Assistance() {
           </View>
           <Pressable
             style={styles.approvedBtn}
-            onPress={() => guardedNavigate(ROUTE_APPROVED)}
+            onPress={() => router.push(ROUTE_APPROVED as any)}
           >
             <Image
               source={APPROVED_ICON_PNG}
@@ -746,9 +1290,7 @@ export default function Assistance() {
             <Text style={styles.hiText}>
               Hi, <Text style={styles.hiName}>{displayName}</Text>
             </Text>
-            <Text style={styles.hiSubText}>
-              {verified ? "Account verified" : "Verify your account"}
-            </Text>
+            <Text style={styles.hiSubText}>Explore available city assistance</Text>
           </View>
         </View>
       </View>
@@ -820,26 +1362,7 @@ export default function Assistance() {
         </ScrollView>
       </View>
 
-      <BottomNavBar 
-        activeTab="home" 
-        maskColor="transparent"
-        onBeforeNavigate={(tabKey: TabKey) => {
-          if (tabKey === "home" || tabKey === "account") return true;
-          if (!verified) {
-            requireVerify({ type: "route", path: "" });
-            return false;
-          }
-          return true;
-        }}
-      />
-
-      <VerifyModal
-        visible={showVerifyModal}
-        onClose={() => {
-          pendingTarget.current = null;
-          setShowVerifyModal(false);
-        }}
-      />
+      <BottomNavBar activeTab="home" maskColor="transparent" />
 
       {/* Draft Confirmation Dialog */}
       <Modal
@@ -955,6 +1478,133 @@ export default function Assistance() {
               </Text>
             </View>
 
+            {(current?.requirements || []).length > 0 && (
+              <View style={styles.reqWrapShadow}>
+                <View style={styles.reqWrap}>
+                  <View style={styles.reqHeader}>
+                    <Text style={styles.reqHeaderText}>
+                      {current?.requirementsTitle || "Requirements"}
+                    </Text>
+                  </View>
+
+                  <View style={styles.reqBody}>
+                    {(current?.requirements || []).map((r, idx) => {
+                      const hasTipItems =
+                        !!openDetailsId &&
+                        !!requirementTipsByService[openDetailsId]?.[r.id]?.length;
+                      const hasDropdown = !!r.details || hasTipItems;
+                      const expanded =
+                        !!openDetailsId && !!openReq[openDetailsId]?.[r.id];
+
+                      return (
+                        <View key={r.id} style={styles.reqRowWrap}>
+                          <Pressable
+                            disabled={!hasDropdown}
+                            onPress={() =>
+                              openDetailsId && hasDropdown
+                                ? toggleReq(openDetailsId, r.id)
+                                : undefined
+                            }
+                            style={({ pressed }) => [
+                              styles.reqRow,
+                              hasDropdown && pressed && { opacity: 0.92 },
+                            ]}
+                          >
+                            <View style={styles.reqLeft}>
+                              <Ionicons
+                                name="checkmark"
+                                size={18}
+                                color="#2FA44F"
+                                style={{ marginRight: 10 }}
+                              />
+                              <Text style={styles.reqTitle}>{r.title}</Text>
+                            </View>
+
+                            {hasDropdown ? (
+                              <Ionicons
+                                name={expanded ? "chevron-up" : "chevron-down"}
+                                size={18}
+                                color="#A0A7A7"
+                              />
+                            ) : (
+                              <View style={{ width: 18, height: 18 }} />
+                            )}
+                          </Pressable>
+
+                          {hasDropdown && expanded && (
+                            <View style={styles.reqDetails}>
+                              {!!r.details && (
+                                <Text style={styles.reqDetailsText}>{r.details}</Text>
+                              )}
+
+                              {!!openDetailsId &&
+                                !!requirementTipsByService[openDetailsId]?.[r.id] && (
+                                  <View style={styles.reqTipsGroup}>
+                                    {requirementTipsByService[openDetailsId][r.id].map((tip: ReqTipItem) => {
+                                      const tipScopedId = `${openDetailsId}-${r.id}-${tip.id}`;
+                                      const tipExpanded = openReqTipId === tipScopedId;
+                                      return (
+                                        <View key={tipScopedId} style={styles.reqTipCard}>
+                                          <Pressable
+                                            onPress={() =>
+                                              setOpenReqTipId((prev) =>
+                                                prev === tipScopedId ? null : tipScopedId
+                                              )
+                                            }
+                                            style={({ pressed }) => [
+                                              styles.reqTipHead,
+                                              pressed && { opacity: 0.9 },
+                                            ]}
+                                          >
+                                            <Text style={styles.reqTipTitle}>{tip.title}</Text>
+                                            <Ionicons
+                                              name={tipExpanded ? "chevron-up" : "chevron-down"}
+                                              size={16}
+                                              color="#9AA6A6"
+                                            />
+                                          </Pressable>
+                                          {tipExpanded && (
+                                            <>
+                                              {!!tip.details && (
+                                                <Text style={styles.reqTipText}>{tip.details}</Text>
+                                              )}
+                                              {!!tip.image && (
+                                                <Pressable
+                                                  onPress={() => {
+                                                    setSamplePreviewImage(tip.image);
+                                                    setSamplePreviewTitle(tip.title || "Sample Document");
+                                                    setSamplePreviewOpen(true);
+                                                  }}
+                                                  style={({ pressed }) => [pressed && { opacity: 0.92 }]}
+                                                >
+                                                  <Image
+                                                    source={tip.image}
+                                                    style={styles.reqTipImage}
+                                                    resizeMode="contain"
+                                                  />
+                                                </Pressable>
+                                              )}
+                                            </>
+                                          )}
+                                        </View>
+                                      );
+                                    })}
+                                  </View>
+                                )}
+                            </View>
+                          )}
+
+                          {idx !== (current?.requirements || []).length - 1 && (
+                            <View style={styles.reqDivider} />
+                          )}
+                        </View>
+                      );
+                    })}
+                  </View>
+                </View>
+              </View>
+            )}
+
             {/* content spacer -- Apply button moved to footer */}
             <View style={{ height: 22 }} />
           </ScrollView>
@@ -975,6 +1625,39 @@ export default function Assistance() {
             </Pressable>
           </View>
         </SafeAreaView>
+      </Modal>
+
+      <Modal
+        visible={samplePreviewOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSamplePreviewOpen(false)}
+      >
+        <Pressable
+          style={styles.samplePreviewOverlay}
+          onPress={() => setSamplePreviewOpen(false)}
+        >
+          <View style={styles.samplePreviewHeader}>
+            <Text style={styles.samplePreviewTitle} numberOfLines={1}>
+              {samplePreviewTitle}
+            </Text>
+            <Pressable
+              onPress={() => setSamplePreviewOpen(false)}
+              style={({ pressed }) => [styles.samplePreviewCloseBtn, pressed && { opacity: 0.8 }]}
+            >
+              <Ionicons name="close" size={24} color="#FFFFFF" />
+            </Pressable>
+          </View>
+          <Pressable style={styles.samplePreviewContent} onPress={() => {}}>
+            {samplePreviewImage ? (
+              <Image
+                source={samplePreviewImage}
+                style={styles.samplePreviewImage}
+                resizeMode="contain"
+              />
+            ) : null}
+          </Pressable>
+        </Pressable>
       </Modal>
     </SafeAreaView>
   );
@@ -1188,67 +1871,6 @@ const styles = StyleSheet.create({
     color: TEXT_MUTED,
     lineHeight: 14,
   },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.25)",
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 18,
-  },
-  verifyCard: {
-    width: "100%",
-    maxWidth: 380,
-    backgroundColor: "#FFFFFF",
-    borderRadius: 16,
-    paddingHorizontal: 20,
-    paddingTop: 22,
-    paddingBottom: 18,
-    alignItems: "center",
-  },
-  warningImg: { width: 70, height: 70, marginBottom: 10 },
-  verifyTitle: {
-    fontSize: 20,
-    fontFamily: FONT,
-    fontWeight: "700",
-    color: TEXT_DARK,
-  },
-  verifySub: {marginTop: 6,
-    fontSize: 13,
-    fontFamily: FONT,
-    fontWeight: "600",
-    color: TEXT_MUTED,
-    textAlign: "center",
-  },
-  verifyBtn: {
-    marginTop: 16,
-    width: "100%",
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: TEAL,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  verifyBtnText: {
-    color: "#FFFFFF",
-    fontFamily: FONT,
-    fontWeight: "700",
-    fontSize: 15,
-  },
-  cancelBtnModal: {
-    marginTop: 10,
-    width: "100%",
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: "#EDEDED",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  cancelBtnText: {
-    color: TEXT_DARK,
-    fontFamily: FONT,
-    fontWeight: "700",
-    fontSize: 15,
-  },
   detailsSafe: { flex: 1, backgroundColor: "#FFFFFF" },
   detailsTopBar: {
     height: 52,
@@ -1449,6 +2071,87 @@ const styles = StyleSheet.create({
     color: "#6B7A7A",
     fontSize: 14,
     lineHeight: 18,
+  },
+  reqTipsGroup: {
+    marginTop: 10,
+    gap: 8,
+  },
+  reqTipCard: {
+    borderWidth: 1,
+    borderColor: "#E7EEEE",
+    borderRadius: 10,
+    backgroundColor: "#FAFCFC",
+    overflow: "hidden",
+  },
+  reqTipHead: {
+    minHeight: 40,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 8,
+  },
+  reqTipTitle: {
+    flex: 1,
+    fontFamily: FONT,
+    fontWeight: "700",
+    fontSize: 11,
+    color: "#3E4E4E",
+  },
+  reqTipText: {
+    paddingHorizontal: 10,
+    paddingBottom: 10,
+    fontFamily: FONT,
+    fontWeight: "500",
+    fontSize: 10.5,
+    lineHeight: 15,
+    color: "#5F6F6F",
+  },
+  reqTipImage: {
+    width: "100%",
+    height: 180,
+    borderTopWidth: 1,
+    borderTopColor: "#E7EEEE",
+    backgroundColor: "#FFFFFF",
+  },
+  samplePreviewOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.92)",
+    paddingTop: 42,
+    paddingBottom: 18,
+  },
+  samplePreviewHeader: {
+    height: 56,
+    paddingHorizontal: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  samplePreviewTitle: {
+    flex: 1,
+    marginRight: 10,
+    color: "#FFFFFF",
+    fontFamily: FONT,
+    fontWeight: "700",
+    fontSize: 14,
+  },
+  samplePreviewCloseBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  samplePreviewContent: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 12,
+  },
+  samplePreviewImage: {
+    width: "100%",
+    height: "100%",
   },
   reqDivider: {
     height: 1,

@@ -349,11 +349,6 @@ async function uploadFileToStorage(
   };
 }
 
-async function deleteFileFromStorage(filePath: string): Promise<void> {
-  const { error } = await supabase.storage.from(BUCKET_NAME).remove([filePath]);
-  if (error) throw error;
-}
-
 async function getSignedUrl(filePath: string): Promise<string | null> {
   const { data, error } = await supabase.storage
     .from(BUCKET_NAME)
@@ -444,16 +439,16 @@ export default function MedicalReq() {
       }
       setUserId(user.id);
 
-      // try to prefill from verified profile
+      // try to prefill from profile data
       if (!existingRequestId) {
         try {
           const { data: profile, error: profileError } = await supabase
             .from("users")
-            .select("first_name,middle_name,last_name,suffix,contact_number,email,address,verified")
+            .select("first_name,middle_name,last_name,suffix,contact_number,email,address")
             .eq("id", user.id)
             .single();
 
-          if (profile && profile.verified) {
+          if (profile) {
             const parts = [profile.first_name, profile.middle_name, profile.last_name].filter(Boolean);
             const name = `${parts.join(" ")}${profile.suffix ? " " + profile.suffix : ""}`.trim();
             setRequesterName(name);
@@ -602,13 +597,8 @@ export default function MedicalReq() {
         .update({ [columnName]: JSON.stringify(fileMetadata) })
         .eq("id", reqId);
 
-      const previousPath = uploadedPaths[fileType];
       setFile(file);
       setUploadedPaths(prev => ({ ...prev, [fileType]: fileMetadata.path }));
-
-      if (previousPath && previousPath !== fileMetadata.path) {
-        try { await deleteFileFromStorage(previousPath); } catch (e) { console.log("Failed to delete previous file:", previousPath, e); }
-      }
     } catch (err: any) {
       Alert.alert("Upload Error", err.message || "Failed to upload file");
     } finally {
@@ -622,7 +612,6 @@ export default function MedicalReq() {
 
     try {
       setIsSaving(true);
-      await deleteFileFromStorage(filePath);
       const columnName = getColumnName(fileType);
       await supabase
         .from("medical_requests")
@@ -749,7 +738,7 @@ export default function MedicalReq() {
       setIsSubmitting(true);
       const { error } = await supabase
         .from("medical_requests")
-        .update({ status: "submitted", submitted_at: new Date().toISOString() })
+        .update({ status: "pending", submitted_at: new Date().toISOString() })
         .eq("id", requestId);
       if (error) throw error;
       router.push({ pathname: "/Home/Medical/SubmissionSuccess", params: { serviceId, requestId } } as any);
@@ -1053,67 +1042,64 @@ export default function MedicalReq() {
         </View>
 
         <Text style={styles.sectionTitle}>Service Requirements</Text>
-        <Text style={styles.stepTitle}>Step {currentStep + 1} out of {totalSteps}</Text>
 
         <View style={styles.noteRow}>
           {isSaving ? (<ActivityIndicator size={14} color={TEAL} style={{ marginTop: 1 }} />) : (<Ionicons name="cloud-upload-outline" size={14} color="#B7C2C2" style={{ marginTop: 1 }} />)}
           <Text style={styles.sectionNote}>{isSaving ? "Saving..." : "Your files are auto-saved"}</Text>
         </View>
 
-        {!isInfoStep ? (
-          <>
-            <Text style={styles.reqLabel}>
-              {stepLabels[currentStepKey]} <Text style={styles.reqStar}>*</Text>
-            </Text>
-            {!currentFile ? (
-              <Pressable onPress={() => pickForKey(currentStepKey)} style={({ pressed }) => [styles.dropBox, pressed && { opacity: 0.92 }]}>
-                <View style={styles.plusCol}><Ionicons name="add" size={26} color={TEAL} /></View>
-                <View style={{ flex: 1 }}><Text style={styles.dropTitle}>Attach requested files.</Text><Text style={styles.dropSub}>Files supported (jpeg, pdf, png) Max 5 MB</Text></View>
-              </Pressable>
-            ) : (
-              <View style={styles.dropBoxFilled}><SwipeDeletePill file={currentFile} onRequestRemove={() => openRemove(currentStepKey)} thumbnailUri={signedUrls[currentStepKey]} onPress={() => openPreview(currentStepKey, currentFile.name)} /></View>
-            )}
-            {renderTips(currentStepKey)}
-          </>
-        ) : null}
+        {requiredStepOrder.map((stepKey) => {
+          const stepFile = getFileByKey(stepKey);
+          return (
+            <View key={stepKey}>
+              <Text style={styles.reqLabel}>
+                {stepLabels[stepKey]} <Text style={styles.reqStar}>*</Text>
+              </Text>
+              {!stepFile ? (
+                <Pressable onPress={() => pickForKey(stepKey)} style={({ pressed }) => [styles.dropBox, pressed && { opacity: 0.92 }]}>
+                  <View style={styles.plusCol}><Ionicons name="add" size={26} color={TEAL} /></View>
+                  <View style={{ flex: 1 }}><Text style={styles.dropTitle}>Attach requested files.</Text><Text style={styles.dropSub}>Files supported (jpeg, pdf, png) Max 5 MB</Text></View>
+                </Pressable>
+              ) : (
+                <View style={styles.dropBoxFilled}><SwipeDeletePill file={stepFile} onRequestRemove={() => openRemove(stepKey)} thumbnailUri={signedUrls[stepKey]} onPress={() => openPreview(stepKey, stepFile.name)} /></View>
+              )}
+            </View>
+          );
+        })}
 
-        {isInfoStep ? (
-          <>
-            <Text style={styles.additionalTitle}>Additional Information</Text>
-            <Text style={styles.reqLabel}>Description or Other Relevant Information (optional)</Text>
-            <TextInput style={styles.textArea} placeholder="Provide any additional details or requirements." placeholderTextColor={"#A0A9A9"} multiline maxLength={400} value={additionalInfo} onChangeText={handleAdditionalChange} textAlignVertical="top" editable={!isSaving} />
-            <Text style={styles.charCount}>{additionalInfo.length}/400 characters</Text>
+        <Text style={styles.additionalTitle}>Additional Information</Text>
+        <Text style={styles.reqLabel}>Description or Other Relevant Information (optional)</Text>
+        <TextInput style={styles.textArea} placeholder="Provide any additional details or requirements." placeholderTextColor={"#A0A9A9"} multiline maxLength={400} value={additionalInfo} onChangeText={handleAdditionalChange} textAlignVertical="top" editable={!isSaving} />
+        <Text style={styles.charCount}>{additionalInfo.length}/400 characters</Text>
 
-            <Text style={styles.reqLabel}>Attachments (optional)</Text>
-            {!attachmentFile ? (
-              <Pressable onPress={pickAttachment} style={({ pressed }) => [styles.dropBox, pressed && { opacity: 0.92 }]}>
-                <View style={styles.plusCol}><Ionicons name="add" size={26} color={TEAL} /></View>
-                <View style={{ flex: 1 }}><Text style={styles.dropTitle}>Attach requested files.</Text><Text style={styles.dropSub}>Files supported (jpeg, pdf, png) Max 5 MB</Text></View>
-              </Pressable>
-            ) : (
-              <View style={styles.dropBoxFilled}><SwipeDeletePill file={attachmentFile} onRequestRemove={() => openRemove("attachment")} thumbnailUri={signedUrls.attachment} onPress={() => openPreview("attachment", attachmentFile.name)} /></View>
-            )}
-          </>
-        ) : null}
+        <Text style={styles.reqLabel}>Attachments (optional)</Text>
+        {!attachmentFile ? (
+          <Pressable onPress={pickAttachment} style={({ pressed }) => [styles.dropBox, pressed && { opacity: 0.92 }]}>
+            <View style={styles.plusCol}><Ionicons name="add" size={26} color={TEAL} /></View>
+            <View style={{ flex: 1 }}><Text style={styles.dropTitle}>Attach requested files.</Text><Text style={styles.dropSub}>Files supported (jpeg, pdf, png) Max 5 MB</Text></View>
+          </Pressable>
+        ) : (
+          <View style={styles.dropBoxFilled}><SwipeDeletePill file={attachmentFile} onRequestRemove={() => openRemove("attachment")} thumbnailUri={signedUrls.attachment} onPress={() => openPreview("attachment", attachmentFile.name)} /></View>
+        )}
 
         <View style={{ height: 140 }} />
       </ScrollView>
 
       <View style={styles.bottomBar}>
         <View style={{ flexDirection: "row", gap: 12 }}>
-          <Pressable onPress={onPreviousStep} style={({ pressed }) => [styles.prevBtn, pressed && { opacity: 0.92 }]}>
-            <Text style={styles.prevText}>{currentStep === 0 ? "Back" : "Previous"}</Text>
+          <Pressable onPress={() => setBackConfirmOpen(true)} style={({ pressed }) => [styles.prevBtn, pressed && { opacity: 0.92 }]}>
+            <Text style={styles.prevText}>Back</Text>
           </Pressable>
 
           <Pressable
-            onPress={onNextStep}
-            disabled={isLastStep ? !canSubmit : !canProceedStep}
-            onPressIn={isLastStep ? (canSubmit ? nextAnim.pressIn : undefined) : (canProceedStep ? nextAnim.pressIn : undefined)}
-            onPressOut={isLastStep ? (canSubmit ? nextAnim.pressOut : undefined) : (canProceedStep ? nextAnim.pressOut : undefined)}
+            onPress={onSubmit}
+            disabled={!canSubmit}
+            onPressIn={canSubmit ? nextAnim.pressIn : undefined}
+            onPressOut={canSubmit ? nextAnim.pressOut : undefined}
             style={{ flex: 1 }}
           >
-            <Animated.View style={[styles.nextBtn, (isLastStep ? !canSubmit : !canProceedStep) && styles.nextBtnDisabled, { transform: [{ scale: nextAnim.scale }] }]}>
-              <Text style={[styles.nextText, (isLastStep ? !canSubmit : !canProceedStep) && styles.nextTextDisabled]}>{isLastStep ? "Submit" : "Next"}</Text>
+            <Animated.View style={[styles.nextBtn, !canSubmit && styles.nextBtnDisabled, { transform: [{ scale: nextAnim.scale }] }]}>
+              <Text style={[styles.nextText, !canSubmit && styles.nextTextDisabled]}>Submit</Text>
             </Animated.View>
           </Pressable>
         </View>

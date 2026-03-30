@@ -1,4 +1,4 @@
-import { Feather, Ionicons } from "@expo/vector-icons";
+import { Ionicons } from "@expo/vector-icons";
 import * as DocumentPicker from "expo-document-picker";
 import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -14,7 +14,6 @@ import {
   BackHandler,
   Easing,
   Image,
-  LayoutAnimation,
   Modal,
   PanResponder,
   Platform,
@@ -31,11 +30,6 @@ import {
 
 const ICON_COLUMBARIUM = require("../../../assets/images/Colombarium.png");
 const TRASHCAN_PNG = require("../../../assets/images/Trashcan.png");
-const SAMPLE_DEATH_CERT_PNG = require("../../../assets/images/DeathCert.png");
-const SAMPLE_VOTERS_PNG = require("../../../assets/images/VotersCert.png");
-const SAMPLE_CREMATION_CERT_PNG = require("../../../assets/images/CremationCert.png");
-const SAMPLE_ENDORSEMENT_PNG = require("../../../assets/images/Endorsement.png");
-const SAMPLE_INDIGENCY_PNG = require("../../../assets/images/Indigency.png");
 
 const FONT = "SF Pro Rounded";
 const TEAL = "#0B8F8B";
@@ -146,11 +140,6 @@ async function uploadFileToStorage(
   });
   if (error) throw error;
   return { path: filePath, originalName: file.name, size: file.size, mimeType: file.mimeType };
-}
-
-async function deleteFileFromStorage(filePath: string): Promise<void> {
-  const { error } = await supabase.storage.from(BUCKET_NAME).remove([filePath]);
-  if (error) throw error;
 }
 
 async function getSignedUrl(filePath: string): Promise<string | null> {
@@ -319,10 +308,6 @@ export default function ColumbariumReq() {
   const [previewUri, setPreviewUri] = useState<string | null>(null);
   const [previewName, setPreviewName] = useState("");
   const [loadingPreview, setLoadingPreview] = useState(false);
-  const [openTipId, setOpenTipId] = useState<string | null>(null);
-  const [samplePreviewOpen, setSamplePreviewOpen] = useState(false);
-  const [samplePreviewImage, setSamplePreviewImage] = useState<any>(null);
-  const [samplePreviewTitle, setSamplePreviewTitle] = useState("Sample Document");
 
   const submitAnim = usePressScale();
   const nextAnim = submitAnim;
@@ -416,11 +401,11 @@ export default function ColumbariumReq() {
         try {
           const { data: profile } = await supabase
             .from("users")
-            .select("first_name,middle_name,last_name,suffix,contact_number,email,address,verified")
+            .select("first_name,middle_name,last_name,suffix,contact_number,email,address")
             .eq("id", user.id)
             .single();
 
-          if (profile && profile.verified) {
+          if (profile) {
             const parts = [profile.first_name, profile.middle_name, profile.last_name].filter(Boolean);
             const name = `${parts.join(" ")}${profile.suffix ? " " + profile.suffix : ""}`.trim();
             setRequesterName(name);
@@ -594,7 +579,6 @@ export default function ColumbariumReq() {
     if (!path || !requestId) return;
     try {
       setIsSaving(true);
-      await deleteFileFromStorage(path);
       const columnName = getColumnName(fileType);
       await supabase.from(REQUEST_TABLE).update({ [columnName]: null }).eq("id", requestId);
       setUploadedPaths((prev) => {
@@ -719,7 +703,7 @@ export default function ColumbariumReq() {
       const { error } = await supabase
         .from(REQUEST_TABLE)
         .update({
-          status: "submitted",
+          status: "pending",
           submitted_at: new Date().toISOString(),
           additional_info: additionalInfo,
           requester_name: requesterName || null,
@@ -738,108 +722,8 @@ export default function ColumbariumReq() {
     }
   };
 
-  const requirementTips = {
-    deathCert: {
-      title: "Tips on Getting Requirements",
-      items: [
-        { id: "where", title: "Where to Get It", details: "Request this from the Local Civil Registrar where the death was recorded." },
-        { id: "bring", title: "What to Bring", details: "Bring valid ID, relationship proof if required, and reference details of the deceased." },
-        { id: "how", title: "How to Get It", details: "Submit request form, pay applicable fees, and claim certified copy with seal." },
-        { id: "sample", title: "Sample Document", details: "", image: SAMPLE_DEATH_CERT_PNG },
-      ],
-    },
-    validId: {
-      title: "Tips on Getting Requirements",
-      items: [
-        {
-          id: "accepted",
-          title: "List of Accepted ID's",
-          details:
-            "PhilID/ePhilID, Passport, Driver's License, UMID, PRC, Postal ID, Voter's ID/Certificate, SSS/GSIS, Senior Citizen ID, PWD ID, TIN, and PhilHealth.",
-        },
-        { id: "sample", title: "Sample Document", details: "", image: SAMPLE_VOTERS_PNG },
-      ],
-    },
-    cremationCert: {
-      title: "Tips on Getting Requirements",
-      items: [
-        { id: "where", title: "Where to Get It", details: "Request this from the crematorium that handled the service." },
-        { id: "bring", title: "What to Bring", details: "Bring valid ID, service receipt/reference number, and proof of relation if required." },
-        { id: "how", title: "How to Get It", details: "Request a certified copy signed by the crematorium with official details and date." },
-        { id: "sample", title: "Sample Document", details: "", image: SAMPLE_CREMATION_CERT_PNG },
-      ],
-    },
-    barangay: {
-      title: "Tips on Getting Requirements",
-      items: [
-        { id: "where", title: "Where to Get It", details: "Request this from your barangay hall where the deceased or family currently resides." },
-        { id: "bring", title: "What to Bring", details: "Bring valid ID, proof of residency, and columbarium assistance related documents." },
-        { id: "how", title: "How to Get It", details: "Request endorsement letter and secure authorized signature with barangay dry seal." },
-        { id: "sample", title: "Sample Document", details: "", image: SAMPLE_ENDORSEMENT_PNG },
-      ],
-    },
-    indigency: {
-      title: "Tips on Getting Requirements",
-      items: [
-        { id: "where", title: "Where to Get It", details: "Get this from your barangay hall or local social welfare office." },
-        { id: "bring", title: "What to Bring", details: "Bring valid ID, proof of residency, and documents related to columbarium assistance." },
-        { id: "how", title: "How to Get It", details: "Complete assessment and claim signed certificate with official seal." },
-        { id: "sample", title: "Sample Document", details: "", image: SAMPLE_INDIGENCY_PNG },
-      ],
-    },
-  };
-
-  const renderTips = (fieldKey: keyof typeof requirementTips) => {
-    const tipGroup = requirementTips[fieldKey];
-    return (
-      <>
-        <Text style={styles.tipSectionTitle}>{tipGroup.title}</Text>
-        {tipGroup.items.map((tip) => {
-          const scopedId = `${fieldKey}-${tip.id}`;
-          const expanded = openTipId === scopedId;
-          return (
-            <View key={scopedId} style={styles.tipCard}>
-              <Pressable
-                onPress={() => {
-                  LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-                  setOpenTipId((prev) => (prev === scopedId ? null : scopedId));
-                }}
-                style={({ pressed }) => [styles.tipHead, pressed && { opacity: 0.86 }]}
-              >
-                <Text style={styles.tipTitle}>{tip.title}</Text>
-                <Feather name={expanded ? "arrow-down-right" : "arrow-up-right"} size={20} color="#D0D0D0" />
-              </Pressable>
-              {expanded ? (
-                <>
-                  {tip.details ? <Text style={styles.tipBody}>{tip.details}</Text> : null}
-                  {tip.image ? (
-                    <View style={styles.tipImageContainer}>
-                      <Pressable
-                        onPress={() => {
-                          setSamplePreviewImage(tip.image);
-                          setSamplePreviewTitle(tip.title || "Sample Document");
-                          setSamplePreviewOpen(true);
-                        }}
-                        style={({ pressed }) => [pressed && { opacity: 0.9 }]}
-                      >
-                        <Image source={tip.image} style={styles.tipImage} resizeMode="contain" />
-                      </Pressable>
-                    </View>
-                  ) : null}
-                </>
-              ) : null}
-            </View>
-          );
-        })}
-      </>
-    );
-  };
-
   const requiredStepOrder = ["deathCert", "validId", "cremationCert", "barangay", "indigency"] as const;
   type RequiredStepKey = (typeof requiredStepOrder)[number];
-
-  const [currentStep, setCurrentStep] = useState(0);
-  const [stepInitialized, setStepInitialized] = useState(false);
 
   const stepLabels: Record<RequiredStepKey, string> = {
     deathCert: "Submit Death Certificate",
@@ -865,37 +749,6 @@ export default function ColumbariumReq() {
     return pickIndigencyCert();
   };
 
-  useEffect(() => {
-    if (isLoading || stepInitialized) return;
-    const firstMissingIndex = requiredStepOrder.findIndex((key) => !getFileByKey(key));
-    setCurrentStep(firstMissingIndex === -1 ? requiredStepOrder.length : firstMissingIndex);
-    setStepInitialized(true);
-  }, [isLoading, stepInitialized, deathCertFile, validIdFile, cremationCertFile, barangayFile, indigencyCertFile]);
-
-  const totalSteps = requiredStepOrder.length + 1;
-  const infoStepIndex = requiredStepOrder.length;
-  const isInfoStep = currentStep === infoStepIndex;
-  const currentStepKey = requiredStepOrder[Math.min(currentStep, requiredStepOrder.length - 1)];
-  const currentFile = isInfoStep ? null : getFileByKey(currentStepKey);
-  const isLastStep = isInfoStep;
-  const canProceedStep = isInfoStep ? true : (!!currentFile && !isSaving && !isSubmitting);
-
-  const onPreviousStep = () => {
-    if (currentStep > 0) {
-      setCurrentStep((prev) => Math.max(prev - 1, 0));
-      return;
-    }
-    setBackConfirmOpen(true);
-  };
-
-  const onNextStep = () => {
-    if (!canProceedStep) return;
-    if (isLastStep) {
-      onSubmit();
-      return;
-    }
-    setCurrentStep((prev) => Math.min(prev + 1, requiredStepOrder.length));
-  };
 
   if (isLoading) {
     return (
@@ -947,7 +800,6 @@ export default function ColumbariumReq() {
         </View>
 
         <Text style={styles.sectionTitle}>Service Requirements</Text>
-        <Text style={styles.stepTitle}>Step {currentStep + 1} out of {totalSteps}</Text>
         <View style={styles.noteRow}>
           {isSaving ? (
             <ActivityIndicator size={14} color={TEAL} style={{ marginTop: 1 }} />
@@ -976,47 +828,47 @@ export default function ColumbariumReq() {
           </View>
         )}
 
-        {!isInfoStep ? (
-          <>
-            <Text style={styles.reqLabel}>
-              {stepLabels[currentStepKey]} <Text style={styles.reqStar}>*</Text>
-            </Text>
+        {requiredStepOrder.map((stepKey) => {
+          const stepFile = getFileByKey(stepKey);
+          return (
+            <View key={stepKey}>
+              <Text style={styles.reqLabel}>
+                {stepLabels[stepKey]} <Text style={styles.reqStar}>*</Text>
+              </Text>
 
-            {!currentFile ? (
-              <Pressable
-                onPress={() => pickForKey(currentStepKey)}
-                style={({ pressed }) => [
-                  styles.dropBox,
-                  pressed && { opacity: 0.92 },
-                ]}
-              >
-                <View style={styles.plusCol}>
-                  <Ionicons name="add" size={26} color={TEAL} />
+              {!stepFile ? (
+                <Pressable
+                  onPress={() => pickForKey(stepKey)}
+                  style={({ pressed }) => [
+                    styles.dropBox,
+                    pressed && { opacity: 0.92 },
+                  ]}
+                >
+                  <View style={styles.plusCol}>
+                    <Ionicons name="add" size={26} color={TEAL} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.dropTitle}>Attach requested files.</Text>
+                    <Text style={styles.dropSub}>
+                      Files supported (jpeg, pdf, png) Max 5 MB
+                    </Text>
+                  </View>
+                </Pressable>
+              ) : (
+                <View style={styles.dropBoxFilled}>
+                  <SwipeDeletePill
+                    file={stepFile}
+                    onRequestRemove={() => openRemove(stepKey)}
+                    thumbnailUri={signedUrls[stepKey]}
+                    onPress={() => openPreview(stepKey, stepFile.name)}
+                  />
                 </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.dropTitle}>Attach requested files.</Text>
-                  <Text style={styles.dropSub}>
-                    Files supported (jpeg, pdf, png) Max 5 MB
-                  </Text>
-                </View>
-              </Pressable>
-            ) : (
-              <View style={styles.dropBoxFilled}>
-                <SwipeDeletePill
-                  file={currentFile}
-                  onRequestRemove={() => openRemove(currentStepKey)}
-                  thumbnailUri={signedUrls[currentStepKey]}
-                  onPress={() => openPreview(currentStepKey, currentFile.name)}
-                />
-              </View>
-            )}
-            {renderTips(currentStepKey)}
-          </>
-        ) : null}
+              )}
+            </View>
+          );
+        })}
 
-        {isInfoStep ? (
-          <>
-            <Text style={styles.additionalTitle}>Additional Information</Text>
+        <Text style={styles.additionalTitle}>Additional Information</Text>
 
         <Text style={styles.reqLabel}>
           Description or Other Relevant Information (optional)
@@ -1066,8 +918,7 @@ export default function ColumbariumReq() {
             />
           </View>
             )}
-          </>
-        ) : null}
+
 
         <View style={{ height: 140 }} />
       </ScrollView>
@@ -1075,30 +926,30 @@ export default function ColumbariumReq() {
       <View style={styles.bottomBar}>
         <View style={{ flexDirection: "row", gap: 12 }}>
           <Pressable
-            onPress={onPreviousStep}
+            onPress={() => setBackConfirmOpen(true)}
             style={({ pressed }) => [styles.prevBtn, pressed && { opacity: 0.92 }]}
           >
-            <Text style={styles.prevText}>{currentStep === 0 ? "Back" : "Previous"}</Text>
+            <Text style={styles.prevText}>Back</Text>
           </Pressable>
 
           <Pressable
-            onPress={onNextStep}
-            disabled={isLastStep ? !canSubmit : !canProceedStep}
-            onPressIn={isLastStep ? (canSubmit ? nextAnim.pressIn : undefined) : (canProceedStep ? nextAnim.pressIn : undefined)}
-            onPressOut={isLastStep ? (canSubmit ? nextAnim.pressOut : undefined) : (canProceedStep ? nextAnim.pressOut : undefined)}
+            onPress={onSubmit}
+            disabled={!canSubmit}
+            onPressIn={canSubmit ? nextAnim.pressIn : undefined}
+            onPressOut={canSubmit ? nextAnim.pressOut : undefined}
             style={{ flex: 1 }}
           >
             <Animated.View
               style={[
                 styles.nextBtn,
-                (isLastStep ? !canSubmit : !canProceedStep) && styles.nextBtnDisabled,
+                !canSubmit && styles.nextBtnDisabled,
                 { transform: [{ scale: nextAnim.scale }] },
               ]}
             >
               <Text
-                style={[styles.nextText, (isLastStep ? !canSubmit : !canProceedStep) && styles.nextTextDisabled]}
+                style={[styles.nextText, !canSubmit && styles.nextTextDisabled]}
               >
-                {isLastStep ? "Submit" : "Next"}
+                Submit
               </Text>
             </Animated.View>
           </Pressable>
@@ -1195,28 +1046,6 @@ export default function ColumbariumReq() {
                 resizeMode="contain"
               />
             )}
-          </Pressable>
-        </Pressable>
-      </Modal>
-
-      <Modal transparent visible={samplePreviewOpen} animationType="fade">
-        <Pressable style={styles.previewOverlay} onPress={() => setSamplePreviewOpen(false)}>
-          <View style={styles.previewHeader}>
-            <Text style={styles.previewTitle} numberOfLines={1}>
-              {samplePreviewTitle}
-            </Text>
-            <Pressable
-              onPress={() => setSamplePreviewOpen(false)}
-              style={({ pressed }) => [styles.previewCloseBtn, pressed && { opacity: 0.7 }]}
-            >
-              <Ionicons name="close" size={24} color="#FFF" />
-            </Pressable>
-          </View>
-
-          <Pressable style={styles.previewContent} onPress={() => {}}>
-            {samplePreviewImage ? (
-              <Image source={samplePreviewImage} style={styles.previewImage} resizeMode="contain" />
-            ) : null}
           </Pressable>
         </Pressable>
       </Modal>
