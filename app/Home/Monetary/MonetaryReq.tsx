@@ -7,6 +7,12 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import NetInfo from "@react-native-community/netinfo";
 import {
+  deleteRequestAttachment,
+  inferAttachmentName,
+  listRequestAttachments,
+  upsertRequestAttachment,
+} from "../../../lib/requestAttachments";
+import {
   Alert,
   Animated,
   Easing,
@@ -146,7 +152,8 @@ function fileIconName(
 }
 
 // Storage bucket name
-const BUCKET_NAME = "monetary-documents";
+const BUCKET_NAME = "request-documents";
+const REQUEST_TABLE = "monetary_requests";
 
 // File metadata stored in DB
 type FileMetadata = {
@@ -457,41 +464,26 @@ export default function MonetaryReq() {
         if (data && !error) {
           setRequestId(data.id);
           setAdditionalInfo(data.additional_info || "");
-          // populate requester fields from DB if present
-          // If requester fields are already locked from verified profile, do not overwrite
-          if (!requesterLocked) {
-            setRequesterName(data.requester_name || "");
-            setRequesterContactNumber(data.requester_contact_number || "");
-            setRequesterEmail(data.requester_email || "");
-            setRequesterPresentAddress(data.requester_present_address || "");
+
+          const paths = await listRequestAttachments(REQUEST_TABLE, data.id);
+          if (paths.letter) {
+            setLetterFile({ name: inferAttachmentName(paths.letter, "letter"), uri: "" });
           }
-
-          // Helper to parse file metadata (handles both old string format and new JSON format)
-          const parseFileMeta = (raw: string | null): { path: string; name: string } | null => {
-            if (!raw) return null;
-            try {
-              const meta = JSON.parse(raw) as FileMetadata;
-              return { path: meta.path, name: meta.originalName };
-            } catch {
-              // Old format - just a path string
-              return { path: raw, name: raw.split("/").pop() || "file" };
-            }
-          };
-
-          // Store uploaded paths and set file states
-          const paths: Record<string, string> = {};
-          const letterMeta = parseFileMeta(data.letter_file_path);
-          if (letterMeta) { paths.letter = letterMeta.path; setLetterFile({ name: letterMeta.name, uri: "" }); }
-          const voterIdMeta = parseFileMeta(data.voters_id_or_cert_file_path);
-          if (voterIdMeta) { paths.voterId = voterIdMeta.path; setVoterIdFile({ name: voterIdMeta.name, uri: "" }); }
-          const birthCertMeta = parseFileMeta(data.valid_id_or_birth_cert_file_path);
-          if (birthCertMeta) { paths.birthCert = birthCertMeta.path; setBirthCertFile({ name: birthCertMeta.name, uri: "" }); }
-          const barangayMeta = parseFileMeta(data.barangay_endorsement_file_path);
-          if (barangayMeta) { paths.barangay = barangayMeta.path; setBarangayEndorsementFile({ name: barangayMeta.name, uri: "" }); }
-          const indigencyMeta = parseFileMeta(data.indigency_cert_file_path);
-          if (indigencyMeta) { paths.indigency = indigencyMeta.path; setIndigencyCertFile({ name: indigencyMeta.name, uri: "" }); }
-          const attachmentMeta = parseFileMeta(data.additional_attachment_file_path);
-          if (attachmentMeta) { paths.attachment = attachmentMeta.path; setAttachmentFile({ name: attachmentMeta.name, uri: "" }); }
+          if (paths.voterId) {
+            setVoterIdFile({ name: inferAttachmentName(paths.voterId, "voterId"), uri: "" });
+          }
+          if (paths.birthCert) {
+            setBirthCertFile({ name: inferAttachmentName(paths.birthCert, "birthCert"), uri: "" });
+          }
+          if (paths.barangay) {
+            setBarangayEndorsementFile({ name: inferAttachmentName(paths.barangay, "barangay"), uri: "" });
+          }
+          if (paths.indigency) {
+            setIndigencyCertFile({ name: inferAttachmentName(paths.indigency, "indigency"), uri: "" });
+          }
+          if (paths.attachment) {
+            setAttachmentFile({ name: inferAttachmentName(paths.attachment, "attachment"), uri: "" });
+          }
           setUploadedPaths(paths);
         }
       }
@@ -506,29 +498,12 @@ export default function MonetaryReq() {
   const ensureRequestId = async (): Promise<string> => {
     if (requestId) return requestId;
     if (!userId) throw new Error("User not logged in");
-    // Try to prefill requester info from RequestInfo saved in AsyncStorage
-    let requesterPayload: Record<string, any> = {};
-    try {
-      const raw = await AsyncStorage.getItem(`apoyo_requestinfo_${serviceId}`);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        requesterPayload = {
-          requester_name: parsed.name || null,
-          requester_contact_number: `${parsed.countryCode || ""}${parsed.phone || ""}` || null,
-          requester_email: parsed.email || null,
-          requester_present_address: parsed.address || null,
-        };
-      }
-    } catch (e) {
-      // ignore parse errors
-    }
 
     const sid = /^\d+$/.test(String(serviceId)) ? Number(serviceId) : undefined;
     const insertPayload = {
       user_id: userId,
       status: "draft",
       ...(sid ? { service_id: sid } : {}),
-      ...requesterPayload,
     };
 
     const { data, error } = await supabase
@@ -539,13 +514,6 @@ export default function MonetaryReq() {
 
     if (error) throw error;
     setRequestId(data.id);
-    // set local requester fields from payload we used (unless locked from verified profile)
-    if (!requesterLocked) {
-      setRequesterName(requesterPayload.requester_name || "");
-      setRequesterContactNumber(requesterPayload.requester_contact_number || "");
-      setRequesterEmail(requesterPayload.requester_email || "");
-      setRequesterPresentAddress(requesterPayload.requester_present_address || "");
-    }
     return data.id;
   };
 
@@ -564,12 +532,12 @@ export default function MonetaryReq() {
       // Upload to storage - now returns FileMetadata with original name
       const fileMetadata = await uploadFileToStorage(userId, reqId, fileType, file);
 
-      // Update database - store as JSON with original name
-      const columnName = getColumnName(fileType);
-      await supabase
-        .from("monetary_requests")
-        .update({ [columnName]: JSON.stringify(fileMetadata) })
-        .eq("id", reqId);
+      await upsertRequestAttachment({
+        requestTable: REQUEST_TABLE,
+        requestUid: reqId,
+        fileType,
+        path: fileMetadata.path,
+      });
 
       // Update local state first so UI reflects new upload
       setFile(file);
@@ -588,13 +556,11 @@ export default function MonetaryReq() {
 
     try {
       setIsSaving(true);
-
-      // Update database
-      const columnName = getColumnName(fileType);
-      await supabase
-        .from("monetary_requests")
-        .update({ [columnName]: null })
-        .eq("id", requestId);
+      await deleteRequestAttachment({
+        requestTable: REQUEST_TABLE,
+        requestUid: requestId,
+        fileType,
+      });
 
       // Update local state
       setUploadedPaths(prev => {
@@ -618,19 +584,6 @@ export default function MonetaryReq() {
     } finally {
       setIsSaving(false);
     }
-  };
-
-  // Helper to get column name from file type
-  const getColumnName = (fileType: string): string => {
-    const map: Record<string, string> = {
-      letter: "letter_file_path",
-      voterId: "voters_id_or_cert_file_path",
-      birthCert: "valid_id_or_birth_cert_file_path",
-      barangay: "barangay_endorsement_file_path",
-      indigency: "indigency_cert_file_path",
-      attachment: "additional_attachment_file_path",
-    };
-    return map[fileType] || fileType;
   };
 
   // Debounced save for additional info with simple cancellation/ignoring of stale saves

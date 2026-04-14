@@ -36,6 +36,7 @@ const CANCEL_BG = "#BDBDBD";
 const BADGE_PENDING = "#E8C6FF";
 const BADGE_PROGRESS = "#B9E3FF";
 const BADGE_ACTION = "#FFD59E";
+const BADGE_RESUBMITTED = "#FFE082";
 const BADGE_APPROVED = "#C8F1C8";
 const BADGE_DRAFT = "#D4D4D4";
 
@@ -52,9 +53,9 @@ const ICON_BURIAL = require("../../assets/images/Burial.png");
 const ICON_CREMATION = require("../../assets/images/Cremation.png");
 const ICON_COLOMBARIUM = require("../../assets/images/Colombarium.png");
 
-type FilterKey = "all" | "pending" | "progress" | "action" | "approved" | "draft";
+type FilterKey = "all" | "pending" | "progress" | "action" | "resubmitted" | "approved" | "draft";
 type Category = "medical" | "financial" | "burial";
-type ServiceStatus = "Pending" | "In Progress" | "Action Required" | "Approved" | "Draft";
+type ServiceStatus = "Pending" | "In Progress" | "Action Required" | "Resubmitted" | "Approved" | "Draft";
 
 type ApplicationItem = {
   id: string;
@@ -64,6 +65,7 @@ type ApplicationItem = {
   category: Category;
   service?: string;
   createdAt?: number;
+  requestCode?: string;
 };
 
 const REQUEST_STATUSES = [
@@ -82,7 +84,7 @@ function normalizeStatus(raw?: string): ServiceStatus {
   if (!raw) return "Pending";
   const s = raw.toString().trim().toLowerCase();
   if (s === "submitted" || s === "pending") return "Pending";
-  if (s === "resubmitted") return "Pending";
+  if (s === "resubmitted") return "Resubmitted";
   if (s === "in progress" || s === "in_progress" || s === "inprogress" || s === "processing") return "In Progress";
   if (s === "action required" || s === "action_required" || s === "action") return "Action Required";
   if (s === "approved" || s === "accepted") return "Approved";
@@ -100,6 +102,8 @@ function badgeColor(status: ServiceStatus) {
       return BADGE_PROGRESS;
     case "Action Required":
       return BADGE_ACTION;
+    case "Resubmitted":
+      return BADGE_RESUBMITTED;
     case "Approved":
       return BADGE_APPROVED;
     case "Draft":
@@ -117,6 +121,8 @@ function statusToFilter(status: ServiceStatus): Exclude<FilterKey, "all"> {
       return "progress";
     case "Action Required":
       return "action";
+    case "Resubmitted":
+      return "resubmitted";
     case "Approved":
       return "approved";
     case "Draft":
@@ -155,6 +161,14 @@ function iconForTitle(title: string) {
   return ICON_HOSPITAL;
 }
 
+function cardRequestId(item: ApplicationItem) {
+  const code = (item.requestCode || "").toString().trim();
+  if (code) return code;
+
+  const id = (item.id || "").toString();
+  return id.startsWith("draft_") ? id.replace("draft_", "") : id;
+}
+
 const PAD_X = 16;
 const GAP = 12;
 const { width } = Dimensions.get("window");
@@ -180,7 +194,7 @@ export default function Status() {
       const [{ data: hospData, error: hospError } = {} as any] = [
         await supabase
           .from("hospitalization_requests")
-          .select("id, status, created_at, updated_at")
+          .select("id, status, created_at, updated_at, request_code")
           .eq("user_id", userData.user.id)
           .in("status", [...REQUEST_STATUSES]),
       ];
@@ -189,7 +203,7 @@ export default function Status() {
       const [{ data: treatData, error: treatError } = {} as any] = [
         await supabase
           .from("treatment_requests")
-          .select("id, status, created_at, updated_at")
+          .select("id, status, created_at, updated_at, request_code")
           .eq("user_id", userData.user.id)
           .in("status", [...REQUEST_STATUSES]),
       ];
@@ -198,7 +212,7 @@ export default function Status() {
       const [{ data: medData, error: medError } = {} as any] = [
         await supabase
           .from("medical_requests")
-          .select("id, status, created_at, updated_at")
+          .select("id, status, created_at, updated_at, request_code")
           .eq("user_id", userData.user.id)
           .in("status", [...REQUEST_STATUSES]),
       ];
@@ -207,7 +221,7 @@ export default function Status() {
       const [{ data: finData, error: finError } = {} as any] = [
         await supabase
           .from("financial_requests")
-          .select("id, status, created_at, updated_at")
+          .select("id, status, created_at, updated_at, request_code")
           .eq("user_id", userData.user.id)
           .in("status", [...REQUEST_STATUSES]),
       ];
@@ -216,7 +230,7 @@ export default function Status() {
       const [{ data: monData, error: monError } = {} as any] = [
         await supabase
           .from("monetary_requests")
-          .select("id, status, created_at, updated_at")
+          .select("id, status, created_at, updated_at, request_code")
           .eq("user_id", userData.user.id)
           .in("status", [...REQUEST_STATUSES]),
       ];
@@ -225,7 +239,7 @@ export default function Status() {
       const [{ data: burData, error: burError } = {} as any] = [
         await supabase
           .from("burial_requests")
-          .select("id, status, created_at, updated_at")
+          .select("id, status, created_at, updated_at, request_code")
           .eq("user_id", userData.user.id)
           .in("status", [...REQUEST_STATUSES]),
       ];
@@ -234,7 +248,7 @@ export default function Status() {
       const [{ data: creData, error: creError } = {} as any] = [
         await supabase
           .from("cremation_requests")
-          .select("id, status, created_at, updated_at")
+          .select("id, status, created_at, updated_at, request_code")
           .eq("user_id", userData.user.id)
           .in("status", [...REQUEST_STATUSES]),
       ];
@@ -243,7 +257,7 @@ export default function Status() {
       const [{ data: colData, error: colError } = {} as any] = [
         await supabase
           .from("columbarium_requests")
-          .select("id, status, created_at, updated_at")
+          .select("id, status, created_at, updated_at, request_code")
           .eq("user_id", userData.user.id)
           .in("status", [...REQUEST_STATUSES]),
       ];
@@ -259,12 +273,14 @@ export default function Status() {
 
           items.push({
             id,
-            title: isDraft ? "Hospitalization Draft" : "Hospitalization Request",
+            title: "Hospitalization Expense",
             description: isDraft ? "Continue your application" : "View application status",
             status: status as ServiceStatus,
             category: "medical" as Category,
             service: "hospitalization",
             createdAt: new Date(row.updated_at || row.created_at).getTime(),
+            requestCode:
+              typeof row.request_code === "string" ? row.request_code : undefined,
           });
         }
       }
@@ -278,12 +294,14 @@ export default function Status() {
 
           items.push({
             id,
-            title: isDraft ? "Treatment Draft" : "Treatment Request",
+            title: "Treatment & Procedures",
             description: isDraft ? "Continue your application" : "View application status",
             status: status as ServiceStatus,
             category: "medical" as Category,
             service: "treatment",
             createdAt: new Date(row.updated_at || row.created_at).getTime(),
+            requestCode:
+              typeof row.request_code === "string" ? row.request_code : undefined,
           });
         }
       }
@@ -297,12 +315,14 @@ export default function Status() {
 
           items.push({
             id,
-            title: isDraft ? "Medical Draft" : "Medical Request",
+            title: "Medical Operations",
             description: isDraft ? "Continue your application" : "View application status",
             status: status as ServiceStatus,
             category: "medical" as Category,
             service: "medical",
             createdAt: new Date(row.updated_at || row.created_at).getTime(),
+            requestCode:
+              typeof row.request_code === "string" ? row.request_code : undefined,
           });
         }
       }
@@ -316,12 +336,14 @@ export default function Status() {
 
           items.push({
             id,
-            title: isDraft ? "Financial Draft" : "Financial Request",
+            title: "Emergency Financial Relief",
             description: isDraft ? "Continue your application" : "View application status",
             status: status as ServiceStatus,
             category: "financial" as Category,
             service: "financial",
             createdAt: new Date(row.updated_at || row.created_at).getTime(),
+            requestCode:
+              typeof row.request_code === "string" ? row.request_code : undefined,
           });
         }
       }
@@ -335,12 +357,14 @@ export default function Status() {
 
           items.push({
             id,
-            title: isDraft ? "Monetary Burial Aid Draft" : "Monetary Burial Aid Request",
+            title: "Monetary Burial Aid",
             description: isDraft ? "Continue your application" : "View application status",
             status: status as ServiceStatus,
             category: "financial" as Category,
             service: "monetary",
             createdAt: new Date(row.updated_at || row.created_at).getTime(),
+            requestCode:
+              typeof row.request_code === "string" ? row.request_code : undefined,
           });
         }
       }
@@ -354,12 +378,14 @@ export default function Status() {
 
           items.push({
             id,
-            title: isDraft ? "Burial Site Assistance Draft" : "Burial Site Assistance Request",
+            title: "Burial Site Assistance",
             description: isDraft ? "Continue your application" : "View application status",
             status: status as ServiceStatus,
             category: "burial" as Category,
             service: "burial-site",
             createdAt: new Date(row.updated_at || row.created_at).getTime(),
+            requestCode:
+              typeof row.request_code === "string" ? row.request_code : undefined,
           });
         }
       }
@@ -373,12 +399,14 @@ export default function Status() {
 
           items.push({
             id,
-            title: isDraft ? "Cremation Assistance Draft" : "Cremation Assistance Request",
+            title: "Cremation Assistance",
             description: isDraft ? "Continue your application" : "View application status",
             status: status as ServiceStatus,
             category: "burial" as Category,
             service: "cremation",
             createdAt: new Date(row.updated_at || row.created_at).getTime(),
+            requestCode:
+              typeof row.request_code === "string" ? row.request_code : undefined,
           });
         }
       }
@@ -392,12 +420,14 @@ export default function Status() {
 
           items.push({
             id,
-            title: isDraft ? "Columbarium Allocation Draft" : "Columbarium Allocation Request",
+            title: "Columbarium Allocation",
             description: isDraft ? "Continue your application" : "View application status",
             status: status as ServiceStatus,
             category: "burial" as Category,
             service: "colombarium",
             createdAt: new Date(row.updated_at || row.created_at).getTime(),
+            requestCode:
+              typeof row.request_code === "string" ? row.request_code : undefined,
           });
         }
       }
@@ -486,6 +516,15 @@ export default function Status() {
 
     try {
       setDeletingId(item.id);
+
+      const { error: attachmentDeleteError } = await supabase
+        .from("request_attachments")
+        .delete()
+        .eq("request_table", table)
+        .eq("request_uid", realId);
+
+      if (attachmentDeleteError) throw attachmentDeleteError;
+
       const { error } = await supabase.from(table).delete().eq("id", realId);
       if (error) throw error;
 
@@ -554,6 +593,12 @@ export default function Status() {
             label="Action Required"
             icon="alert-circle-outline"
             onPress={() => setActiveFilter("action")}
+          />
+          <Chip
+            active={activeFilter === "resubmitted"}
+            label="Resubmitted"
+            icon="refresh-circle-outline"
+            onPress={() => setActiveFilter("resubmitted")}
           />
           <Chip
             active={activeFilter === "approved"}
@@ -683,6 +728,23 @@ export default function Status() {
                       }
 
                       // For submitted applications, go to status details
+                      if (a.status === "Approved") {
+                        router.push({
+                          pathname: "/Home/ApprovedAssistance",
+                          params: {
+                            id: a.id,
+                            title: a.title,
+                            status: a.status,
+                            category: a.category,
+                            createdAt: String(a.createdAt ?? ""),
+                            requestCode: a.requestCode,
+                            service: a.service,
+                          },
+                        } as any);
+                        return;
+                      }
+
+                      // For non-draft/non-approved applications, go to status details
                       router.push({
                         pathname: ROUTE_TIMELINE,
                         params: {
@@ -691,6 +753,8 @@ export default function Status() {
                           status: a.status,
                           category: a.category,
                           createdAt: String(a.createdAt ?? ""),
+                          requestCode: a.requestCode,
+                          service: a.service,
                         },
                       } as any);
                     }}
@@ -713,6 +777,9 @@ export default function Status() {
 
                     <Text style={styles.cardTitle} numberOfLines={2}>
                       {a.title}
+                    </Text>
+                    <Text style={styles.cardMeta} numberOfLines={1}>
+                      {a.status !== "Draft" ? "Request ID: " + cardRequestId(a) : ""}
                     </Text>
                     <Text style={styles.cardDesc} numberOfLines={3}>
                       {a.description}
@@ -934,6 +1001,13 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     fontSize: 13,
     color: TEXT_DARK,
+    marginBottom: 6,
+  },
+  cardMeta: {
+    fontFamily: FONT,
+    fontWeight: "600",
+    fontSize: 9.5,
+    color: "#6A6A6A",
     marginBottom: 6,
   },
   cardDesc: {

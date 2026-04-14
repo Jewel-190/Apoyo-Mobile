@@ -27,6 +27,23 @@ type StorageObjectRow = {
 const PROJECT_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 
+const REQUEST_BUCKET_BY_TABLE: Record<string, string> = {
+  hospitalization_requests: "request-documents",
+  treatment_requests: "request-documents",
+  medical_requests: "request-documents",
+  financial_requests: "request-documents",
+  monetary_requests: "request-documents",
+  burial_requests: "request-documents",
+  cremation_requests: "request-documents",
+  columbarium_requests: "request-documents",
+};
+
+const REQUEST_TABLES_BY_BUCKET: Record<string, string[]> =
+  Object.entries(REQUEST_BUCKET_BY_TABLE).reduce<Record<string, string[]>>((acc, [table, bucket]) => {
+    acc[bucket] = acc[bucket] ? [...acc[bucket], table] : [table];
+    return acc;
+  }, {});
+
 const supabaseAdmin = createClient(PROJECT_URL, SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
 });
@@ -73,6 +90,42 @@ function toCleanString(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+function uniqueNonEmptyPaths(paths: string[]): string[] {
+  return [...new Set(paths.map((p) => p.trim()).filter(Boolean))];
+}
+
+async function filterInactiveAttachmentPaths(bucketId: string, paths: string[]): Promise<{
+  removable: string[];
+  active: string[];
+}> {
+  const candidates = uniqueNonEmptyPaths(paths);
+  if (candidates.length === 0) {
+    return { removable: [], active: [] };
+  }
+
+  const requestTables = REQUEST_TABLES_BY_BUCKET[bucketId] ?? [];
+  if (requestTables.length === 0) {
+    return { removable: candidates, active: [] };
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from("request_attachments")
+    .select("path")
+    .in("request_table", requestTables)
+    .in("path", candidates);
+
+  if (error) {
+    throw new Error(`Failed to check active request attachments: ${error.message}`);
+  }
+
+  const activeSet = new Set(
+    ((data ?? []) as Array<{ path?: string }>).map((row) => String(row.path ?? "")).filter(Boolean)
+  );
+  const active = candidates.filter((path) => activeSet.has(path));
+  const removable = candidates.filter((path) => !activeSet.has(path));
+  return { removable, active };
+}
+
 function isDeleteEvent(payload: Record<string, unknown>): boolean {
   const type = String(payload.type ?? "").toUpperCase();
   const op = String(payload.op ?? payload.event ?? "").toUpperCase();
@@ -111,8 +164,25 @@ Deno.serve(async (request: Request) => {
       : [];
 
     if (legacyBucket && legacyPaths.length > 0) {
-      const uniquePaths = [...new Set(legacyPaths)];
-      const { error: rmErr } = await supabaseAdmin.storage.from(legacyBucket).remove(uniquePaths);
+      const uniquePaths = uniqueNonEmptyPaths(legacyPaths);
+      const { removable, active } = await filterInactiveAttachmentPaths(legacyBucket, uniquePaths);
+
+      if (removable.length === 0) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            deleted: false,
+            mode: "legacy-bucket-paths",
+            bucket: legacyBucket,
+            removed: 0,
+            skipped_active: active,
+            reason: "All provided paths are still referenced in request_attachments",
+          }),
+          { headers: { "Content-Type": "application/json" } }
+        );
+      }
+
+      const { error: rmErr } = await supabaseAdmin.storage.from(legacyBucket).remove(removable);
 
       if (rmErr) {
         return new Response(JSON.stringify({ ok: false, error: rmErr.message }), {
@@ -127,8 +197,9 @@ Deno.serve(async (request: Request) => {
           deleted: true,
           mode: "legacy-bucket-paths",
           bucket: legacyBucket,
-          removed: uniquePaths.length,
-          paths: uniquePaths,
+          removed: removable.length,
+          paths: removable,
+          skipped_active: active,
           meta: {
             table: legacyPayload.table ?? null,
             op: legacyPayload.op ?? null,
@@ -192,7 +263,23 @@ Deno.serve(async (request: Request) => {
       }
 
       const objectPath = objectPathFromRow(so as StorageObjectRow);
-      const { error: rmErr } = await supabaseAdmin.storage.from(so.bucket_id).remove([objectPath]);
+      const { removable, active } = await filterInactiveAttachmentPaths(so.bucket_id, [objectPath]);
+
+      if (removable.length === 0) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            deleted: false,
+            reason: "Path is still referenced in request_attachments",
+            bucket: so.bucket_id,
+            path: objectPath,
+            active,
+          }),
+          { headers: { "Content-Type": "application/json" } }
+        );
+      }
+
+      const { error: rmErr } = await supabaseAdmin.storage.from(so.bucket_id).remove(removable);
 
       if (rmErr) {
         return new Response(JSON.stringify({ ok: false, error: rmErr.message }), {
@@ -206,7 +293,8 @@ Deno.serve(async (request: Request) => {
           ok: true,
           deleted: true,
           bucket: so.bucket_id,
-          path: objectPath,
+          path: removable[0],
+          skipped_active: active,
           objectId: so.id,
         }),
         { headers: { "Content-Type": "application/json" } }
@@ -214,7 +302,24 @@ Deno.serve(async (request: Request) => {
     }
 
     if (key.bucketId && key.objectPath) {
-      const { error: rmErr } = await supabaseAdmin.storage.from(key.bucketId).remove([key.objectPath]);
+      const { removable, active } = await filterInactiveAttachmentPaths(key.bucketId, [key.objectPath]);
+
+      if (removable.length === 0) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            deleted: false,
+            mode: "delete-webhook-bucket-path",
+            bucket: key.bucketId,
+            path: key.objectPath,
+            reason: "Path is still referenced in request_attachments",
+            active,
+          }),
+          { headers: { "Content-Type": "application/json" } }
+        );
+      }
+
+      const { error: rmErr } = await supabaseAdmin.storage.from(key.bucketId).remove(removable);
 
       if (rmErr) {
         return new Response(JSON.stringify({ ok: false, error: rmErr.message }), {
@@ -229,7 +334,8 @@ Deno.serve(async (request: Request) => {
           deleted: true,
           mode: "delete-webhook-bucket-path",
           bucket: key.bucketId,
-          path: key.objectPath,
+          path: removable[0],
+          skipped_active: active,
         }),
         { headers: { "Content-Type": "application/json" } }
       );

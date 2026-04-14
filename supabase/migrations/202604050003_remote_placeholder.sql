@@ -1,0 +1,4 @@
+-- Remote-only migration placeholder.
+-- This file exists to reconcile local migration history with the linked database.
+-- Original SQL was applied remotely and is not present in this repository.
+-- Intentionally no-op.

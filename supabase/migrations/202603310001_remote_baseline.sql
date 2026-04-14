@@ -1,0 +1,3 @@
+-- Remote baseline migration marker.
+-- This file aligns local migration history with the linked Supabase project.
+-- Remote migration id: 202603310001

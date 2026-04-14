@@ -6,6 +6,12 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useFocusEffect } from "@react-navigation/native";
 import NetInfo from "@react-native-community/netinfo";
+import {
+  deleteRequestAttachment,
+  inferAttachmentName,
+  listRequestAttachments,
+  upsertRequestAttachment,
+} from "../../../lib/requestAttachments";
 import { supabase } from "../../../lib/supabase";
 import {
   ActivityIndicator,
@@ -52,7 +58,7 @@ const SWIPE_OPEN_PX = 56;
 const SWIPE_DELETE_PX = 120;
 const ROW_HEIGHT = 64;
 
-const BUCKET_NAME = "cremation-documents";
+const BUCKET_NAME = "request-documents";
 const REQUEST_TABLE = "cremation_requests";
 
 type FuneralCoverageChoice = "Add Funeral Aid" | "Service Only";
@@ -511,16 +517,6 @@ export default function CremationReq() {
         }
       }
 
-      const parseFileMeta = (raw: string | null): { path: string; name: string; mimeType?: string; size?: number } | null => {
-        if (!raw) return null;
-        try {
-          const meta = JSON.parse(raw) as FileMetadata;
-          return { path: meta.path, name: meta.originalName, mimeType: meta.mimeType, size: meta.size };
-        } catch {
-          return { path: raw, name: raw.split("/").pop() || "file" };
-        }
-      };
-
       if (existingRequestId) {
         const { data: existingRequest, error } = await supabase
           .from(REQUEST_TABLE)
@@ -539,38 +535,21 @@ export default function CremationReq() {
           setFuneralAid((prev) => prev || normalizeFuneralCoverage(existingRequest.coverage ?? existingRequest.funeral_aid) || coverageBundle.funeralAid);
           setNicheAllocation((prev) => prev || normalizeNicheCoverage(existingRequest.coverage ?? existingRequest.niche_allocation) || coverageBundle.nicheAllocation);
 
-          if (!requesterLocked) {
-            setRequesterName(existingRequest.requester_name || "");
-            setRequesterContactNumber(existingRequest.requester_contact_number || "");
-            setRequesterEmail(existingRequest.requester_email || "");
-            setRequesterPresentAddress(existingRequest.requester_present_address || "");
+          const paths = await listRequestAttachments(REQUEST_TABLE, existingRequest.id);
+          if (paths.deathCert) {
+            setDeathCertFile({ name: inferAttachmentName(paths.deathCert, "deathCert"), uri: "" });
           }
-
-          const paths: Record<string, string> = {};
-          const deathMeta = parseFileMeta(existingRequest.death_cert_file_path);
-          if (deathMeta) {
-            paths.deathCert = deathMeta.path;
-            setDeathCertFile({ name: deathMeta.name, uri: "", mimeType: deathMeta.mimeType, size: deathMeta.size });
+          if (paths.validId) {
+            setValidIdFile({ name: inferAttachmentName(paths.validId, "validId"), uri: "" });
           }
-          const validIdMeta = parseFileMeta(existingRequest.valid_id_file_path);
-          if (validIdMeta) {
-            paths.validId = validIdMeta.path;
-            setValidIdFile({ name: validIdMeta.name, uri: "", mimeType: validIdMeta.mimeType, size: validIdMeta.size });
+          if (paths.barangay) {
+            setBarangayFile({ name: inferAttachmentName(paths.barangay, "barangay"), uri: "" });
           }
-          const barangayMeta = parseFileMeta(existingRequest.barangay_endorsement_file_path);
-          if (barangayMeta) {
-            paths.barangay = barangayMeta.path;
-            setBarangayFile({ name: barangayMeta.name, uri: "", mimeType: barangayMeta.mimeType, size: barangayMeta.size });
+          if (paths.indigency) {
+            setIndigencyCertFile({ name: inferAttachmentName(paths.indigency, "indigency"), uri: "" });
           }
-          const indigencyMeta = parseFileMeta(existingRequest.indigency_cert_file_path);
-          if (indigencyMeta) {
-            paths.indigency = indigencyMeta.path;
-            setIndigencyCertFile({ name: indigencyMeta.name, uri: "", mimeType: indigencyMeta.mimeType, size: indigencyMeta.size });
-          }
-          const attachmentMeta = parseFileMeta(existingRequest.attachment_file_path);
-          if (attachmentMeta) {
-            paths.attachment = attachmentMeta.path;
-            setAttachmentFile({ name: attachmentMeta.name, uri: "", mimeType: attachmentMeta.mimeType, size: attachmentMeta.size });
+          if (paths.attachment) {
+            setAttachmentFile({ name: inferAttachmentName(paths.attachment, "attachment"), uri: "" });
           }
           setUploadedPaths(paths);
         }
@@ -589,38 +568,6 @@ export default function CremationReq() {
     if (requestId) return requestId;
     if (!userId) throw new Error("User not logged in");
 
-    let requesterPayload: Record<string, any> = {
-      requester_name: requesterName || null,
-      requester_contact_number: requesterContactNumber || null,
-      requester_email: requesterEmail || null,
-      requester_present_address: requesterPresentAddress || null,
-    };
-
-    try {
-      const raw = await AsyncStorage.getItem(`apoyo_requestinfo_${serviceId}`);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        requesterPayload = {
-          requester_name: parsed.name || requesterPayload.requester_name,
-          requester_contact_number:
-            `${parsed.countryCode || ""}${parsed.phone || ""}` ||
-            requesterPayload.requester_contact_number,
-          requester_email: parsed.email || requesterPayload.requester_email,
-          requester_present_address:
-            parsed.address || requesterPayload.requester_present_address,
-        };
-
-        if (!requesterLocked) {
-          setRequesterName(requesterPayload.requester_name || "");
-          setRequesterContactNumber(requesterPayload.requester_contact_number || "");
-          setRequesterEmail(requesterPayload.requester_email || "");
-          setRequesterPresentAddress(requesterPayload.requester_present_address || "");
-        }
-      }
-    } catch {
-      // Ignore malformed cached requester data and continue with local state.
-    }
-
     const { data, error } = await supabase
       .from(REQUEST_TABLE)
       .insert({
@@ -628,24 +575,12 @@ export default function CremationReq() {
         status: "draft",
         service_id: serviceId,
         coverage: composeCoverageLabel(funeralAid, nicheAllocation),
-        ...requesterPayload,
       })
       .select("id")
       .single();
     if (error) throw error;
     setRequestId(data.id);
     return data.id;
-  };
-
-  const getColumnName = (fileType: string) => {
-    const map: Record<string, string> = {
-      deathCert: "death_cert_file_path",
-      validId: "valid_id_file_path",
-      barangay: "barangay_endorsement_file_path",
-      indigency: "indigency_cert_file_path",
-      attachment: "attachment_file_path",
-    };
-    return map[fileType] || fileType;
   };
 
   const handleFilePickAndUpload = async (fileType: string, setFile: (f: PickedFile | null) => void) => {
@@ -655,8 +590,12 @@ export default function CremationReq() {
       setIsSaving(true);
       const reqId = await ensureRequestId();
       const fileMetadata = await uploadFileToStorage(userId, reqId, fileType, file);
-      const columnName = getColumnName(fileType);
-      await supabase.from(REQUEST_TABLE).update({ [columnName]: JSON.stringify(fileMetadata) }).eq("id", reqId);
+      await upsertRequestAttachment({
+        requestTable: REQUEST_TABLE,
+        requestUid: reqId,
+        fileType,
+        path: fileMetadata.path,
+      });
       setFile(file);
       setUploadedPaths((p) => ({ ...p, [fileType]: fileMetadata.path }));
     } catch (err: any) {
@@ -671,8 +610,11 @@ export default function CremationReq() {
     if (!path || !requestId) return;
     try {
       setIsSaving(true);
-      const columnName = getColumnName(fileType);
-      await supabase.from(REQUEST_TABLE).update({ [columnName]: null }).eq("id", requestId);
+      await deleteRequestAttachment({
+        requestTable: REQUEST_TABLE,
+        requestUid: requestId,
+        fileType,
+      });
       setUploadedPaths((prev) => {
         const n = { ...prev };
         delete n[fileType];
@@ -764,10 +706,6 @@ export default function CremationReq() {
         .update({
           additional_info: additionalInfo,
           coverage: composeCoverageLabel(funeralAid, nicheAllocation),
-          requester_name: requesterName || null,
-          requester_contact_number: requesterContactNumber || null,
-          requester_email: requesterEmail || null,
-          requester_present_address: requesterPresentAddress || null,
         })
         .eq("id", reqId);
     } catch (e) {
@@ -798,10 +736,6 @@ export default function CremationReq() {
           submitted_at: new Date().toISOString(),
           coverage: composeCoverageLabel(funeralAid, nicheAllocation),
           additional_info: additionalInfo,
-          requester_name: requesterName || null,
-          requester_contact_number: requesterContactNumber || null,
-          requester_email: requesterEmail || null,
-          requester_present_address: requesterPresentAddress || null,
         })
         .eq("id", reqId);
       if (error) throw error;

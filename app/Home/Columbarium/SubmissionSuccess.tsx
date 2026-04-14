@@ -1,7 +1,8 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useRouter } from "expo-router";
-import React, { useEffect, useMemo, useRef } from "react";
+import { useLocalSearchParams, useRouter } from "expo-router";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   Image,
   Platform,
   Pressable,
@@ -11,6 +12,7 @@ import {
   Text,
   View,
 } from "react-native";
+import { supabase } from "../../../lib/supabase";
 
 import {
   addStatusApplication,
@@ -38,12 +40,56 @@ const DEDUPE_KEY = "claret_saved_columbarium_success_v1";
 
 export default function ColumbariumSubmissionSuccess() {
   const router = useRouter();
+  const params = useLocalSearchParams<{
+    requestId?: string;
+    requestCode?: string;
+  }>();
+  const requestId = (params?.requestId || "").toString().trim();
+  const initialRequestCode = (params?.requestCode || "").toString().trim();
+  const [requestCode, setRequestCode] = useState<string | null>(
+    initialRequestCode || null
+  );
+  const [isRequestCodeLoading, setIsRequestCodeLoading] = useState(false);
 
   const createdAt = useMemo(() => Date.now(), []);
   const appId = useMemo(() => makeApplicationId("BACN"), []);
   const localRecordId = useMemo(() => makeStatusId("BACN"), []);
 
   const savedOnce = useRef(false);
+
+  useEffect(() => {
+    if (requestCode || !requestId) return;
+
+    let active = true;
+
+    (async () => {
+      try {
+        setIsRequestCodeLoading(true);
+        const { data, error } = await supabase
+          .from("columbarium_requests")
+          .select("request_code")
+          .eq("id", requestId)
+          .maybeSingle();
+
+        if (error) throw error;
+
+        const code =
+          typeof data?.request_code === "string" ? data.request_code.trim() : "";
+
+        if (active && code) {
+          setRequestCode(code);
+        }
+      } catch (e) {
+        console.log("Fetch columbarium request code failed:", e);
+      } finally {
+        if (active) setIsRequestCodeLoading(false);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [requestCode, requestId]);
 
   useEffect(() => {
     (async () => {
@@ -90,7 +136,14 @@ export default function ColumbariumSubmissionSuccess() {
           <Text style={styles.linkish}>Columbarium Allocation</Text>.
         </Text>
 
-        <Text style={styles.appId}>Application ID: {appId}</Text>
+        {requestCode ? (
+          <Text style={styles.appId}>Request Code: {requestCode}</Text>
+        ) : isRequestCodeLoading ? (
+          <View style={styles.loadingCodeRow}>
+            <ActivityIndicator size="small" color={TEAL} />
+            <Text style={styles.loadingCodeText}>Loading request code...</Text>
+          </View>
+        ) : null}
 
         <View style={styles.card}>
           <View style={styles.cardHeader} />
@@ -180,6 +233,19 @@ const styles = StyleSheet.create({
 
   appId: {
     marginTop: 10,
+    fontFamily: FONT_REGULAR,
+    fontSize: 12,
+    color: TEXT,
+  },
+
+  loadingCodeRow: {
+    marginTop: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+
+  loadingCodeText: {
     fontFamily: FONT_REGULAR,
     fontSize: 12,
     color: TEXT,

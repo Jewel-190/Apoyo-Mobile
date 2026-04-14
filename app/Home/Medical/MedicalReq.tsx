@@ -7,6 +7,12 @@ import NetInfo from "@react-native-community/netinfo";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useFocusEffect } from "@react-navigation/native";
 import {
+  deleteRequestAttachment,
+  inferAttachmentName,
+  listRequestAttachments,
+  upsertRequestAttachment,
+} from "../../../lib/requestAttachments";
+import {
   Alert,
   Animated,
   Easing,
@@ -309,7 +315,8 @@ function SwipeDeletePill({
 }
 
 // Storage bucket name
-const BUCKET_NAME = "medical-documents";
+const BUCKET_NAME = "request-documents";
+const REQUEST_TABLE = "medical_requests";
 
 // File metadata stored in DB
 type FileMetadata = {
@@ -475,42 +482,35 @@ export default function MedicalReq() {
         if (data && !error) {
           setRequestId(data.id);
           setAdditionalInfo(data.additional_info || "");
-          if (!requesterLocked) {
-            setRequesterName(data.requester_name || "");
-            setRequesterContactNumber(data.requester_contact_number || "");
-            setRequesterEmail(data.requester_email || "");
-            setRequesterPresentAddress(data.requester_present_address || "");
+
+          const paths = await listRequestAttachments(REQUEST_TABLE, data.id);
+          if (paths.medCert) {
+            setMedCertFile({ name: inferAttachmentName(paths.medCert, "medCert"), uri: "" });
           }
-
-          const parseFileMeta = (raw: string | null): { path: string; name: string } | null => {
-            if (!raw) return null;
-            try {
-              const meta = JSON.parse(raw) as FileMetadata;
-              return { path: meta.path, name: meta.originalName };
-            } catch {
-              return { path: raw, name: raw.split("/").pop() || "file" };
-            }
-          };
-
-          const paths: Record<string, string> = {};
-          const medMeta = parseFileMeta(data.med_cert_file_path);
-          if (medMeta) { paths.medCert = medMeta.path; setMedCertFile({ name: medMeta.name, uri: "" }); }
-          const presMeta = parseFileMeta(data.prescription_file_path);
-          if (presMeta) { paths.prescription = presMeta.path; setPrescriptionFile({ name: presMeta.name, uri: "" }); }
-          const quotMeta = parseFileMeta(data.quotation_file_path);
-          if (quotMeta) { paths.quotation = quotMeta.path; setQuotationFile({ name: quotMeta.name, uri: "" }); }
-          const letterMeta = parseFileMeta(data.letter_file_path);
-          if (letterMeta) { paths.letter = letterMeta.path; setLetterFile({ name: letterMeta.name, uri: "" }); }
-          const voterMeta = parseFileMeta(data.voter_id_file_path);
-          if (voterMeta) { paths.voterId = voterMeta.path; setVoterIdFile({ name: voterMeta.name, uri: "" }); }
-          const birthMeta = parseFileMeta(data.birth_cert_file_path);
-          if (birthMeta) { paths.birthCert = birthMeta.path; setBirthCertFile({ name: birthMeta.name, uri: "" }); }
-          const barangayMeta = parseFileMeta(data.barangay_endorsement_file_path);
-          if (barangayMeta) { paths.barangay = barangayMeta.path; setBarangayFile({ name: barangayMeta.name, uri: "" }); }
-          const indigencyMeta = parseFileMeta(data.indigency_cert_file_path);
-          if (indigencyMeta) { paths.indigency = indigencyMeta.path; setIndigencyFile({ name: indigencyMeta.name, uri: "" }); }
-          const attachMeta = parseFileMeta(data.attachment_file_path);
-          if (attachMeta) { paths.attachment = attachMeta.path; setAttachmentFile({ name: attachMeta.name, uri: "" }); }
+          if (paths.prescription) {
+            setPrescriptionFile({ name: inferAttachmentName(paths.prescription, "prescription"), uri: "" });
+          }
+          if (paths.quotation) {
+            setQuotationFile({ name: inferAttachmentName(paths.quotation, "quotation"), uri: "" });
+          }
+          if (paths.letter) {
+            setLetterFile({ name: inferAttachmentName(paths.letter, "letter"), uri: "" });
+          }
+          if (paths.voterId) {
+            setVoterIdFile({ name: inferAttachmentName(paths.voterId, "voterId"), uri: "" });
+          }
+          if (paths.birthCert) {
+            setBirthCertFile({ name: inferAttachmentName(paths.birthCert, "birthCert"), uri: "" });
+          }
+          if (paths.barangay) {
+            setBarangayFile({ name: inferAttachmentName(paths.barangay, "barangay"), uri: "" });
+          }
+          if (paths.indigency) {
+            setIndigencyFile({ name: inferAttachmentName(paths.indigency, "indigency"), uri: "" });
+          }
+          if (paths.attachment) {
+            setAttachmentFile({ name: inferAttachmentName(paths.attachment, "attachment"), uri: "" });
+          }
 
           setUploadedPaths(paths);
         }
@@ -526,26 +526,11 @@ export default function MedicalReq() {
     if (requestId) return requestId;
     if (!userId) throw new Error("User not logged in");
 
-    let requesterPayload: Record<string, any> = {};
-    try {
-      const raw = await AsyncStorage.getItem(`apoyo_requestinfo_${serviceId}`);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        requesterPayload = {
-          requester_name: parsed.name || null,
-          requester_contact_number: `${parsed.countryCode || ""}${parsed.phone || ""}` || null,
-          requester_email: parsed.email || null,
-          requester_present_address: parsed.address || null,
-        };
-      }
-    } catch (e) {}
-
     const sid = /^\d+$/.test(String(serviceId)) ? Number(serviceId) : undefined;
     const insertPayload = {
       user_id: userId,
       status: "draft",
       ...(sid ? { service_id: sid } : {}),
-      ...requesterPayload,
     };
 
     const { data, error } = await supabase
@@ -556,28 +541,7 @@ export default function MedicalReq() {
 
     if (error) throw error;
     setRequestId(data.id);
-    if (!requesterLocked) {
-      setRequesterName(requesterPayload.requester_name || "");
-      setRequesterContactNumber(requesterPayload.requester_contact_number || "");
-      setRequesterEmail(requesterPayload.requester_email || "");
-      setRequesterPresentAddress(requesterPayload.requester_present_address || "");
-    }
     return data.id;
-  };
-
-  const getColumnName = (fileType: string): string => {
-    const map: Record<string, string> = {
-      medCert: "med_cert_file_path",
-      prescription: "prescription_file_path",
-      quotation: "quotation_file_path",
-      letter: "letter_file_path",
-      voterId: "voter_id_file_path",
-      birthCert: "birth_cert_file_path",
-      barangay: "barangay_endorsement_file_path",
-      indigency: "indigency_cert_file_path",
-      attachment: "attachment_file_path",
-    };
-    return map[fileType] || fileType;
   };
 
   const handleFilePick = async (
@@ -591,11 +555,12 @@ export default function MedicalReq() {
       setIsSaving(true);
       const reqId = await ensureRequestId();
       const fileMetadata = await uploadFileToStorage(userId, reqId, fileType, file);
-      const columnName = getColumnName(fileType);
-      await supabase
-        .from("medical_requests")
-        .update({ [columnName]: JSON.stringify(fileMetadata) })
-        .eq("id", reqId);
+      await upsertRequestAttachment({
+        requestTable: REQUEST_TABLE,
+        requestUid: reqId,
+        fileType,
+        path: fileMetadata.path,
+      });
 
       setFile(file);
       setUploadedPaths(prev => ({ ...prev, [fileType]: fileMetadata.path }));
@@ -612,11 +577,11 @@ export default function MedicalReq() {
 
     try {
       setIsSaving(true);
-      const columnName = getColumnName(fileType);
-      await supabase
-        .from("medical_requests")
-        .update({ [columnName]: null })
-        .eq("id", requestId);
+      await deleteRequestAttachment({
+        requestTable: REQUEST_TABLE,
+        requestUid: requestId,
+        fileType,
+      });
 
       setUploadedPaths(prev => {
         const updated = { ...prev };

@@ -7,6 +7,12 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useFocusEffect } from "@react-navigation/native";
 import NetInfo from "@react-native-community/netinfo";
+import {
+  deleteRequestAttachment,
+  inferAttachmentName,
+  listRequestAttachments,
+  upsertRequestAttachment,
+} from "../../../lib/requestAttachments";
 import { supabase } from "../../../lib/supabase";
 import {
   ActivityIndicator,
@@ -58,7 +64,8 @@ const SWIPE_OPEN_PX = 56;
 const SWIPE_DELETE_PX = 120;
 const ROW_HEIGHT = 64;
 
-const BUCKET_NAME = "financial-documents";
+const BUCKET_NAME = "request-documents";
+const REQUEST_TABLE = "financial_requests";
 
 function usePressScale() {
   const scale = useRef(new Animated.Value(1)).current;
@@ -272,7 +279,8 @@ const removeTargetLabels: Record<string, string> = {
 export default function FinancialReq() {
   const router = useRouter();
   const params = useLocalSearchParams<{ serviceId?: string; requestId?: string }>();
-  const serviceId = params?.serviceId || "financial";
+  // This screen is strictly for financial_requests; keep service_id canonical.
+  const serviceId = "financial";
   const existingRequestId = params?.requestId;
 
   // Loading & network state
@@ -412,22 +420,10 @@ export default function FinancialReq() {
         }
       }
 
-      // Helper to parse file metadata (handles both old string format and new JSON format)
-      const parseFileMeta = (raw: string | null): { path: string; name: string; mimeType?: string; size?: number } | null => {
-        if (!raw) return null;
-        try {
-          const meta = JSON.parse(raw) as FileMetadata;
-          return { path: meta.path, name: meta.originalName, mimeType: meta.mimeType, size: meta.size };
-        } catch {
-          // Old format - just a path string
-          return { path: raw, name: raw.split("/").pop() || "file" };
-        }
-      };
-
       // Only load a draft when an explicit requestId param is provided
       if (existingRequestId) {
         const { data: existingRequest, error } = await supabase
-          .from("financial_requests")
+          .from(REQUEST_TABLE)
           .select("*")
           .eq("user_id", user.id)
           .eq("id", existingRequestId)
@@ -439,28 +435,25 @@ export default function FinancialReq() {
           setRequestId(existingRequest.id);
           setAdditionalInfo(existingRequest.additional_info || "");
 
-          // populate requester fields from DB if present (don't overwrite if locked from verified profile)
-          if (!requesterLocked) {
-            setRequesterName(existingRequest.requester_name || "");
-            setRequesterContactNumber(existingRequest.requester_contact_number || "");
-            setRequesterEmail(existingRequest.requester_email || "");
-            setRequesterPresentAddress(existingRequest.requester_present_address || "");
+          const paths = await listRequestAttachments(REQUEST_TABLE, existingRequest.id);
+          if (paths.letter) {
+            setLetterFile({ name: inferAttachmentName(paths.letter, "letter"), uri: "" });
           }
-
-          // Store uploaded paths and set file states
-          const paths: Record<string, string> = {};
-          const letterMeta = parseFileMeta(existingRequest.letter_file_path);
-          if (letterMeta) { paths.letter = letterMeta.path; setLetterFile({ name: letterMeta.name, uri: "", mimeType: letterMeta.mimeType, size: letterMeta.size }); }
-          const voterIdMeta = parseFileMeta(existingRequest.voter_id_file_path);
-          if (voterIdMeta) { paths.voterId = voterIdMeta.path; setVoterIdFile({ name: voterIdMeta.name, uri: "", mimeType: voterIdMeta.mimeType, size: voterIdMeta.size }); }
-          const validIdMeta = parseFileMeta(existingRequest.valid_id_file_path);
-          if (validIdMeta) { paths.validId = validIdMeta.path; setValidIdFile({ name: validIdMeta.name, uri: "", mimeType: validIdMeta.mimeType, size: validIdMeta.size }); }
-          const barangayMeta = parseFileMeta(existingRequest.barangay_endorsement_file_path);
-          if (barangayMeta) { paths.barangay = barangayMeta.path; setBarangayFile({ name: barangayMeta.name, uri: "", mimeType: barangayMeta.mimeType, size: barangayMeta.size }); }
-          const indigencyMeta = parseFileMeta(existingRequest.indigency_cert_file_path);
-          if (indigencyMeta) { paths.indigency = indigencyMeta.path; setIndigencyCertFile({ name: indigencyMeta.name, uri: "", mimeType: indigencyMeta.mimeType, size: indigencyMeta.size }); }
-          const attachmentMeta = parseFileMeta(existingRequest.attachment_file_path);
-          if (attachmentMeta) { paths.attachment = attachmentMeta.path; setAttachmentFile({ name: attachmentMeta.name, uri: "", mimeType: attachmentMeta.mimeType, size: attachmentMeta.size }); }
+          if (paths.voterId) {
+            setVoterIdFile({ name: inferAttachmentName(paths.voterId, "voterId"), uri: "" });
+          }
+          if (paths.validId) {
+            setValidIdFile({ name: inferAttachmentName(paths.validId, "validId"), uri: "" });
+          }
+          if (paths.barangay) {
+            setBarangayFile({ name: inferAttachmentName(paths.barangay, "barangay"), uri: "" });
+          }
+          if (paths.indigency) {
+            setIndigencyCertFile({ name: inferAttachmentName(paths.indigency, "indigency"), uri: "" });
+          }
+          if (paths.attachment) {
+            setAttachmentFile({ name: inferAttachmentName(paths.attachment, "attachment"), uri: "" });
+          }
           setUploadedPaths(paths);
         }
       }
@@ -476,33 +469,17 @@ export default function FinancialReq() {
     if (!userId) throw new Error("User not logged in");
 
     const { data, error } = await supabase
-      .from("financial_requests")
+      .from(REQUEST_TABLE)
       .insert({
         user_id: userId,
         status: "draft",
         service_id: serviceId,
-        requester_name: requesterName || null,
-        requester_contact_number: requesterContactNumber || null,
-        requester_email: requesterEmail || null,
-        requester_present_address: requesterPresentAddress || null,
       })
       .select("id")
       .single();
     if (error) throw error;
     setRequestId(data.id);
     return data.id;
-  };
-
-  const getColumnName = (fileType: string) => {
-    const map: Record<string, string> = {
-      letter: "letter_file_path",
-      voterId: "voter_id_file_path",
-      validId: "valid_id_file_path",
-      barangay: "barangay_endorsement_file_path",
-      indigency: "indigency_cert_file_path",
-      attachment: "attachment_file_path",
-    };
-    return map[fileType] || fileType;
   };
 
   const handleFilePickAndUpload = async (fileType: string, setFile: (f: PickedFile | null) => void) => {
@@ -512,8 +489,12 @@ export default function FinancialReq() {
       setIsSaving(true);
       const reqId = await ensureRequestId();
       const fileMetadata = await uploadFileToStorage(userId, reqId, fileType, file);
-      const columnName = getColumnName(fileType);
-      await supabase.from("financial_requests").update({ [columnName]: JSON.stringify(fileMetadata) }).eq("id", reqId);
+      await upsertRequestAttachment({
+        requestTable: REQUEST_TABLE,
+        requestUid: reqId,
+        fileType,
+        path: fileMetadata.path,
+      });
       setFile(file);
       setUploadedPaths((p) => ({ ...p, [fileType]: fileMetadata.path }));
     } catch (err: any) {
@@ -528,8 +509,11 @@ export default function FinancialReq() {
     if (!path || !requestId) return;
     try {
       setIsSaving(true);
-      const columnName = getColumnName(fileType);
-      await supabase.from("financial_requests").update({ [columnName]: null }).eq("id", requestId);
+      await deleteRequestAttachment({
+        requestTable: REQUEST_TABLE,
+        requestUid: requestId,
+        fileType,
+      });
       setUploadedPaths((prev) => { const n = { ...prev }; delete n[fileType]; return n; });
       clearFile(null);
     } catch (err: any) {
@@ -621,10 +605,6 @@ export default function FinancialReq() {
       const reqId = await ensureRequestId();
       await supabase.from("financial_requests").update({
         additional_info: additionalInfo,
-        requester_name: requesterName || null,
-        requester_contact_number: requesterContactNumber || null,
-        requester_email: requesterEmail || null,
-        requester_present_address: requesterPresentAddress || null,
       }).eq("id", reqId);
     } catch (e) {
       console.log("Error saving draft on back:", e);
@@ -648,10 +628,6 @@ export default function FinancialReq() {
         .update({
           status: "pending",
           submitted_at: new Date().toISOString(),
-          requester_name: requesterName || null,
-          requester_contact_number: requesterContactNumber || null,
-          requester_email: requesterEmail || null,
-          requester_present_address: requesterPresentAddress || null,
         })
         .eq("id", reqId);
       if (error) throw error;

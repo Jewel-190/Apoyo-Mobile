@@ -7,6 +7,12 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import NetInfo from "@react-native-community/netinfo";
 import {
+  deleteRequestAttachment,
+  inferAttachmentName,
+  listRequestAttachments,
+  upsertRequestAttachment,
+} from "../../../lib/requestAttachments";
+import {
   Alert,
   Animated,
   Easing,
@@ -141,7 +147,8 @@ function fileIconName(
 }
 
 // Storage bucket name
-const BUCKET_NAME = "hospitalization-documents";
+const BUCKET_NAME = "request-documents";
+const REQUEST_TABLE = "hospitalization_requests";
 
 // File metadata stored in DB
 type FileMetadata = {
@@ -454,45 +461,31 @@ export default function HospitalizationReq() {
         if (data && !error) {
           setRequestId(data.id);
           setAdditionalInfo(data.additional_info || "");
-          // populate requester fields from DB if present
-          // If requester fields are already locked from verified profile, do not overwrite
-          if (!requesterLocked) {
-            setRequesterName(data.requester_name || "");
-            setRequesterContactNumber(data.requester_contact_number || "");
-            setRequesterEmail(data.requester_email || "");
-            setRequesterPresentAddress(data.requester_present_address || "");
+          const paths = await listRequestAttachments(REQUEST_TABLE, data.id);
+          if (paths.abstract) {
+            setAbstractFile({ name: inferAttachmentName(paths.abstract, "abstract"), uri: "" });
           }
-
-          // Helper to parse file metadata (handles both old string format and new JSON format)
-          const parseFileMeta = (raw: string | null): { path: string; name: string } | null => {
-            if (!raw) return null;
-            try {
-              const meta = JSON.parse(raw) as FileMetadata;
-              return { path: meta.path, name: meta.originalName };
-            } catch {
-              // Old format - just a path string
-              return { path: raw, name: raw.split("/").pop() || "file" };
-            }
-          };
-
-          // Store uploaded paths and set file states
-          const paths: Record<string, string> = {};
-          const abstractMeta = parseFileMeta(data.abstract_file_path);
-          if (abstractMeta) { paths.abstract = abstractMeta.path; setAbstractFile({ name: abstractMeta.name, uri: "" }); }
-          const billMeta = parseFileMeta(data.bill_file_path);
-          if (billMeta) { paths.bill = billMeta.path; setBillFile({ name: billMeta.name, uri: "" }); }
-          const letterMeta = parseFileMeta(data.letter_file_path);
-          if (letterMeta) { paths.letter = letterMeta.path; setLetterFile({ name: letterMeta.name, uri: "" }); }
-          const voterIdMeta = parseFileMeta(data.voter_id_file_path);
-          if (voterIdMeta) { paths.voterId = voterIdMeta.path; setVoterIdFile({ name: voterIdMeta.name, uri: "" }); }
-          const birthCertMeta = parseFileMeta(data.birth_cert_file_path);
-          if (birthCertMeta) { paths.birthCert = birthCertMeta.path; setBirthCertFile({ name: birthCertMeta.name, uri: "" }); }
-          const barangayMeta = parseFileMeta(data.barangay_endorsement_file_path);
-          if (barangayMeta) { paths.barangay = barangayMeta.path; setBarangayEndorsementFile({ name: barangayMeta.name, uri: "" }); }
-          const indigencyMeta = parseFileMeta(data.indigency_cert_file_path);
-          if (indigencyMeta) { paths.indigency = indigencyMeta.path; setIndigencyCertFile({ name: indigencyMeta.name, uri: "" }); }
-          const attachmentMeta = parseFileMeta(data.attachment_file_path);
-          if (attachmentMeta) { paths.attachment = attachmentMeta.path; setAttachmentFile({ name: attachmentMeta.name, uri: "" }); }
+          if (paths.bill) {
+            setBillFile({ name: inferAttachmentName(paths.bill, "bill"), uri: "" });
+          }
+          if (paths.letter) {
+            setLetterFile({ name: inferAttachmentName(paths.letter, "letter"), uri: "" });
+          }
+          if (paths.voterId) {
+            setVoterIdFile({ name: inferAttachmentName(paths.voterId, "voterId"), uri: "" });
+          }
+          if (paths.birthCert) {
+            setBirthCertFile({ name: inferAttachmentName(paths.birthCert, "birthCert"), uri: "" });
+          }
+          if (paths.barangay) {
+            setBarangayEndorsementFile({ name: inferAttachmentName(paths.barangay, "barangay"), uri: "" });
+          }
+          if (paths.indigency) {
+            setIndigencyCertFile({ name: inferAttachmentName(paths.indigency, "indigency"), uri: "" });
+          }
+          if (paths.attachment) {
+            setAttachmentFile({ name: inferAttachmentName(paths.attachment, "attachment"), uri: "" });
+          }
           setUploadedPaths(paths);
         }
       }
@@ -507,28 +500,11 @@ export default function HospitalizationReq() {
   const ensureRequestId = async (): Promise<string> => {
     if (requestId) return requestId;
     if (!userId) throw new Error("User not logged in");
-    // Try to prefill requester info from RequestInfo saved in AsyncStorage
-    let requesterPayload: Record<string, any> = {};
-    try {
-      const raw = await AsyncStorage.getItem(`apoyo_requestinfo_${serviceId}`);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        requesterPayload = {
-          requester_name: parsed.name || null,
-          requester_contact_number: `${parsed.countryCode || ""}${parsed.phone || ""}` || null,
-          requester_email: parsed.email || null,
-          requester_present_address: parsed.address || null,
-        };
-      }
-    } catch (e) {
-      // ignore parse errors
-    }
 
     const insertPayload = {
       user_id: userId,
       status: "draft",
       service_id: "hospital",
-      ...requesterPayload,
     };
 
     const { data, error } = await supabase
@@ -539,13 +515,6 @@ export default function HospitalizationReq() {
 
     if (error) throw error;
     setRequestId(data.id);
-    // set local requester fields from payload we used (unless locked from verified profile)
-    if (!requesterLocked) {
-      setRequesterName(requesterPayload.requester_name || "");
-      setRequesterContactNumber(requesterPayload.requester_contact_number || "");
-      setRequesterEmail(requesterPayload.requester_email || "");
-      setRequesterPresentAddress(requesterPayload.requester_present_address || "");
-    }
     return data.id;
   };
 
@@ -564,12 +533,12 @@ export default function HospitalizationReq() {
       // Upload to storage - now returns FileMetadata with original name
       const fileMetadata = await uploadFileToStorage(userId, reqId, fileType, file);
 
-      // Update database - store as JSON with original name
-      const columnName = getColumnName(fileType);
-      await supabase
-        .from("hospitalization_requests")
-        .update({ [columnName]: JSON.stringify(fileMetadata) })
-        .eq("id", reqId);
+      await upsertRequestAttachment({
+        requestTable: REQUEST_TABLE,
+        requestUid: reqId,
+        fileType,
+        path: fileMetadata.path,
+      });
 
       // Update local state first so UI reflects new upload
       setFile(file);
@@ -588,13 +557,11 @@ export default function HospitalizationReq() {
 
     try {
       setIsSaving(true);
-
-      // Update database
-      const columnName = getColumnName(fileType);
-      await supabase
-        .from("hospitalization_requests")
-        .update({ [columnName]: null })
-        .eq("id", requestId);
+      await deleteRequestAttachment({
+        requestTable: REQUEST_TABLE,
+        requestUid: requestId,
+        fileType,
+      });
 
       // Update local state
       setUploadedPaths(prev => {
@@ -620,21 +587,6 @@ export default function HospitalizationReq() {
     } finally {
       setIsSaving(false);
     }
-  };
-
-  // Helper to get column name from file type
-  const getColumnName = (fileType: string): string => {
-    const map: Record<string, string> = {
-      abstract: "abstract_file_path",
-      bill: "bill_file_path",
-      letter: "letter_file_path",
-      voterId: "voter_id_file_path",
-      birthCert: "birth_cert_file_path",
-      barangay: "barangay_endorsement_file_path",
-      indigency: "indigency_cert_file_path",
-      attachment: "attachment_file_path",
-    };
-    return map[fileType] || fileType;
   };
 
   // Debounced save for additional info with simple cancellation/ignoring of stale saves
@@ -758,19 +710,26 @@ export default function HospitalizationReq() {
       setIsSubmitting(true);
 
       // Update status to submitted
-      const { error } = await supabase
+      const { data: submittedRow, error } = await supabase
         .from("hospitalization_requests")
         .update({ 
           status: "pending",
           submitted_at: new Date().toISOString()
         })
-        .eq("id", requestId);
+        .eq("id", requestId)
+        .select("id, request_code")
+        .single();
 
       if (error) throw error;
 
+      const requestCode =
+        typeof submittedRow?.request_code === "string"
+          ? submittedRow.request_code
+          : undefined;
+
       router.push({
         pathname: "/Home/Hospitalization/SubmissionSuccess",
-        params: { serviceId, requestId },
+        params: { serviceId, requestId, requestCode },
       } as any);
     } catch (err: any) {
       Alert.alert("Submit Error", err.message || "Failed to submit request");

@@ -1,8 +1,9 @@
 // app/Medical/SubmissionSuccess.tsx
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import React, { useEffect, useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
+  ActivityIndicator,
   Image,
   Platform,
   Pressable,
@@ -12,6 +13,7 @@ import {
   Text,
   View,
 } from "react-native";
+import { supabase } from "../../../lib/supabase";
 
 /* ===== FONT RULE ===== */
 const FONT_REGULAR = Platform.select({
@@ -133,10 +135,18 @@ async function safeWriteArray<T>(key: string, arr: T[]) {
 export default function SubmissionSuccess() {
   const router = useRouter();
   const params = useLocalSearchParams<{
+    requestId?: string;
+    requestCode?: string;
     applicationId?: string;
     serviceTitle?: string;
     serviceId?: string;
   }>();
+  const requestId = (params?.requestId || "").toString().trim();
+  const initialRequestCode = (params?.requestCode || "").toString().trim();
+  const [requestCode, setRequestCode] = useState<string | null>(
+    initialRequestCode || null
+  );
+  const [isRequestCodeLoading, setIsRequestCodeLoading] = useState(false);
 
   const now = useMemo(() => Date.now(), []);
   const serviceId = useMemo(
@@ -155,6 +165,40 @@ export default function SubmissionSuccess() {
   }, [params?.applicationId, now]);
 
   const category = useMemo(() => categoryFromServiceId(serviceId), [serviceId]);
+
+  useEffect(() => {
+    if (requestCode || !requestId) return;
+
+    let active = true;
+
+    (async () => {
+      try {
+        setIsRequestCodeLoading(true);
+        const { data, error } = await supabase
+          .from("medical_requests")
+          .select("request_code")
+          .eq("id", requestId)
+          .maybeSingle();
+
+        if (error) throw error;
+
+        const code =
+          typeof data?.request_code === "string" ? data.request_code.trim() : "";
+
+        if (active && code) {
+          setRequestCode(code);
+        }
+      } catch (e) {
+        console.log("Fetch medical request code failed:", e);
+      } finally {
+        if (active) setIsRequestCodeLoading(false);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [requestCode, requestId]);
 
   // ✅ AUTO-SYNC to Status + Notification once (when this screen opens)
   useEffect(() => {
@@ -217,7 +261,14 @@ export default function SubmissionSuccess() {
           Medical Assistance - <Text style={styles.linkish}>{serviceTitle}</Text>.
         </Text>
 
-        <Text style={styles.appId}>Application ID: {appId}</Text>
+        {requestCode ? (
+          <Text style={styles.appId}>Request Code: {requestCode}</Text>
+        ) : isRequestCodeLoading ? (
+          <View style={styles.loadingCodeRow}>
+            <ActivityIndicator size="small" color={TEAL} />
+            <Text style={styles.loadingCodeText}>Loading request code...</Text>
+          </View>
+        ) : null}
 
         {/* card */}
         <View style={styles.card}>
@@ -309,6 +360,19 @@ const styles = StyleSheet.create({
 
   appId: {
     marginTop: 10,
+    fontFamily: FONT_REGULAR,
+    fontSize: 12,
+    color: TEXT,
+  },
+
+  loadingCodeRow: {
+    marginTop: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+
+  loadingCodeText: {
     fontFamily: FONT_REGULAR,
     fontSize: 12,
     color: TEXT,

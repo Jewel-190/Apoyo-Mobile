@@ -6,6 +6,7 @@ import {
   Image,
   KeyboardAvoidingView,
   Modal,
+  ScrollView,
   Platform,
   Pressable,
   AppState,
@@ -17,6 +18,9 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import DateTimePicker, {
+  DateTimePickerEvent,
+} from "@react-native-community/datetimepicker";
 import { supabase } from "../../lib/supabase";
 
 // Imports & constants: React, navigation, storage, RN components and shared constants
@@ -30,6 +34,87 @@ const RED = "#E23B3B";
 
 const FONT = Platform.select({ ios: "SF Pro Rounded", android: "System" })!;
 const SUFFIX_OPTIONS = ["", "Jr.", "Sr.", "II", "III", "IV"];
+const SEX_OPTIONS = [
+  { label: "Male", value: "M" as const },
+  { label: "Female", value: "F" as const },
+];
+const BARANGAY_OPTIONS = [
+  "Burol Main",
+  "Burol I",
+  "Burol II",
+  "Burol III",
+  "Datu Esmael (Bago-a-Ingud)",
+  "Emmanuel Bergado I",
+  "Emmanuel Bergado II",
+  "Fatima I",
+  "Fatima II",
+  "Fatima III",
+  "H-2 (Santa Veronica)",
+  "Langkaan I",
+  "Langkaan II",
+  "Luzviminda I",
+  "Luzviminda II",
+  "Paliparan I",
+  "Paliparan II",
+  "Paliparan III",
+  "Sabang",
+  "Salawag",
+  "Saint Peter I",
+  "Saint Peter II",
+  "Salitran I",
+  "Salitran II",
+  "Salitran III",
+  "Salitran IV",
+  "Sampaloc I",
+  "Sampaloc II",
+  "Sampaloc III",
+  "Sampaloc IV",
+  "Sampaloc V",
+  "San Agustin I",
+  "San Agustin II",
+  "San Agustin III",
+  "San Andres I",
+  "San Andres II",
+  "San Antonio De Padua I",
+  "San Antonio De Padua II",
+  "San Dionisio",
+  "San Esteban",
+  "San Francisco I",
+  "San Francisco II",
+  "San Isidro Labrador I",
+  "San Isidro Labrador II",
+  "San Jose",
+  "San Juan",
+  "San Lorenzo Ruiz I",
+  "San Lorenzo Ruiz II",
+  "San Luis I",
+  "San Luis II",
+  "San Manuel I",
+  "San Manuel II",
+  "San Mateo",
+  "San Miguel I",
+  "San Miguel II",
+  "San Nicolas I",
+  "San Nicolas II",
+  "San Roque",
+  "San Simon",
+  "Santa Cristina I",
+  "Santa Cristina II",
+  "Santa Cruz I",
+  "Santa Cruz II",
+  "Santa Fe",
+  "Santa Lucia",
+  "Santa Maria",
+  "Santo Cristo",
+  "Santo Nino I",
+  "Santo Nino II",
+  "Victoria Reyes",
+  "Zone I",
+  "Zone I-B",
+  "Zone II",
+  "Zone III",
+  "Zone IV",
+];
 
 // sanitizeName: clean input to letters/spaces and title-case each word
 function sanitizeName(raw: string) {
@@ -63,6 +148,46 @@ function normalizeMobile(raw: string) {
     return `+63 ${part1} ${part2} ${part3}`;
   }
   return "";
+}
+
+function formatBirthDateValue(date: Date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function parseBirthDateValue(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+
+  const [yRaw, mRaw, dRaw] = value.split("-");
+  const y = Number(yRaw);
+  const m = Number(mRaw);
+  const d = Number(dRaw);
+
+  if (!Number.isInteger(y) || !Number.isInteger(m) || !Number.isInteger(d)) return null;
+  if (m < 1 || m > 12) return null;
+  if (d < 1 || d > 31) return null;
+
+  const date = new Date(y, m - 1, d);
+  if (
+    date.getFullYear() !== y ||
+    date.getMonth() !== m - 1 ||
+    date.getDate() !== d
+  ) {
+    return null;
+  }
+
+  return date;
+}
+
+function isValidBirthDate(value: string) {
+  const candidate = parseBirthDateValue(value);
+  if (!candidate) return false;
+
+  const today = new Date();
+  const todayDateOnly = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  return candidate <= todayDateOnly;
 }
 
 /* ---------- Supabase helpers (prep only) ---------- */
@@ -136,6 +261,7 @@ async function insertUserProfile(payload: {
   suffix?: string | null;
   contact_number: string;
   email: string;
+  voter_id_number?: string | null;
   address?: string | null;
   birth_date?: string | null;
   sex?: string | null;
@@ -149,6 +275,7 @@ async function insertUserProfile(payload: {
       suffix: payload.suffix ?? null,
       contact_number: payload.contact_number,
       email: payload.email,
+      voter_id_number: payload.voter_id_number ?? null,
       address: payload.address ?? null,
       birth_date: payload.birth_date ?? null,
       sex: payload.sex ?? null,
@@ -174,7 +301,7 @@ async function checkEmailExists(email: string) {
 export default function Register() {
   const router = useRouter();
 
-  // step: 0=register,2=enter-mobile,3=create-mpin,4=re-enter-mpin,5=enable-notifs,6=verify-email,7=success (step 1 skipped)
+  // step: 0=register,1=additional-info,2=enter-mobile,3=create-mpin,4=re-enter-mpin,5=enable-notifs,6=verify-email,7=success
   const [step, setStep] = useState<number>(0);
   const stepRef = useRef(step);
 
@@ -184,7 +311,16 @@ export default function Register() {
   const [middleName, setMiddleName] = useState("");
   const [noMiddle, setNoMiddle] = useState(false);
   const [lastName, setLastName] = useState("");
+  const [barangay, setBarangay] = useState("");
+  const [barangayOpen, setBarangayOpen] = useState(false);
   const [email, setEmail] = useState("");
+  const [voterIdNumber, setVoterIdNumber] = useState("");
+  const [birthDate, setBirthDate] = useState("");
+  const [birthDatePickerOpen, setBirthDatePickerOpen] = useState(false);
+  const [birthDateDraft, setBirthDateDraft] = useState(new Date(2000, 0, 1));
+  const [sex, setSex] = useState<"" | "M" | "F">("");
+  const [sexOpen, setSexOpen] = useState(false);
+  const [addressLine, setAddressLine] = useState("");
   const [mobile, setMobile] = useState("");
   const [mpin, setMpin] = useState("");
 
@@ -206,11 +342,50 @@ export default function Register() {
   const canCreate = useMemo(() => {
     if (!firstName.trim()) return false;
     if (!lastName.trim()) return false;
+    if (!barangay.trim()) return false;
     if (!email.trim()) return false;
     if (emailError) return false;
     if (!noMiddle && !middleName.trim()) return false;
     return true;
-  }, [firstName, lastName, email, emailError, noMiddle, middleName]);
+  }, [firstName, lastName, barangay, email, emailError, noMiddle, middleName]);
+
+  const voterIdError = useMemo(() => {
+    const t = voterIdNumber.trim();
+    if (!t) return "";
+    if (!/^\d+$/.test(t)) return "Voter's ID Number must contain numbers only";
+    return "";
+  }, [voterIdNumber]);
+
+  const birthDateError = useMemo(() => {
+    const t = birthDate.trim();
+    if (!t) return "";
+    if (!isValidBirthDate(t)) return "Enter a valid birth date (YYYY-MM-DD)";
+    return "";
+  }, [birthDate]);
+
+  const sexError = useMemo(() => {
+    if (!sex) return "";
+    if (sex !== "M" && sex !== "F") return "Select Male or Female";
+    return "";
+  }, [sex]);
+
+  const composedAddress = useMemo(() => {
+    const userPart = addressLine.trim().replace(/\s+/g, " ");
+    if (!userPart || !barangay) return "";
+    return `${userPart}, ${barangay}, Dasmariñas Cavite`;
+  }, [addressLine, barangay]);
+
+  const canNextFromAdditional = useMemo(() => {
+    if (!voterIdNumber.trim()) return false;
+    if (voterIdError) return false;
+    if (!birthDate.trim()) return false;
+    if (birthDateError) return false;
+    if (!sex) return false;
+    if (sexError) return false;
+    if (!addressLine.trim()) return false;
+    if (!barangay.trim()) return false;
+    return true;
+  }, [voterIdNumber, voterIdError, birthDate, birthDateError, sex, sexError, addressLine, barangay]);
 
   const toggleNoMiddle = () => {
     setNoMiddle((v) => {
@@ -218,6 +393,34 @@ export default function Register() {
       if (next) setMiddleName("");
       return next;
     });
+  };
+
+  const openBirthDatePicker = () => {
+    const parsed = parseBirthDateValue(birthDate);
+    setBirthDateDraft(parsed || new Date(2000, 0, 1));
+    setBirthDatePickerOpen(true);
+  };
+
+  const onBirthDatePickerChange = (
+    event: DateTimePickerEvent,
+    selectedDate?: Date
+  ) => {
+    if (Platform.OS === "android") {
+      setBirthDatePickerOpen(false);
+      if (event.type === "set" && selectedDate) {
+        setBirthDate(formatBirthDateValue(selectedDate));
+      }
+      return;
+    }
+
+    if (selectedDate) {
+      setBirthDateDraft(selectedDate);
+    }
+  };
+
+  const applyBirthDateFromIosPicker = () => {
+    setBirthDate(formatBirthDateValue(birthDateDraft));
+    setBirthDatePickerOpen(false);
   };
 
   useEffect(() => {
@@ -230,11 +433,19 @@ export default function Register() {
     setInvalid({ first: false, middle: false, last: false });
     setSuffix("");
     setSuffixOpen(false);
+    setBarangay("");
+    setBarangayOpen(false);
     setNoMiddle(false);
     setFirstName("");
     setMiddleName("");
     setLastName("");
     setEmail("");
+    setVoterIdNumber("");
+    setBirthDate("");
+    setBirthDatePickerOpen(false);
+    setSex("");
+    setSexOpen(false);
+    setAddressLine("");
     setEmailExistsError("");
     setMobile("");
     setPin("");
@@ -267,7 +478,7 @@ export default function Register() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // onCreate: validate names/email, store full name and email, then advance
+  // onCreate: validate names/barangay/email, store full name and email, then advance
   const onCreate = async () => {
     setAttempted(true);
     if (!canCreate) return;
@@ -293,6 +504,14 @@ export default function Register() {
     await AsyncStorage.setItem("REG_EMAIL", email.trim());
 
     setEmailSendError("");
+    setAttempted(false);
+    setStep(1);
+  };
+
+  const onNextAdditional = () => {
+    setAttempted(true);
+    if (!canNextFromAdditional) return;
+    setAttempted(false);
     setStep(2);
   };
 
@@ -480,6 +699,30 @@ export default function Register() {
       return false;
     }
 
+    if (!voterIdNumber.trim() || !/^\d+$/.test(voterIdNumber.trim())) {
+      setProfileError("Invalid Voter's ID Number.");
+      setProfileSaving(false);
+      return false;
+    }
+
+    if (!isValidBirthDate(birthDate.trim())) {
+      setProfileError("Invalid birth date.");
+      setProfileSaving(false);
+      return false;
+    }
+
+    if (sex !== "M" && sex !== "F") {
+      setProfileError("Invalid sex value.");
+      setProfileSaving(false);
+      return false;
+    }
+
+    if (!composedAddress) {
+      setProfileError("Invalid address.");
+      setProfileSaving(false);
+      return false;
+    }
+
     const profileRes = await insertUserProfile({
       user_id: user.id,
       first_name: firstName.trim(),
@@ -488,6 +731,10 @@ export default function Register() {
       suffix: suffix || null,
       contact_number: fullMobile,
       email: email.trim(),
+      voter_id_number: voterIdNumber.trim(),
+      address: composedAddress,
+      birth_date: birthDate.trim(),
+      sex,
     });
 
     if (profileRes.error) {
@@ -509,7 +756,7 @@ export default function Register() {
     return true;
   };
 
-  // Progress helpers: now using six segments, one per step (active if index <= step)
+  // Progress helpers: one segment per step (active if index <= step)
 
   // Layout helpers: compute responsive box sizes for OTP/MPIN inputs
   const H_PADDING = 22;
@@ -609,6 +856,18 @@ export default function Register() {
               </View>
 
               <View style={{ marginTop: 14 }}>
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={() => setBarangayOpen(true)}
+                  style={[styles.inputWrap, attempted && !barangay && styles.inputErrorBorder]}
+                >
+                  <Text style={[styles.dropdownText, !barangay && styles.dropdownPlaceholder]}>
+                    {barangay || "Barangay"}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={{ marginTop: 14 }}>
                 <View
                   style={[
                     styles.inputWrap,
@@ -673,8 +932,178 @@ export default function Register() {
                   </View>
                 </Pressable>
               </Modal>
+
+              <Modal visible={barangayOpen} transparent animationType="fade" onRequestClose={() => setBarangayOpen(false)}>
+                <Pressable style={styles.modalOverlay} onPress={() => setBarangayOpen(false)}>
+                  <Pressable style={styles.modalCard}>
+                    <Text style={styles.modalTitle}>Select Barangay</Text>
+                    <ScrollView style={styles.modalList}>
+                      {BARANGAY_OPTIONS.map((opt) => (
+                        <TouchableOpacity
+                          key={opt}
+                          activeOpacity={0.85}
+                          style={styles.modalItem}
+                          onPress={() => {
+                            setBarangay(opt);
+                            setBarangayOpen(false);
+                          }}
+                        >
+                          <Text style={styles.modalItemText}>{opt}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </ScrollView>
+                  </Pressable>
+                </Pressable>
+              </Modal>
             </>
           )}
+
+          {/* --- Step 1: Additional Information --- */}
+          {step === 1 && (
+            <>
+              <Text style={styles.title}>Additional Information</Text>
+              {attempted && !canNextFromAdditional && <Text style={styles.fillIn}>Fill in the Fields</Text>}
+
+              <View style={{ marginTop: 14 }}>
+                <View style={[styles.inputWrap, attempted && (!voterIdNumber.trim() || !!voterIdError) && styles.inputErrorBorder]}>
+                  <TextInput
+                    value={voterIdNumber}
+                    onChangeText={(value) => setVoterIdNumber(value.replace(/[^\d]/g, ""))}
+                    placeholder="Voter's ID Number"
+                    placeholderTextColor="#B3B3B3"
+                    keyboardType="number-pad"
+                    style={styles.inputFull}
+                  />
+                </View>
+                {attempted && !!voterIdError && <Text style={styles.error}>{voterIdError}</Text>}
+              </View>
+
+              <View style={{ marginTop: 14 }}>
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={openBirthDatePicker}
+                  style={[styles.inputWrap, attempted && (!birthDate.trim() || !!birthDateError) && styles.inputErrorBorder]}
+                >
+                  <Text style={[styles.dropdownText, !birthDate && styles.dropdownPlaceholder]}>
+                    {birthDate || "Birth Date"}
+                  </Text>
+                </TouchableOpacity>
+                {attempted && !!birthDateError && <Text style={styles.error}>{birthDateError}</Text>}
+              </View>
+
+              <View style={{ marginTop: 14 }}>
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={() => setSexOpen(true)}
+                  style={[styles.inputWrap, attempted && !sex && styles.inputErrorBorder]}
+                >
+                  <Text style={[styles.dropdownText, !sex && styles.dropdownPlaceholder]}>
+                    {sex === "M" ? "Male" : sex === "F" ? "Female" : "Sex"}
+                  </Text>
+                </TouchableOpacity>
+                {attempted && !sex && <Text style={styles.error}>Select sex</Text>}
+                {attempted && !!sexError && <Text style={styles.error}>{sexError}</Text>}
+              </View>
+
+              <Modal visible={sexOpen} transparent animationType="fade" onRequestClose={() => setSexOpen(false)}>
+                <Pressable style={styles.modalOverlay} onPress={() => setSexOpen(false)}>
+                  <Pressable style={styles.modalCard}>
+                    <Text style={styles.modalTitle}>Select Sex</Text>
+                    {SEX_OPTIONS.map((opt) => (
+                      <TouchableOpacity
+                        key={opt.value}
+                        activeOpacity={0.85}
+                        style={styles.sexModalItem}
+                        onPress={() => {
+                          setSex(opt.value);
+                          setSexOpen(false);
+                        }}
+                      >
+                        <View style={[styles.sexRadioOuter, sex === opt.value && styles.sexRadioOuterActive]}>
+                          {sex === opt.value ? <View style={styles.sexRadioInner} /> : null}
+                        </View>
+                        <Text style={styles.modalItemText}>{opt.label}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </Pressable>
+                </Pressable>
+              </Modal>
+
+              <View style={{ marginTop: 14 }}>
+                <View style={[styles.addressFieldWrap, attempted && !addressLine.trim() && styles.inputErrorBorder]}>
+                  <TextInput
+                    value={addressLine}
+                    onChangeText={setAddressLine}
+                    placeholder="Address"
+                    placeholderTextColor="#B3B3B3"
+                    style={styles.addressFieldInput}
+                    autoCapitalize="words"
+                  />
+                  <Text style={[styles.addressFieldSuffix, !barangay && styles.dropdownPlaceholder]}>
+                    {`, ${barangay || "Barangay"}, Dasmariñas Cavite`}
+                  </Text>
+                </View>
+              </View>
+
+              <View style={{ flex: 1 }} />
+              <TouchableOpacity
+                activeOpacity={0.9}
+                onPress={onNextAdditional}
+                style={[styles.nextBtn, !canNextFromAdditional && styles.nextDisabled]}
+              >
+                <Text style={styles.nextText}>Next</Text>
+              </TouchableOpacity>
+            </>
+          )}
+
+          {birthDatePickerOpen && Platform.OS === "android" ? (
+            <DateTimePicker
+              value={birthDateDraft}
+              mode="date"
+              display="default"
+              maximumDate={new Date()}
+              onChange={onBirthDatePickerChange}
+            />
+          ) : null}
+
+          <Modal
+            visible={birthDatePickerOpen && Platform.OS === "ios"}
+            transparent
+            animationType="slide"
+            onRequestClose={() => setBirthDatePickerOpen(false)}
+          >
+            <Pressable
+              style={styles.modalOverlay}
+              onPress={() => setBirthDatePickerOpen(false)}
+            >
+              <Pressable style={styles.modalCard}>
+                <Text style={styles.modalTitle}>Select Birth Date</Text>
+                <DateTimePicker
+                  value={birthDateDraft}
+                  mode="date"
+                  display="spinner"
+                  maximumDate={new Date()}
+                  onChange={onBirthDatePickerChange}
+                />
+                <View style={styles.birthDateActionsRow}>
+                  <TouchableOpacity
+                    activeOpacity={0.85}
+                    onPress={() => setBirthDatePickerOpen(false)}
+                    style={styles.birthDateActionGhost}
+                  >
+                    <Text style={styles.birthDateActionGhostText}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    activeOpacity={0.85}
+                    onPress={applyBirthDateFromIosPicker}
+                    style={styles.birthDateActionSolid}
+                  >
+                    <Text style={styles.birthDateActionSolidText}>Done</Text>
+                  </TouchableOpacity>
+                </View>
+              </Pressable>
+            </Pressable>
+          </Modal>
 
           {/* --- Step 2: Enter Mobile --- */}
           {step === 2 && (
@@ -928,9 +1357,101 @@ const styles = StyleSheet.create({
 
   modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.35)", justifyContent: "center", paddingHorizontal: 22 },
   modalCard: { backgroundColor: "#fff", borderRadius: 14, padding: 14 },
+  modalList: { maxHeight: 360 },
   modalTitle: { fontFamily: FONT, fontWeight: "600", fontSize: 16, color: DARK, marginBottom: 10 },
   modalItem: { paddingVertical: 12, paddingHorizontal: 10, borderRadius: 10 },
   modalItemText: { fontFamily: FONT, fontWeight: "500", fontSize: 15, color: DARK },
+  birthDateActionsRow: {
+    marginTop: 10,
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: 10,
+  },
+  birthDateActionGhost: {
+    height: 40,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: BORDER,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  birthDateActionGhostText: {
+    fontFamily: FONT,
+    fontWeight: "600",
+    color: SUB,
+    fontSize: 13,
+  },
+  birthDateActionSolid: {
+    height: 40,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    backgroundColor: TEAL,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  birthDateActionSolidText: {
+    fontFamily: FONT,
+    fontWeight: "600",
+    color: "#fff",
+    fontSize: 13,
+  },
+
+  sexModalItem: {
+    paddingVertical: 12,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  sexRadioOuter: {
+    width: 20,
+    height: 20,
+    borderRadius: 999,
+    borderWidth: 1.5,
+    borderColor: BORDER,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  sexRadioOuterActive: {
+    borderColor: TEAL,
+  },
+  sexRadioInner: {
+    width: 10,
+    height: 10,
+    borderRadius: 999,
+    backgroundColor: TEAL,
+  },
+
+  addressFieldWrap: {
+    borderWidth: 1,
+    borderColor: BORDER,
+    borderRadius: 10,
+    minHeight: 52,
+    paddingHorizontal: 12,
+    backgroundColor: "#fff",
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    paddingVertical: 8,
+  },
+  addressFieldInput: {
+    minWidth: 110,
+    flexGrow: 1,
+    fontSize: 16,
+    color: DARK,
+    fontFamily: FONT,
+    fontWeight: "500",
+    paddingVertical: 0,
+  },
+  addressFieldSuffix: {
+    flexShrink: 1,
+    fontSize: 14,
+    color: SUB,
+    fontFamily: FONT,
+    fontWeight: "500",
+  },
 
   // verify email / otp styles
   subtitle: { marginTop: 6, fontSize: 16, color: SUB, fontFamily: FONT, fontWeight: "600" },

@@ -83,6 +83,21 @@ function getReqRoute(serviceId: string) {
   return routeMap[id] || "/Home/Hospitalization/HospitalizationReq";
 }
 
+function getRequestTable(serviceId: string) {
+  const id = (serviceId || "").toLowerCase();
+  const tableMap: Record<string, string> = {
+    hospital: "hospitalization_requests",
+    treatment: "treatment_requests",
+    operations: "medical_requests",
+    "emergency-finance": "financial_requests",
+    "burial-money": "monetary_requests",
+    "burial-site": "burial_requests",
+    cremation: "cremation_requests",
+    colombarium: "columbarium_requests",
+  };
+  return tableMap[id] || "";
+}
+
 function onlyDigits(s: string) {
   return (s || "").replace(/[^\d]/g, "");
 }
@@ -174,6 +189,7 @@ export default function RequestInfo() {
   const [profileLocked, setProfileLocked] = useState(false);
   const [isProfileLoading, setIsProfileLoading] = useState(true);
   const [profileLoadError, setProfileLoadError] = useState<string | null>(null);
+  const [authUserId, setAuthUserId] = useState<string>("");
 
   const [touched, setTouched] = useState({
     name: false,
@@ -218,20 +234,54 @@ export default function RequestInfo() {
         } = await supabase.auth.getUser();
         console.log("RequestInfo: supabase.auth.getUser() ->", user);
         if (!user) return;
+        setAuthUserId(user.id);
 
-        const { data: profile, error } = await supabase
-          .from("users")
-          .select(
-            "first_name,middle_name,last_name,suffix,contact_number,email,address"
-          )
-          .eq("id", user.id)
-          .single();
+        const requestTable = getRequestTable(serviceId);
+        let profile: any = null;
 
-        console.log("RequestInfo: profile query ->", { profile, error });
+        if (requestTable) {
+          const { data: joinedRequest, error: joinedError } = await supabase
+            .from(requestTable)
+            .select(
+              "user_id, users(first_name,middle_name,last_name,suffix,contact_number,email,address)"
+            )
+            .eq("user_id", user.id)
+            .order("updated_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
 
-        if (error || !profile) {
-          setProfileLoadError(error?.message || "No profile returned");
-          return;
+          console.log("RequestInfo: request-user join query ->", {
+            requestTable,
+            joinedRequest,
+            joinedError,
+          });
+
+          const joinedUser = (joinedRequest as any)?.users;
+          if (!joinedError && joinedUser) {
+            profile = Array.isArray(joinedUser) ? joinedUser[0] : joinedUser;
+          }
+        }
+
+        if (!profile) {
+          const { data: directProfile, error } = await supabase
+            .from("users")
+            .select(
+              "first_name,middle_name,last_name,suffix,contact_number,email,address"
+            )
+            .eq("id", user.id)
+            .single();
+
+          console.log("RequestInfo: direct profile query ->", {
+            directProfile,
+            error,
+          });
+
+          if (error || !directProfile) {
+            setProfileLoadError(error?.message || "No profile returned");
+            return;
+          }
+
+          profile = directProfile;
         }
 
         // Build display name
@@ -267,17 +317,13 @@ export default function RequestInfo() {
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [serviceId]);
 
   const proceed = async () => {
     if (!agreed) return;
 
     const payload = {
-      name: normalizeSpaces(form.name),
-      countryCode: normalizeSpaces(form.countryCode) || "+63",
-      phone: onlyDigits(form.phone),
-      email: form.email.trim(),
-      address: normalizeSpaces(form.address),
+      user_id: authUserId || null,
       serviceId,
       serviceTitle,
       category,
