@@ -2,8 +2,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import React, { useMemo, useRef, useState } from "react";
-import { useEffect } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../../lib/supabase";
 import {
   Animated,
@@ -28,6 +27,8 @@ const FONT = "SF Pro Rounded";
 const TEAL = "#0B8F8B";
 const TEXT_DARK = "#2B2B2B";
 const DANGER = "#E45454";
+const DISABLED_BG = "#DDEEEE";
+const DISABLED_TEXT = "#B8CACA";
 
 const FIELD_BG = "#EAFBFB";
 const FIELD_BORDER = "#0B8F8B";
@@ -81,6 +82,21 @@ function getReqRoute(serviceId: string) {
   };
 
   return routeMap[id] || "/Home/Hospitalization/HospitalizationReq";
+}
+
+function getRequestTable(serviceId: string) {
+  const id = (serviceId || "").toLowerCase();
+  const tableMap: Record<string, string> = {
+    hospital: "hospitalization_requests",
+    treatment: "treatment_requests",
+    operations: "medical_requests",
+    "emergency-finance": "financial_requests",
+    "burial-money": "monetary_requests",
+    "burial-site": "burial_requests",
+    cremation: "cremation_requests",
+    colombarium: "columbarium_requests",
+  };
+  return tableMap[id] || "";
 }
 
 function onlyDigits(s: string) {
@@ -150,12 +166,14 @@ export default function RequestInfo() {
     category?: string;
     coverage?: string;
     funeralAid?: string;
+    financialRequestType?: string;
   }>();
 
   const serviceId = (params?.serviceId || "unknown").toString();
   const serviceTitle = (params?.serviceTitle || "").toString();
   const category = (params?.category || "").toString();
   const coverage = (params?.coverage || params?.funeralAid || "").toString();
+  const financialRequestType = (params?.financialRequestType || "").toString().trim();
 
   const topTitle = useMemo(
     () => getHeaderTitle(serviceId, category),
@@ -174,6 +192,7 @@ export default function RequestInfo() {
   const [profileLocked, setProfileLocked] = useState(false);
   const [isProfileLoading, setIsProfileLoading] = useState(true);
   const [profileLoadError, setProfileLoadError] = useState<string | null>(null);
+  const [authUserId, setAuthUserId] = useState<string>("");
 
   const [touched, setTouched] = useState({
     name: false,
@@ -208,7 +227,7 @@ export default function RequestInfo() {
     setShowAgreement(true);
   };
 
-  // On mount, try to load verified users profile and lock requester fields
+  // On mount, try to load users profile and lock requester fields
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -218,24 +237,57 @@ export default function RequestInfo() {
         } = await supabase.auth.getUser();
         console.log("RequestInfo: supabase.auth.getUser() ->", user);
         if (!user) return;
+        setAuthUserId(user.id);
 
-        const { data: profile, error } = await supabase
-          .from("users")
-          .select(
-            "first_name,middle_name,last_name,suffix,contact_number,email,address,verified"
-          )
-          .eq("id", user.id)
-          .single();
+        const requestTable = getRequestTable(serviceId);
+        let profile: any = null;
 
-        console.log("RequestInfo: profile query ->", { profile, error });
+        if (requestTable) {
+          const { data: joinedRows, error: joinedError } = await supabase
+            .from(requestTable)
+            .select(
+              "user_id, users(first_name,middle_name,last_name,suffix,contact_number,email,address)"
+            )
+            .eq("user_id", user.id)
+            .order("updated_at", { ascending: false })
+            .limit(1);
 
-        if (error || !profile) {
-          setProfileLoadError(error?.message || "No profile returned");
-          return;
+          const joinedRequest = Array.isArray(joinedRows) ? joinedRows[0] : null;
+
+          console.log("RequestInfo: request-user join query ->", {
+            requestTable,
+            joinedRequest,
+            joinedError,
+          });
+
+          const joinedUser = (joinedRequest as any)?.users;
+          if (!joinedError && joinedUser) {
+            profile = Array.isArray(joinedUser) ? joinedUser[0] : joinedUser;
+          }
         }
-        if (!profile.verified) {
-          setProfileLoadError("Profile not verified");
-          return;
+
+        if (!profile) {
+          const { data: directRows, error } = await supabase
+            .from("users")
+            .select(
+              "first_name,middle_name,last_name,suffix,contact_number,email,address"
+            )
+            .eq("id", user.id)
+            .limit(1);
+
+          const directProfile = Array.isArray(directRows) ? directRows[0] : null;
+
+          console.log("RequestInfo: direct profile query ->", {
+            directProfile,
+            error,
+          });
+
+          if (error || !directProfile) {
+            setProfileLoadError(error?.message || "No profile returned");
+            return;
+          }
+
+          profile = directProfile;
         }
 
         // Build display name
@@ -262,7 +314,7 @@ export default function RequestInfo() {
         }));
         setProfileLocked(true);
       } catch (e) {
-        console.log("Failed to load verified profile:", e);
+        console.log("Failed to load profile:", e);
         if (mounted) setProfileLoadError(String(e));
       } finally {
         if (mounted) setIsProfileLoading(false);
@@ -271,22 +323,21 @@ export default function RequestInfo() {
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [serviceId]);
 
   const proceed = async () => {
     if (!agreed) return;
 
-    const payload = {
-      name: normalizeSpaces(form.name),
-      countryCode: normalizeSpaces(form.countryCode) || "+63",
-      phone: onlyDigits(form.phone),
-      email: form.email.trim(),
-      address: normalizeSpaces(form.address),
+    const payload: Record<string, unknown> = {
+      user_id: authUserId || null,
       serviceId,
       serviceTitle,
       category,
       coverage,
     };
+    if (financialRequestType) {
+      payload.financialRequestType = financialRequestType;
+    }
 
     await AsyncStorage.setItem(
       `apoyo_requestinfo_${serviceId}`,
@@ -301,11 +352,16 @@ export default function RequestInfo() {
 
     router.push({
       pathname: nextRoute as any,
-      params: { serviceId, serviceTitle, category, coverage },
+      params: {
+        serviceId,
+        serviceTitle,
+        category,
+        coverage,
+        ...(financialRequestType ? { financialRequestType } : {}),
+      },
     } as any);
   };
 
-  const nextAnim = usePressScale();
   const modalNextAnim = usePressScale();
 
   const commonInputProps = {
@@ -338,6 +394,7 @@ export default function RequestInfo() {
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
         <ScrollView
+          style={{ flex: 1 }}
           contentContainerStyle={styles.content}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
@@ -360,8 +417,6 @@ export default function RequestInfo() {
                     onChangeText={(t) => setForm((p) => ({ ...p, name: t }))}
                     style={[styles.input, showNameErr && styles.inputErr, profileLocked && { opacity: 0.8 }]}
                     editable={false}
-            placeholder="Juan Dela Cruz"
-            placeholderTextColor="#9AA6A6"
             selectTextOnFocus={false}
             onBlur={() => setTouched((p) => ({ ...p, name: true }))}
             {...commonInputProps}
@@ -379,8 +434,6 @@ export default function RequestInfo() {
               onChangeText={(t) => setForm((p) => ({ ...p, countryCode: t }))}
               style={[styles.input, styles.ccInput, profileLocked && { opacity: 0.8 }]}
               editable={false}
-              placeholder="+63"
-              placeholderTextColor="#9AA6A6"
               selectTextOnFocus={false}
               {...commonInputProps}
             />
@@ -399,8 +452,6 @@ export default function RequestInfo() {
               editable={false}
               selectTextOnFocus={false}
               keyboardType="number-pad"
-              placeholder="912 321 8853"
-              placeholderTextColor="#9AA6A6"
               onBlur={() => setTouched((p) => ({ ...p, phone: true }))}
               maxLength={12}
               {...commonInputProps}
@@ -421,8 +472,6 @@ export default function RequestInfo() {
             editable={false}
             selectTextOnFocus={false}
             keyboardType="email-address"
-            placeholder="juandelacruz@gmail.com"
-            placeholderTextColor="#9AA6A6"
             autoCapitalize="none"
             onBlur={() => setTouched((p) => ({ ...p, email: true }))}
             {...commonInputProps}
@@ -442,8 +491,6 @@ export default function RequestInfo() {
             style={[styles.input, showAddressErr && styles.inputErr, profileLocked && { opacity: 0.8 }]}
             editable={false}
             selectTextOnFocus={false}
-            placeholder="e.g. Brgy. Burol-2, Dasmariñas, Philippines"
-            placeholderTextColor="#9AA6A6"
             onBlur={() => setTouched((p) => ({ ...p, address: true }))}
             {...commonInputProps}
           />
@@ -464,30 +511,23 @@ export default function RequestInfo() {
 
           <View style={{ height: 120 }} />
         </ScrollView>
+      </KeyboardAvoidingView>
 
-        <View style={styles.bottomBar}>
-          <Pressable
-            onPress={openAgreement}
-            disabled={!canNext}
-            onPressIn={canNext ? nextAnim.pressIn : undefined}
-            onPressOut={canNext ? nextAnim.pressOut : undefined}
-            style={({ pressed }) => [
-              { opacity: !canNext ? 0.45 : 1 },
-              pressed && canNext && { opacity: 0.98 },
-            ]}
-          >
-            <Animated.View
-              style={[
-                styles.nextBtnBottom,
-                { transform: [{ scale: nextAnim.scale }] },
-              ]}
-            >
-              <Text style={styles.nextBtnText}>Next</Text>
-            </Animated.View>
-          </Pressable>
-        </View>
+      <View style={styles.bottomBar}>
+        <Pressable
+          onPress={openAgreement}
+          disabled={!canNext}
+          style={({ pressed }) => [
+            styles.applyBtn,
+            !canNext && styles.applyBtnDisabled,
+            pressed && canNext && { opacity: 0.92 },
+          ]}
+        >
+          <Text style={[styles.applyBtnText, !canNext && styles.applyBtnTextDisabled]}>Next</Text>
+        </Pressable>
+      </View>
 
-        <Modal transparent visible={showAgreement} animationType="fade">
+      <Modal transparent visible={showAgreement} animationType="fade">
           <Pressable
             style={styles.modalOverlay}
             onPress={() => setShowAgreement(false)}
@@ -561,7 +601,6 @@ export default function RequestInfo() {
             </Pressable>
           </Pressable>
         </Modal>
-      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -642,17 +681,19 @@ const styles = StyleSheet.create({
   phoneInput: { flex: 1 },
 
   bottomBar: {
-    paddingHorizontal: 16,
-    paddingBottom: Platform.OS === "ios" ? 14 : 12,
+    paddingHorizontal: 20,
     paddingTop: 10,
-    backgroundColor: "#FFFFFF",
+    paddingBottom: 14,
     borderTopWidth: 1,
     borderTopColor: "#E9EDED",
+    backgroundColor: "#FFFFFF",
   },
-  nextBtnBottom: {
-    height: 52,
-    borderRadius: 26,
+  applyBtn: {
+    height: 50,
+    borderRadius: 25,
     backgroundColor: TEAL,
+    borderWidth: 1,
+    borderColor: "#0A7F7C",
     alignItems: "center",
     justifyContent: "center",
     shadowColor: "#000",
@@ -661,12 +702,19 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 5 },
     elevation: 6,
   },
-  nextBtnText: {
+  applyBtnDisabled: {
+    backgroundColor: DISABLED_BG,
+    borderColor: "#C9DEDD",
+    shadowOpacity: 0,
+    elevation: 0,
+  },
+  applyBtnText: {
     fontFamily: FONT,
-    fontWeight: "800",
+    fontWeight: "600",
     fontSize: 14,
     color: "#FFFFFF",
   },
+  applyBtnTextDisabled: { color: DISABLED_TEXT },
 
   modalOverlay: {
     flex: 1,

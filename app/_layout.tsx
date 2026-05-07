@@ -36,7 +36,7 @@ export default function RootLayout() {
         <Stack.Screen name="index" />
         <Stack.Screen name="Home/Home" options={{ animation: "none" }} />
         <Stack.Screen name="Status/Status" options={{ animation: "none" }} />
-        <Stack.Screen name="Notification/Notification" options={{ animation: "none" }} />
+        <Stack.Screen name="Notification/Notifications" options={{ animation: "none" }} />
         <Stack.Screen name="Account/Account" options={{ animation: "none" }} />
       </Stack>
     </>

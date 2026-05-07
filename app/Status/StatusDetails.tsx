@@ -1,14 +1,19 @@
 // app/Status/StatusDetails.tsx
 import { Ionicons } from "@expo/vector-icons";
+import { useFocusEffect } from "@react-navigation/native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
+  Image,
   Linking,
+  Modal,
   Platform,
   Pressable,
+  RefreshControl,
   SafeAreaView,
   ScrollView,
   StatusBar,
@@ -16,6 +21,11 @@ import {
   Text,
   View,
 } from "react-native";
+import {
+  inferAttachmentName,
+  RequestTableName,
+} from "../../lib/requestAttachments";
+import { supabase } from "../../lib/supabase";
 
 const FONT = Platform.select({ ios: "SF Pro Rounded", android: "System" })!;
 
@@ -29,6 +39,14 @@ const TEXT_MUTED = "#7B7B7B";
 
 /* badge */
 const BADGE_PENDING = "#E8C6FF";
+const BADGE_PROGRESS = "#B9E3FF";
+const BADGE_ACTION = "#FFD59E";
+const BADGE_FOR_APPROVAL = "#C8EDE9";
+const BADGE_SCHEDULED = "#D8E6FA";
+const BADGE_APPROVED = "#C8F1C8";
+const BADGE_DRAFT = "#D4D4D4";
+const BADGE_TEXT_DEFAULT = "#2B2B2B";
+const REQUEST_DOCS_BUCKET = "request-documents";
 
 /* timeline */
 const LINE = "#DADADA";
@@ -48,15 +66,27 @@ const TIMELINE_Y_OFFSET = 18;
 
 /* ========= TYPES ========= */
 type Category = "medical" | "financial" | "burial";
-type ServiceStatus = "Pending" | "In Progress" | "Action Required" | "Approved";
+type ServiceStatus =
+  | "Pending"
+  | "In Progress"
+  | "Action Required"
+  | "Resubmitted"
+  | "For Approval"
+  | "Scheduled"
+  | "Approved"
+  | "Draft";
 
 function normalizeStatus(raw?: string): ServiceStatus {
   if (!raw) return "Pending";
-  const s = raw.toString().trim().toLowerCase();
+  const s = raw.toString().trim().toLowerCase().replace(/_/g, " ");
   if (s === "submitted" || s === "pending") return "Pending";
-  if (s === "in progress" || s === "in_progress" || s === "inprogress" || s === "processing") return "In Progress";
-  if (s === "action required" || s === "action_required" || s === "action") return "Action Required";
+  if (s === "resubmitted") return "Resubmitted";
+  if (s === "in progress" || s === "inprogress" || s === "processing") return "In Progress";
+  if (s === "action required" || s === "action") return "Action Required";
+  if (s === "for approval") return "For Approval";
+  if (s === "scheduled") return "Scheduled";
   if (s === "approved" || s === "accepted") return "Approved";
+  if (s === "draft") return "Draft";
   return "Pending";
 }
 
@@ -68,28 +98,240 @@ type ApplicationItem = {
   category: Category;
   createdAt?: number;
   applicationId?: string;
+  requestCode?: string;
+  service?: string;
 };
 
 /* ========= DOC TYPES ========= */
 type StoredDoc = {
-  uri?: string;
-  name?: string;
-  fileName?: string;
-  filename?: string;
-  size?: number;
-  fileSize?: number;
-  bytes?: number;
-  type?: string;
-  mimeType?: string;
-
-  requirementKey?: string;
-  reqKey?: string;
-  requirementId?: string;
-  label?: string;
-  requirementLabel?: string;
+  fileType: string;
+  path: string;
+  status?: string;
+  created?: string;
+  updated?: string;
+  reasonForAction?: string;
+  additionalReason?: string;
 };
 
-type ReqDef = { key: string; label: string };
+type RequestDetailsRow = {
+  id: string;
+  status: string | null;
+  request_code: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  submitted_at: string | null;
+  additional_info: string | null;
+  coverage?: string | null;
+  financial_request_type?: string | null;
+};
+
+const COVERAGE_TABLES = new Set<RequestTableName>([
+  "burial_requests",
+  "cremation_requests",
+]);
+
+type AuditStatusLogRow = {
+  action: string;
+  old_status: string | null;
+  new_status: string | null;
+  changed_by: string | null;
+  changed_by_role: string | null;
+  changed_at: string;
+};
+
+type ReqDef = { key: string; label: string; optional?: boolean };
+
+const FILE_TYPE_MAP: Record<RequestTableName, Record<string, string>> = {
+  hospitalization_requests: {
+    abstract: "abstract_file",
+    bill: "bill_file",
+    letter: "letter_file",
+    voterId: "voter_id_file",
+    birthCert: "birth_cert_file",
+    barangay: "barangay_endorsement_file",
+    indigency: "indigency_cert_file",
+    attachment: "attachment_file",
+  },
+  treatment_requests: {
+    medCert: "med_cert_file",
+    rx: "rx_file",
+    lab: "lab_file",
+    letter: "letter_file",
+    voterId: "voter_id_file",
+    birthCert: "birth_cert_file",
+    barangay: "barangay_endorsement_file",
+    indigency: "indigency_cert_file",
+    attachment: "attachment_file",
+  },
+  medical_requests: {
+    medCert: "med_cert_file",
+    prescription: "prescription_file",
+    quotation: "quotation_file",
+    letter: "letter_file",
+    voterId: "voter_id_file",
+    birthCert: "birth_cert_file",
+    barangay: "barangay_endorsement_file",
+    indigency: "indigency_cert_file",
+    attachment: "attachment_file",
+  },
+  financial_requests: {
+    letter: "letter_file",
+    voterId: "voter_id_file",
+    validId: "valid_id_file",
+    barangay: "barangay_endorsement_file",
+    indigency: "indigency_cert_file",
+    attachment: "attachment_file",
+  },
+  monetary_requests: {
+    letter: "letter_file",
+    voterId: "voters_id_or_cert_file",
+    birthCert: "valid_id_or_birth_cert_file",
+    barangay: "barangay_endorsement_file",
+    indigency: "indigency_cert_file",
+    attachment: "additional_attachment_file",
+  },
+  burial_requests: {
+    deathCert: "death_cert_file",
+    validId: "valid_id_file",
+    barangay: "barangay_endorsement_file",
+    indigency: "indigency_cert_file",
+    attachment: "attachment_file",
+  },
+  cremation_requests: {
+    deathCert: "death_cert_file",
+    validId: "valid_id_file",
+    barangay: "barangay_endorsement_file",
+    indigency: "indigency_cert_file",
+    attachment: "attachment_file",
+  },
+  columbarium_requests: {
+    deathCert: "death_cert_file",
+    validId: "valid_id_file",
+    cremationCert: "cremation_cert_file",
+    barangay: "barangay_endorsement_file",
+    indigency: "indigency_cert_file",
+    attachment: "attachment_file",
+  },
+};
+
+function fromDbFileType(
+  requestTable: RequestTableName,
+  dbFileType: string
+): string {
+  const map = FILE_TYPE_MAP[requestTable] || {};
+  const pair = Object.entries(map).find(([, value]) => value === dbFileType);
+  return pair?.[0] || dbFileType;
+}
+
+function normalizeRawStatus(raw?: string | null): string {
+  const s = (raw || "").toString().trim().toLowerCase().replace(/_/g, " ");
+  if (!s) return "pending";
+  if (s === "submitted") return "pending";
+  if (s === "resubmitted") return "resubmitted";
+  if (s === "inprogress" || s === "processing") return "in progress";
+  if (s === "action required") return "action required";
+  return s;
+}
+
+function normalizeAttachmentStatus(raw?: string | null): string {
+  const s = (raw || "").toString().trim().toLowerCase();
+  if (!s) return "in progress";
+  if (s === "pending" || s === "submitted") return "in progress";
+  if (s === "in_progress" || s === "inprogress" || s === "processing")
+    return "in progress";
+  if (s === "action_required") return "action required";
+  return s;
+}
+
+function attachmentStatusIcon(statusRaw?: string | null): {
+  name: keyof typeof Ionicons.glyphMap;
+  color: string;
+} | null {
+  const s = normalizeAttachmentStatus(statusRaw);
+  if (s === "approved") {
+    return { name: "checkmark-circle", color: GREEN };
+  }
+  if (s === "action required") {
+    return { name: "alert-circle", color: "#F0A13A" };
+  }
+  if (s === "resubmitted") {
+    return { name: "refresh-circle", color: "#E3B500" };
+  }
+  return null;
+}
+
+function statusLabel(raw?: string | null): ServiceStatus {
+  return normalizeStatus(raw || "");
+}
+
+function statusDescription(raw?: string | null): string {
+  const s = normalizeRawStatus(raw);
+  if (s === "pending") {
+    return "The document has landed in the admin's inbox but hasn't been opened yet.";
+  }
+  if (s === "in progress") {
+    return "An admin is doing an authenticity check, please wait.";
+  }
+  if (s === "action required") {
+    return "Your application is currently on hold. We require a resubmission of your files";
+  }
+  if (s === "resubmitted") {
+    return "Your files are being rechecked by the admin, please wait.";
+  }
+  if (s === "for approval") {
+    return "Your request is queued for final approval.";
+  }
+  if (s === "scheduled") {
+    return "Your assistance has been scheduled. Watch for updates from the office.";
+  }
+  if (s === "approved") {
+    return "Your application has been approved.";
+  }
+  if (s === "draft") {
+    return "Your request is still in draft.";
+  }
+  if (s === "deleted") {
+    return "This request has been deleted.";
+  }
+  return "Status updated.";
+}
+
+function badgeThemeForStatus(status: ServiceStatus): {
+  bg: string;
+  text: string;
+} {
+  switch (status) {
+    case "Pending":
+      return { bg: BADGE_PENDING, text: "#4A2E5B" };
+    case "In Progress":
+      return { bg: BADGE_PROGRESS, text: BADGE_TEXT_DEFAULT };
+    case "Action Required":
+      return { bg: BADGE_ACTION, text: BADGE_TEXT_DEFAULT };
+    case "Resubmitted":
+      return { bg: BADGE_PROGRESS, text: BADGE_TEXT_DEFAULT };
+    case "For Approval":
+      return { bg: BADGE_FOR_APPROVAL, text: "#0D5C58" };
+    case "Scheduled":
+      return { bg: BADGE_SCHEDULED, text: "#2F4F7A" };
+    case "Approved":
+      return { bg: BADGE_APPROVED, text: BADGE_TEXT_DEFAULT };
+    case "Draft":
+      return { bg: BADGE_DRAFT, text: BADGE_TEXT_DEFAULT };
+    default:
+      return { bg: BADGE_PENDING, text: "#4A2E5B" };
+  }
+}
+
+function isImagePath(path?: string) {
+  const p = (path || "").toLowerCase();
+  return /\.(png|jpe?g|gif|webp|bmp|heic|heif)$/.test(p);
+}
+
+function toMillis(v?: string | null): number | undefined {
+  if (!v) return undefined;
+  const t = new Date(v).getTime();
+  return Number.isFinite(t) ? t : undefined;
+}
 
 function formatDate(d?: number) {
   if (!d) return "—";
@@ -155,52 +397,48 @@ function typeLabel(category?: Category) {
   }
 }
 
-function idPrefix(category?: Category) {
-  switch (category) {
-    case "financial":
-      return "FAHE";
-    case "burial":
-      return "BUHE";
-    case "medical":
-    default:
-      return "MAHE";
-  }
-}
+function tableForService(
+  service?: string,
+  title?: string,
+  category?: Category
+): RequestTableName | null {
+  const s = (service || "").toLowerCase();
+  const t = (title || "").toLowerCase();
 
-function makeAppId(category: Category | undefined, createdAt: number) {
-  const year = new Date(createdAt).getFullYear();
-  return `${idPrefix(category)}-${year}-001`;
+  if (s === "hospitalization" || s === "hospital")
+    return "hospitalization_requests";
+  if (s === "treatment") return "treatment_requests";
+  if (s === "medical") return "medical_requests";
+  if (s === "financial") return "financial_requests";
+  if (s === "monetary") return "monetary_requests";
+  if (s === "burial-site" || s === "burial") return "burial_requests";
+  if (s === "cremation") return "cremation_requests";
+  if (s === "columbarium" || s === "colombarium")
+    return "columbarium_requests";
+
+  if (t.includes("hospitalization")) return "hospitalization_requests";
+  if (t.includes("treatment")) return "treatment_requests";
+  if (t.includes("monetary")) return "monetary_requests";
+  if (t.includes("financial")) return "financial_requests";
+  if (t.includes("cremation")) return "cremation_requests";
+  if (t.includes("columbarium") || t.includes("colombarium"))
+    return "columbarium_requests";
+  if (t.includes("burial")) return "burial_requests";
+
+  if (category === "medical") return "medical_requests";
+  if (category === "financial") return "financial_requests";
+  if (category === "burial") return "burial_requests";
+
+  return null;
 }
 
 /* ========= helpers for docs ========= */
-function slugify(s: string) {
-  return (s || "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "")
-    .slice(0, 60);
-}
-
 function pickFileName(d: StoredDoc) {
-  return (
-    d.fileName ||
-    d.filename ||
-    d.name ||
-    (typeof d.uri === "string" ? d.uri.split("/").pop() : "") ||
-    "File"
-  );
+  return inferAttachmentName(d.path, d.fileType);
 }
 
 function pickFileSize(d: StoredDoc): number | undefined {
-  const v =
-    typeof d.size === "number"
-      ? d.size
-      : typeof d.fileSize === "number"
-      ? d.fileSize
-      : typeof d.bytes === "number"
-      ? d.bytes
-      : undefined;
-  return v;
+  return undefined;
 }
 
 function formatBytes(bytes?: number) {
@@ -211,73 +449,83 @@ function formatBytes(bytes?: number) {
   return `${mb.toFixed(2)} MB`;
 }
 
-function normalizeDocs(raw: any): StoredDoc[] {
-  if (!raw) return [];
-  if (Array.isArray(raw)) return raw as StoredDoc[];
-  if (typeof raw === "object") {
-    const arr =
-      (Array.isArray((raw as any).docs) && (raw as any).docs) ||
-      (Array.isArray((raw as any).files) && (raw as any).files) ||
-      (Array.isArray((raw as any).uploads) && (raw as any).uploads) ||
-      (Array.isArray((raw as any).items) && (raw as any).items) ||
-      null;
-    if (arr) return arr as StoredDoc[];
+function requirementsFor(table?: RequestTableName | null): ReqDef[] {
+  if (!table) return [];
 
-    const values = Object.values(raw);
-    if (values.every((x) => typeof x === "object"))
-      return values as StoredDoc[];
-  }
-  return [];
-}
+  const byTable: Record<RequestTableName, ReqDef[]> = {
+    hospitalization_requests: [
+      { key: "abstract", label: "Medical Abstract" },
+      { key: "bill", label: "Partial Hospital Bill" },
+      { key: "letter", label: "Letter of Request" },
+      { key: "voterId", label: "Voter's ID / Certificate" },
+      { key: "birthCert", label: "Valid ID / Birth Certificate" },
+      { key: "barangay", label: "Barangay Endorsement" },
+      { key: "indigency", label: "Certificate of Indigency" },
+      { key: "attachment", label: "Attachments (optional)", optional: true },
+    ],
+    treatment_requests: [
+      { key: "medCert", label: "Medical Certificate" },
+      { key: "rx", label: "Doctor's Prescription" },
+      { key: "lab", label: "Laboratory Request" },
+      { key: "letter", label: "Letter of Request" },
+      { key: "voterId", label: "Voter's ID / Certificate" },
+      { key: "birthCert", label: "Valid ID / Birth Certificate" },
+      { key: "barangay", label: "Barangay Endorsement" },
+      { key: "indigency", label: "Certificate of Indigency" },
+      { key: "attachment", label: "Attachments (optional)", optional: true },
+    ],
+    medical_requests: [
+      { key: "medCert", label: "Medical Certificate" },
+      { key: "prescription", label: "Doctor's Prescription" },
+      { key: "quotation", label: "Quotation of Expenses" },
+      { key: "letter", label: "Letter of Request" },
+      { key: "voterId", label: "Voter's ID / Certificate" },
+      { key: "birthCert", label: "Valid ID / Birth Certificate" },
+      { key: "barangay", label: "Barangay Endorsement" },
+      { key: "indigency", label: "Certificate of Indigency" },
+      { key: "attachment", label: "Attachments (optional)", optional: true },
+    ],
+    financial_requests: [
+      { key: "letter", label: "Letter of Request" },
+      { key: "voterId", label: "Voter's ID / Certificate" },
+      { key: "validId", label: "Valid ID" },
+      { key: "barangay", label: "Barangay Endorsement" },
+      { key: "indigency", label: "Certificate of Indigency" },
+      { key: "attachment", label: "Attachments (optional)", optional: true },
+    ],
+    monetary_requests: [
+      { key: "letter", label: "Letter of Request" },
+      { key: "voterId", label: "Voter's ID / Certificate" },
+      { key: "birthCert", label: "Valid ID / Birth Certificate" },
+      { key: "barangay", label: "Barangay Endorsement" },
+      { key: "indigency", label: "Certificate of Indigency" },
+      { key: "attachment", label: "Attachments (optional)", optional: true },
+    ],
+    burial_requests: [
+      { key: "deathCert", label: "Death Certificate" },
+      { key: "validId", label: "Valid ID of Deceased" },
+      { key: "barangay", label: "Barangay Endorsement of the Deceased" },
+      { key: "indigency", label: "Indigency Certificate of the Deceased" },
+      { key: "attachment", label: "Attachments (optional)", optional: true },
+    ],
+    cremation_requests: [
+      { key: "deathCert", label: "Death Certificate" },
+      { key: "validId", label: "Valid ID of Deceased" },
+      { key: "barangay", label: "Barangay Endorsement of the Deceased" },
+      { key: "indigency", label: "Indigency Certificate of the Deceased" },
+      { key: "attachment", label: "Attachments (optional)", optional: true },
+    ],
+    columbarium_requests: [
+      { key: "deathCert", label: "Death Certificate" },
+      { key: "validId", label: "Valid ID of Deceased" },
+      { key: "cremationCert", label: "Certificate of Cremation" },
+      { key: "barangay", label: "Barangay Endorsement of the Deceased" },
+      { key: "indigency", label: "Indigency Certificate of the Deceased" },
+      { key: "attachment", label: "Attachments (optional)", optional: true },
+    ],
+  };
 
-function requirementsFor(category?: Category, title?: string): ReqDef[] {
-  const t = (title || "").toLowerCase();
-
-  const MEDICAL: ReqDef[] = [
-    { key: "personal_letter", label: "Personal Letter" },
-    { key: "voters_id", label: "Patient's Voters ID/ Certificate" },
-    { key: "barangay_endorsement", label: "Barangay Endorsement" },
-    { key: "indigency", label: "Indigency Certificate" },
-    { key: "valid_id", label: "Patient's Valid ID" },
-    { key: "medical_certificate", label: "Medical Certificate" },
-    { key: "prescription", label: "Doctor's Prescription" },
-    { key: "quotation", label: "Quotation of Expenses" },
-  ];
-
-  const FINANCIAL: ReqDef[] = [
-    { key: "personal_letter", label: "Personal Letter" },
-    { key: "valid_id", label: "Valid ID" },
-    { key: "barangay_endorsement", label: "Barangay Endorsement" },
-    { key: "indigency", label: "Indigency Certificate" },
-    { key: "proof", label: "Proof / Supporting Document" },
-  ];
-
-  const BURIAL: ReqDef[] = [
-    { key: "personal_letter", label: "Personal Letter" },
-    { key: "death_certificate", label: "Death Certificate" },
-    { key: "valid_id", label: "Valid ID" },
-    { key: "barangay_endorsement", label: "Barangay Endorsement" },
-    { key: "indigency", label: "Indigency Certificate" },
-    { key: "funeral_contract", label: "Funeral Contract / Quotation" },
-  ];
-
-  if (
-    category === "burial" ||
-    t.includes("burial") ||
-    t.includes("cremation") ||
-    t.includes("columbarium") ||
-    t.includes("colombarium")
-  )
-    return BURIAL;
-
-  if (
-    category === "financial" ||
-    t.includes("financial") ||
-    t.includes("monetary")
-  )
-    return FINANCIAL;
-
-  return MEDICAL;
+  return byTable[table] || [];
 }
 
 export default function StatusDetails() {
@@ -289,12 +537,24 @@ export default function StatusDetails() {
     category?: string;
     createdAt?: string;
     applicationId?: string;
+    requestCode?: string;
+    service?: string;
   }>();
 
   const [app, setApp] = useState<ApplicationItem | null>(null);
 
-  const [showDocs, setShowDocs] = useState(false);
   const [uploadedDocs, setUploadedDocs] = useState<StoredDoc[]>([]);
+  const [auditHistory, setAuditHistory] = useState<AuditStatusLogRow[]>([]);
+  const [isDbSyncing, setIsDbSyncing] = useState(false);
+  const [requestRow, setRequestRow] = useState<RequestDetailsRow | null>(null);
+  const [previewUri, setPreviewUri] = useState<string | null>(null);
+  const [previewName, setPreviewName] = useState("");
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [loadingPreview, setLoadingPreview] = useState(false);
+  const [thumbnailUrls, setThumbnailUrls] = useState<Record<string, string>>({});
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [refreshTick, setRefreshTick] = useState(0);
+  const [isInitialLoading, setIsInitialLoading] = useState(true);
 
   useEffect(() => {
     (async () => {
@@ -311,7 +571,7 @@ export default function StatusDetails() {
                 id: String(found?.id),
                 title: String(found?.title ?? ""),
                 description: String(found?.description ?? ""),
-                  status: normalizeStatus(found?.status as string) ?? "Pending",
+                status: normalizeStatus(found?.status as string) ?? "Pending",
                 category: (found?.category as Category) ?? "medical",
                 createdAt:
                   typeof found?.createdAt === "number"
@@ -320,6 +580,16 @@ export default function StatusDetails() {
                 applicationId:
                   typeof found?.applicationId === "string"
                     ? found.applicationId
+                    : undefined,
+                requestCode:
+                  typeof found?.requestCode === "string"
+                    ? found.requestCode
+                    : typeof found?.applicationId === "string"
+                    ? found.applicationId
+                    : undefined,
+                service:
+                  typeof found?.service === "string"
+                    ? found.service
                     : undefined,
               });
               return;
@@ -331,7 +601,8 @@ export default function StatusDetails() {
       const fallbackCategory =
         (params?.category as Category) ?? ("medical" as Category);
       const fallbackCreatedAt = Number(params?.createdAt) || Date.now();
-      const fallbackStatus = normalizeStatus((params?.status as string) ?? "") ?? "Pending";
+      const fallbackStatus =
+        normalizeStatus((params?.status as string) ?? "") ?? "Pending";
       const fallbackTitle = String(params?.title ?? "—");
 
       setApp({
@@ -343,6 +614,11 @@ export default function StatusDetails() {
         createdAt: fallbackCreatedAt,
         applicationId:
           (params?.applicationId || "").toString().trim() || undefined,
+        requestCode:
+          (params?.requestCode || params?.applicationId || "")
+            .toString()
+            .trim() || undefined,
+        service: (params?.service || "").toString().trim() || undefined,
       });
     })();
   }, [
@@ -352,10 +628,25 @@ export default function StatusDetails() {
     params?.status,
     params?.title,
     params?.applicationId,
+    params?.requestCode,
+    params?.service,
   ]);
 
-  const badgeText = app?.status ?? "Pending";
+  const latestAuditStatus = useMemo(() => {
+    if (!auditHistory.length) return null;
+    const latest = auditHistory[auditHistory.length - 1];
+    return latest?.new_status || latest?.old_status || null;
+  }, [auditHistory]);
+
+  const badgeText = useMemo(
+    () => normalizeStatus(latestAuditStatus || requestRow?.status || app?.status),
+    [latestAuditStatus, requestRow?.status, app?.status]
+  );
   const createdAt = app?.createdAt ?? Date.now();
+  const badgeTheme = useMemo(
+    () => badgeThemeForStatus(badgeText as ServiceStatus),
+    [badgeText]
+  );
 
   const infoHeaderTitle = useMemo(
     () => `${assistanceTitle(app?.category)} Information`,
@@ -369,12 +660,282 @@ export default function StatusDetails() {
     return app?.title || "—";
   }, [app?.title]);
 
-  const appId = useMemo(() => {
+  const requestTable = useMemo(
+    () => tableForService(app?.service, app?.title, app?.category),
+    [app?.service, app?.title, app?.category]
+  );
+  const realRequestId = useMemo(() => {
+    const id = (app?.id || "").toString();
+    return id.startsWith("draft_") ? id.replace("draft_", "") : id;
+  }, [app?.id]);
+
+  useEffect(() => {
+    if (!realRequestId) return;
+
+    let active = true;
+
+    (async () => {
+      try {
+        await supabase.functions.invoke("notifications", {
+          body: {
+            action: "mark-read",
+            requestId: realRequestId,
+          },
+        });
+      } catch (e) {
+        if (active) {
+          console.log("Status details notification read sync failed:", e);
+        }
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [realRequestId]);
+
+  const requestCode = useMemo(() => {
+    if (requestRow?.request_code) return requestRow.request_code;
+    if (app?.requestCode) return app.requestCode;
     if (app?.applicationId) return app.applicationId;
-    const passed = (params?.applicationId || "").toString().trim();
-    if (passed) return passed;
-    return makeAppId(app?.category, createdAt);
-  }, [app?.applicationId, app?.category, createdAt, params?.applicationId]);
+    const passed = (params?.requestCode || params?.applicationId || "")
+      .toString()
+      .trim();
+    return passed;
+  }, [
+    requestRow?.request_code,
+    app?.requestCode,
+    app?.applicationId,
+    params?.requestCode,
+    params?.applicationId,
+  ]);
+
+  const displayRequestCode = requestCode || "Pending assignment";
+  const additionalInfoText =
+    (requestRow?.additional_info || "").toString().trim() ||
+    "No additional information submitted.";
+  const coverageText = (requestRow?.coverage || "").toString().trim();
+  const financialRequestTypeText = (requestRow?.financial_request_type || "")
+    .toString()
+    .trim();
+
+  const normalizedStatus = useMemo(
+    () => normalizeRawStatus(latestAuditStatus || requestRow?.status || app?.status),
+    [latestAuditStatus, requestRow?.status, app?.status]
+  );
+  const isActionRequired = normalizedStatus === "action required";
+
+  const timelineSteps = useMemo(() => {
+    if (auditHistory.length > 0) {
+      const filtered = auditHistory.filter(
+        (log) => (log.action || "").toUpperCase() !== "INSERT"
+      );
+
+      const reduced = filtered.reduce<
+        Array<{
+          key: string;
+          title: ServiceStatus;
+          description: string;
+          timestamp?: number;
+          statusRaw: string;
+        }>
+      >((acc, log, index) => {
+        const statusRaw = normalizeRawStatus(log.new_status || log.old_status);
+        if (!statusRaw) return acc;
+
+        const next = {
+          key: `${log.changed_at}-${index}`,
+          title: statusLabel(statusRaw),
+          description: statusDescription(statusRaw),
+          timestamp: toMillis(log.changed_at),
+          statusRaw,
+        };
+
+        if (!acc.length) {
+          acc.push(next);
+          return acc;
+        }
+
+        const last = acc[acc.length - 1];
+        if (last.statusRaw === statusRaw) {
+          acc[acc.length - 1] = next;
+          return acc;
+        }
+
+        acc.push(next);
+        return acc;
+      }, []);
+
+      if (reduced.length > 0) {
+        return [...reduced].reverse();
+      }
+    }
+
+    const fallbackTimestamp =
+      toMillis(requestRow?.updated_at) ||
+      toMillis(requestRow?.submitted_at) ||
+      toMillis(requestRow?.created_at) ||
+      app?.createdAt;
+
+    return [
+      {
+        key: "fallback-current",
+        title: statusLabel(requestRow?.status || app?.status),
+        description: statusDescription(requestRow?.status || app?.status),
+        timestamp: fallbackTimestamp,
+        statusRaw: normalizeRawStatus(requestRow?.status || app?.status),
+      },
+    ];
+  }, [
+    auditHistory,
+    requestRow?.status,
+    requestRow?.updated_at,
+    requestRow?.submitted_at,
+    requestRow?.created_at,
+    app?.status,
+    app?.createdAt,
+  ]);
+
+  const currentStepIndex = useMemo(() => {
+    return 0;
+  }, [timelineSteps.length]);
+
+  const onRefresh = useCallback(() => {
+    setIsRefreshing(true);
+    setRefreshTick((x) => x + 1);
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      setIsInitialLoading(true);
+      setRefreshTick((x) => x + 1);
+      return () => {};
+    }, [])
+  );
+
+  useEffect(() => {
+    if (!app?.id || !requestTable) return;
+
+    const realId = app.id.startsWith("draft_")
+      ? app.id.replace("draft_", "")
+      : app.id;
+
+    let active = true;
+
+    (async () => {
+      try {
+        setIsDbSyncing(true);
+        const baseSelectColumns =
+          "id,status,request_code,created_at,updated_at,submitted_at,additional_info";
+        const withCoverage = COVERAGE_TABLES.has(requestTable)
+          ? `${baseSelectColumns},coverage`
+          : baseSelectColumns;
+        const requestSelectColumns =
+          requestTable === "financial_requests"
+            ? `${withCoverage},financial_request_type`
+            : withCoverage;
+
+        const { data, error } = await supabase
+          .from(requestTable)
+          .select(requestSelectColumns)
+          .eq("id", realId)
+          .maybeSingle();
+
+        if (error) throw error;
+
+        if (active) {
+          const row = (data as RequestDetailsRow | null) || null;
+          setRequestRow(row);
+
+          if (row) {
+            setApp((prev) => {
+              if (!prev) return prev;
+              return {
+                ...prev,
+                status: normalizeStatus(row.status || prev.status),
+                requestCode:
+                  typeof row.request_code === "string" && row.request_code.trim()
+                    ? row.request_code.trim()
+                    : prev.requestCode,
+                createdAt:
+                  toMillis(row.created_at) ||
+                  toMillis(row.submitted_at) ||
+                  prev.createdAt,
+              };
+            });
+          }
+        }
+
+        const { data: auditData, error: auditError } = await supabase
+          .from("audit_logs")
+          .select("action,old_status,new_status,changed_by,changed_by_role,changed_at")
+          .eq("request_table", requestTable)
+          .eq("request_id", realId)
+          .order("changed_at", { ascending: true });
+
+        if (auditError) {
+          console.log("Status details audit log sync failed:", auditError);
+          if (active) setAuditHistory([]);
+        } else if (active) {
+          const rows = (auditData || []) as AuditStatusLogRow[];
+          setAuditHistory(rows.filter((r) => !!r.changed_at));
+        }
+
+        const { data: attachmentsData, error: attachmentsError } = await supabase
+          .from("request_attachments")
+          .select(
+            "file_type,path,status,created,updated,reason_for_action,additional_reason"
+          )
+          .eq("request_table", requestTable)
+          .eq("request_uid", realId)
+          .order("created", { ascending: true });
+
+        if (attachmentsError) throw attachmentsError;
+
+        if (active) {
+          const rows = (attachmentsData || []) as Array<{
+            file_type: string;
+            path: string;
+            status: string;
+            created: string;
+            updated: string;
+            reason_for_action: string | null;
+            additional_reason: string | null;
+          }>;
+
+          setUploadedDocs(
+            rows
+              .filter((r) => typeof r.path === "string" && r.path.trim().length > 0)
+              .map((r) => ({
+                fileType: fromDbFileType(requestTable, r.file_type),
+                path: r.path,
+                status: r.status,
+                created: r.created,
+                updated: r.updated,
+                reasonForAction: r.reason_for_action || undefined,
+                additionalReason: r.additional_reason || undefined,
+              }))
+          );
+        }
+      } catch (e) {
+        console.log("Status details DB sync failed:", e);
+      } finally {
+        if (active) setIsDbSyncing(false);
+        if (active) setIsRefreshing(false);
+        if (active) setIsInitialLoading(false);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [app?.id, requestTable, refreshTick]);
+
+  useEffect(() => {
+    if (app?.id && !requestTable) {
+      setIsInitialLoading(false);
+    }
+  }, [app?.id, requestTable]);
 
   const headerStroke = useMemo<[string, string]>(
     () => topBarGradient(app?.category),
@@ -382,143 +943,102 @@ export default function StatusDetails() {
   );
 
   const reqDefs = useMemo(() => {
-    return requirementsFor(app?.category, app?.title);
-  }, [app?.category, app?.title]);
+    return requirementsFor(requestTable);
+  }, [requestTable]);
 
-  useEffect(() => {
-    (async () => {
-      if (!app?.id) return;
-
-      const id = String(app.id);
-      const cat = String(app.category || "medical");
-      const titleSlug = slugify(app.title || "");
-
-      const keysToTry = [
-        `apoyo_docs_${id}`,
-        `apoyo_documents_${id}`,
-        `apoyo_uploads_${id}`,
-        `apoyo_files_${id}`,
-
-        `apoyo_${cat}_docs_${id}`,
-        `apoyo_${cat}_documents_${id}`,
-        `apoyo_${cat}_uploads_${id}`,
-        `apoyo_${cat}_files_${id}`,
-
-        `apoyo_${cat}_${titleSlug}_docs_${id}`,
-        `apoyo_${cat}_${titleSlug}_documents_${id}`,
-        `apoyo_${cat}_${titleSlug}_uploads_${id}`,
-
-        appId ? `apoyo_docs_${appId}` : "",
-        appId ? `apoyo_${cat}_docs_${appId}` : "",
-        appId ? `apoyo_${cat}_uploads_${appId}` : "",
-      ].filter(Boolean);
-
-      let foundDocs: StoredDoc[] = [];
-      for (const k of keysToTry) {
-        try {
-          const raw = await AsyncStorage.getItem(k);
-          if (!raw) continue;
-          const parsed = JSON.parse(raw);
-          const docs = normalizeDocs(parsed);
-          if (docs.length) {
-            foundDocs = docs;
-            break;
-          }
-        } catch {}
-      }
-
-      setUploadedDocs(foundDocs);
-    })();
-  }, [app?.id, app?.category, app?.title, appId]);
+  const requiredReqDefs = useMemo(
+    () => reqDefs.filter((r) => !r.optional),
+    [reqDefs]
+  );
+  const optionalReqDef = useMemo(
+    () => reqDefs.find((r) => r.optional),
+    [reqDefs]
+  );
 
   const docByReqKey = useMemo(() => {
     const map = new Map<string, StoredDoc>();
 
     for (const d of uploadedDocs) {
-      const k =
-        (
-          d.requirementKey ||
-          d.reqKey ||
-          d.requirementId ||
-          (d.label ? slugify(d.label) : "") ||
-          (d.requirementLabel ? slugify(d.requirementLabel) : "")
-        )?.toString() || "";
+      const k = (d.fileType || "").toString();
       if (k && !map.has(k)) map.set(k, d);
     }
 
-    for (const d of uploadedDocs) {
-      const fn = pickFileName(d).toLowerCase();
-      for (const r of reqDefs) {
-        if (map.has(r.key)) continue;
-
-        if (r.key === "personal_letter" && fn.includes("letter"))
-          map.set(r.key, d);
-        else if (
-          r.key === "voters_id" &&
-          (fn.includes("voter") || fn.includes("certificate"))
-        )
-          map.set(r.key, d);
-        else if (r.key === "barangay_endorsement" && fn.includes("endorse"))
-          map.set(r.key, d);
-        else if (r.key === "indigency" && fn.includes("indigen"))
-          map.set(r.key, d);
-        else if (r.key === "valid_id" && fn.includes("id")) map.set(r.key, d);
-        else if (
-          r.key === "medical_certificate" &&
-          (fn.includes("medical") || fn.includes("cert"))
-        )
-          map.set(r.key, d);
-        else if (r.key === "prescription" && fn.includes("prescrip"))
-          map.set(r.key, d);
-        else if (
-          r.key === "quotation" &&
-          (fn.includes("quote") || fn.includes("quotation"))
-        )
-          map.set(r.key, d);
-        else if (r.key === "death_certificate" && fn.includes("death"))
-          map.set(r.key, d);
-        else if (
-          r.key === "funeral_contract" &&
-          (fn.includes("funeral") ||
-            fn.includes("contract") ||
-            fn.includes("quotation") ||
-            fn.includes("quote"))
-        )
-          map.set(r.key, d);
-      }
-    }
-
     return map;
-  }, [uploadedDocs, reqDefs]);
+  }, [uploadedDocs]);
+
+  useEffect(() => {
+    let active = true;
+
+    (async () => {
+      const imageDocs = uploadedDocs.filter((d) => isImagePath(d.path));
+      if (!imageDocs.length) {
+        if (active) setThumbnailUrls({});
+        return;
+      }
+
+      const next: Record<string, string> = {};
+      await Promise.all(
+        imageDocs.map(async (doc) => {
+          const { data, error } = await supabase.storage
+            .from(REQUEST_DOCS_BUCKET)
+            .createSignedUrl(doc.path, 3600);
+
+          if (!error && data?.signedUrl) {
+            next[doc.path] = data.signedUrl;
+          }
+        })
+      );
+
+      if (active) {
+        setThumbnailUrls(next);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [uploadedDocs]);
 
   const openDoc = async (doc: StoredDoc) => {
-    const uri = (doc?.uri || "").toString().trim();
-    if (!uri) {
-      Alert.alert("Cannot open", "No file URI saved for this upload.");
+    const path = (doc?.path || "").toString().trim();
+    if (!path) {
+      Alert.alert("Cannot open", "No file path saved for this upload.");
       return;
     }
+
     try {
-      const can = await Linking.canOpenURL(uri);
+      setLoadingPreview(true);
+      const { data, error } = await supabase.storage
+        .from(REQUEST_DOCS_BUCKET)
+        .createSignedUrl(path, 60);
+
+      if (error) throw error;
+      const signedUrl = (data?.signedUrl || "").toString();
+      if (!signedUrl) {
+        Alert.alert("Cannot open", "Could not generate a file link.");
+        return;
+      }
+
+      if (isImagePath(path)) {
+        setPreviewUri(signedUrl);
+        setPreviewName(pickFileName(doc));
+        setPreviewOpen(true);
+        return;
+      }
+
+      const can = await Linking.canOpenURL(signedUrl);
       if (!can) {
         Alert.alert("Cannot open", "Your device cannot open this file.");
         return;
       }
-      await Linking.openURL(uri);
+
+      await Linking.openURL(signedUrl);
     } catch {
       Alert.alert("Cannot open", "Failed to open the file.");
+    } finally {
+      setLoadingPreview(false);
     }
   };
-
-  const NODE1 = 14 + TIMELINE_Y_OFFSET;
-  const NODE2 = 70 + TIMELINE_Y_OFFSET;
-  const NODE3 = 126 + TIMELINE_Y_OFFSET;
-  const NODE4 = 182 + TIMELINE_Y_OFFSET;
-
-  const STEP1 = 232 + TIMELINE_Y_OFFSET;
-  const STEP2 = 292 + TIMELINE_Y_OFFSET;
-
-  const EXTRA = showDocs ? 420 : 0;
-  const LINE_HEIGHT = STEP2 + 42 + EXTRA;
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -539,9 +1059,26 @@ export default function StatusDetails() {
         <View style={{ width: 44 }} />
       </View>
 
+      {isInitialLoading ? (
+        <View style={styles.initialLoadingWrap}>
+          <ActivityIndicator size="large" color="#0B8F8B" />
+          <View style={styles.initialSkeletonCard} />
+          <View style={styles.initialSkeletonLine} />
+          <View style={styles.initialSkeletonPanel} />
+        </View>
+      ) : (
       <ScrollView
         contentContainerStyle={styles.body}
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={isRefreshing}
+            onRefresh={onRefresh}
+            tintColor="#0B8F8B"
+            colors={["#0B8F8B"]}
+            progressBackgroundColor="#FFFFFF"
+          />
+        }
       >
         <View style={styles.infoShadow}>
           <View style={styles.infoCard}>
@@ -554,8 +1091,19 @@ export default function StatusDetails() {
 
             <Text style={styles.infoHeader}>{infoHeaderTitle}</Text>
 
-            <View style={styles.badge}>
-              <Text style={styles.badgeText}>{badgeText}</Text>
+            <View style={[styles.badge, { backgroundColor: badgeTheme.bg }]}> 
+              <Text style={[styles.badgeText, { color: badgeTheme.text }]}>{badgeText}</Text>
+            </View>
+
+            <View style={styles.requestCodeBlock}>
+              <Text style={styles.requestCodeLabel}>Request Code</Text>
+              <Text style={styles.requestCodeValue}>{displayRequestCode}</Text>
+              {isDbSyncing ? (
+                <View style={styles.codeSyncRow}>
+                  <ActivityIndicator size="small" color="#0B8F8B" />
+                  <Text style={styles.codeSyncText}>Syncing latest details...</Text>
+                </View>
+              ) : null}
             </View>
 
             <View style={styles.infoRows}>
@@ -563,133 +1111,263 @@ export default function StatusDetails() {
                 label={typeLabel(app?.category)}
                 value={typeOfAssistance}
               />
+              {requestTable === "financial_requests" ? (
+                <InfoRow
+                  label="Financial Request Type:"
+                  value={financialRequestTypeText || "—"}
+                />
+              ) : null}
+              {coverageText ? (
+                <InfoRow label="Coverage:" value={coverageText} />
+              ) : null}
               <InfoRow
                 label="Date of Application:"
-                value={formatDate(createdAt)}
+                value={`${formatDate(createdAt)} • ${formatTime(createdAt)}`}
               />
-              <InfoRow label="Application ID:" value={appId} />
             </View>
+
           </View>
         </View>
 
         <View style={styles.timelineWrap}>
-          <View style={[styles.line, { height: LINE_HEIGHT }]} />
-
-          <View style={[styles.node, { top: NODE1 }]} />
-          <View style={[styles.node, { top: NODE2 }]} />
-          <View style={[styles.node, { top: NODE3 }]} />
-          <View style={[styles.node, { top: NODE4 }]} />
-
-          <View style={[styles.greenNodeWrap, { top: STEP1 }]} />
-          <View style={[styles.greenNode, { top: STEP1 + 2 }]}>
-            <Ionicons name="checkmark" size={14} color="#fff" />
-          </View>
-
-          <View style={[styles.timeLeft, { top: STEP1 - 8 }]}>
-            <Text style={styles.timeDate} numberOfLines={1}>
-              {formatDate(createdAt)}
-            </Text>
-            <Text style={styles.timeClock} numberOfLines={1}>
-              {formatTime(createdAt)}
-            </Text>
-          </View>
-
-          <View style={[styles.eventCard, { top: STEP1 - 14 }]}>
-            <Text style={styles.eventTitle}>Pending review</Text>
-            <Text style={styles.eventDesc}>
-              The document has landed in the admin’s inbox but hasn’t{"\n"}been
-              opened yet.
-            </Text>
-          </View>
-
-          <View style={[styles.greenNodeWrap, { top: STEP2 }]} />
-          <View style={[styles.greenNode, { top: STEP2 + 2 }]}>
-            <Ionicons name="checkmark" size={14} color="#fff" />
-          </View>
-
-          <View style={[styles.timeLeft, { top: STEP2 - 8 }]}>
-            <Text style={styles.timeDate} numberOfLines={1}>
-              {formatDate(createdAt)}
-            </Text>
-            <Text style={styles.timeClock} numberOfLines={1}>
-              {formatTime(createdAt)}
-            </Text>
-          </View>
-
-          <View style={[styles.eventCard2, { top: STEP2 - 18 }]}>
-            <Pressable
-              onPress={() => {}}
-              style={({ pressed }) => [
-                styles.submitBtn,
-                pressed && { opacity: 0.92 },
-              ]}
-            >
-              <Text style={styles.submitBtnText}>
-                Submit {assistanceTitle(app?.category)} Documents
-              </Text>
-            </Pressable>
-
-            <Pressable
-              onPress={() => setShowDocs((v) => !v)}
-              style={({ pressed }) => [
-                styles.viewDocsRow,
-                pressed && { opacity: 0.85 },
-              ]}
-            >
-              <Text style={styles.viewDocsText}>View Documents</Text>
-              <Ionicons
-                name={showDocs ? "chevron-up" : "chevron-down"}
-                size={16}
-                color={TEXT_MUTED}
-              />
-            </Pressable>
-
-            {/* ✅ MINIMIZED DESIGN LIKE YOUR 2ND SCREENSHOT */}
-            {showDocs ? (
-              <View style={styles.docsWrap}>
-                <View style={styles.docsHeader}>
-                  <Text style={styles.docsHeaderText}>
-                    Submitted Requirements
-                  </Text>
-                </View>
-
-                <View style={styles.docsBody}>
-                  {reqDefs.map((r) => {
-                    const doc = docByReqKey.get(r.key);
-                    const fileName = doc ? pickFileName(doc) : "";
-                    const sizeTxt = doc ? formatBytes(pickFileSize(doc)) : "";
-                    const isPdf =
-                      (fileName || "").toLowerCase().endsWith(".pdf") ||
-                      (doc?.mimeType || "").toLowerCase().includes("pdf") ||
-                      (doc?.type || "").toLowerCase().includes("pdf");
+          <View style={styles.progressPanel}>
+            {timelineSteps.map((step, index) => (
+              <View key={step.key} style={styles.progressRow}>
+                <View style={styles.progressTrackCol}>
+                  {(() => {
+                    const isCurrent = index === currentStepIndex;
+                    const isCompleted = index > currentStepIndex;
+                    const showAlert = isCurrent;
 
                     return (
-                      <View key={r.key} style={styles.reqBlock}>
-                        <View style={styles.reqTitleRow}>
+                      <View
+                        style={[
+                          styles.progressDot,
+                          isCompleted && styles.progressDotActive,
+                          showAlert && styles.progressDotCurrent,
+                        ]}
+                      >
+                        {isCompleted ? (
+                          <Ionicons name="checkmark" size={12} color="#FFFFFF" />
+                        ) : showAlert ? (
+                          <Ionicons name="alert" size={11} color="#FFFFFF" />
+                        ) : null}
+                      </View>
+                    );
+                  })()}
+                  {index < timelineSteps.length - 1 ? (
+                    <View
+                      style={[
+                        styles.progressLine,
+                        index >= currentStepIndex && styles.progressLineActive,
+                      ]}
+                    />
+                  ) : null}
+                </View>
+
+                <View style={styles.progressCard}>
+                  <Text style={styles.progressTitle}>{step.title}</Text>
+                  <Text style={styles.progressDesc}>{step.description}</Text>
+                  <Text style={styles.progressTime}>
+                    {step.timestamp
+                      ? `${formatDate(step.timestamp)} • ${formatTime(step.timestamp)}`
+                      : "Waiting for update"}
+                  </Text>
+
+                  {isActionRequired &&
+                  index === currentStepIndex &&
+                  step.statusRaw === "action required" &&
+                  requestTable &&
+                  realRequestId ? (
+                    <Pressable
+                      onPress={() =>
+                        router.push({
+                          pathname: "/Status/ActionRequiredDetails",
+                          params: {
+                            id: realRequestId,
+                            requestTable,
+                            title: app?.title || "",
+                            service: app?.service || "",
+                            requestCode: requestCode || "",
+                          },
+                        } as any)
+                      }
+                      style={({ pressed }) => [
+                        styles.timelineActionLinkWrap,
+                        pressed && { opacity: 0.8 },
+                      ]}
+                    >
+                      <Text style={styles.timelineActionLink}>View Details</Text>
+                      <Ionicons name="chevron-forward" size={14} color="#D07C00" />
+                    </Pressable>
+                  ) : null}
+                </View>
+              </View>
+            ))}
+          </View>
+
+          <View style={styles.docsWrap}>
+            <View style={styles.docsHeader}>
+              <Text style={styles.docsHeaderText}>Submitted Requirements</Text>
+            </View>
+
+            <View style={styles.docsBody}>
+              {requiredReqDefs.map((r) => {
+                const doc = docByReqKey.get(r.key);
+                const fileName = doc ? pickFileName(doc) : "";
+                const sizeTxt = doc ? formatBytes(pickFileSize(doc)) : "";
+                const isPdf = (fileName || "").toLowerCase().endsWith(".pdf");
+                const isImage = !!doc && isImagePath(doc.path);
+                const thumbnailUri = doc ? thumbnailUrls[doc.path] : undefined;
+                const statusIcon = doc ? attachmentStatusIcon(doc.status) : null;
+
+                return (
+                  <View key={r.key} style={styles.reqBlock}>
+                    <View style={styles.reqTitleRow}>
+                      {!doc ? (
+                        <Ionicons
+                          name="ellipse-outline"
+                          size={16}
+                          color={TEXT_MUTED}
+                          style={{ marginTop: 1 }}
+                        />
+                      ) : statusIcon ? (
+                        <Ionicons
+                          name={statusIcon.name}
+                          size={18}
+                          color={statusIcon.color}
+                          style={{ marginTop: 1 }}
+                        />
+                      ) : (
+                        <View style={styles.reqNoStatusIcon} />
+                      )}
+                      <Text style={styles.reqTitle}>{r.label}</Text>
+                    </View>
+
+                    <Pressable
+                      disabled={!doc}
+                      onPress={() => (doc ? openDoc(doc) : null)}
+                      style={({ pressed }) => [
+                        styles.fileCardMini,
+                        !doc && styles.fileCardMiniDisabled,
+                        pressed && doc ? { opacity: 0.9 } : null,
+                      ]}
+                    >
+                      <View
+                        style={[
+                          styles.fileIconBoxMini,
+                          !doc && styles.fileIconBoxMiniDisabled,
+                        ]}
+                      >
+                        {isImage && thumbnailUri ? (
+                          <Image
+                            source={{ uri: thumbnailUri }}
+                            style={styles.fileThumbnail}
+                            resizeMode="cover"
+                          />
+                        ) : (
                           <Ionicons
-                            name="checkmark"
+                            name={
+                              doc
+                                ? isPdf
+                                  ? "document-text"
+                                  : "image"
+                                : "document-outline"
+                            }
                             size={16}
-                            color={GREEN}
+                            color={
+                              doc
+                                ? isPdf
+                                  ? "#D94B4B"
+                                  : "#0B8F8B"
+                                : "#BDBDBD"
+                            }
+                          />
+                        )}
+                      </View>
+
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.fileNameMini} numberOfLines={1}>
+                          {doc ? fileName : "No file submitted yet"}
+                        </Text>
+                        <Text style={styles.fileSizeMini} numberOfLines={1}>
+                          {doc ? sizeTxt || " " : " "}
+                        </Text>
+                      </View>
+                    </Pressable>
+                  </View>
+                );
+              })}
+
+              <View style={styles.reqBlock}>
+                <View style={styles.reqTitleRow}>
+                  <Ionicons
+                    name="document-text-outline"
+                    size={16}
+                    color={TEXT_MUTED}
+                    style={{ marginTop: 1 }}
+                  />
+                  <Text style={styles.reqTitle}>Additional Information</Text>
+                </View>
+                <View style={styles.additionalInfoCard}>
+                  <Text style={styles.additionalInfoText}>{additionalInfoText}</Text>
+                </View>
+              </View>
+
+              {optionalReqDef ? (
+                (() => {
+                  const doc = docByReqKey.get(optionalReqDef.key);
+                  const fileName = doc ? pickFileName(doc) : "";
+                  const isPdf = (fileName || "").toLowerCase().endsWith(".pdf");
+                  const isImage = !!doc && isImagePath(doc.path);
+                  const thumbnailUri = doc ? thumbnailUrls[doc.path] : undefined;
+                  const statusIcon = doc ? attachmentStatusIcon(doc.status) : null;
+
+                  return (
+                    <View key={optionalReqDef.key} style={styles.reqBlock}>
+                      <View style={styles.reqTitleRow}>
+                        {!doc ? (
+                          <Ionicons
+                            name="ellipse-outline"
+                            size={16}
+                            color={TEXT_MUTED}
                             style={{ marginTop: 1 }}
                           />
-                          <Text style={styles.reqTitle}>{r.label}</Text>
-                        </View>
+                        ) : statusIcon ? (
+                          <Ionicons
+                            name={statusIcon.name}
+                            size={18}
+                            color={statusIcon.color}
+                            style={{ marginTop: 1 }}
+                          />
+                        ) : (
+                          <View style={styles.reqNoStatusIcon} />
+                        )}
+                        <Text style={styles.reqTitle}>{optionalReqDef.label}</Text>
+                      </View>
 
-                        <Pressable
-                          disabled={!doc}
-                          onPress={() => (doc ? openDoc(doc) : null)}
-                          style={({ pressed }) => [
-                            styles.fileCardMini,
-                            !doc && styles.fileCardMiniDisabled,
-                            pressed && doc ? { opacity: 0.9 } : null,
+                      <Pressable
+                        disabled={!doc}
+                        onPress={() => (doc ? openDoc(doc) : null)}
+                        style={({ pressed }) => [
+                          styles.fileCardMini,
+                          !doc && styles.fileCardMiniDisabled,
+                          pressed && doc ? { opacity: 0.9 } : null,
+                        ]}
+                      >
+                        <View
+                          style={[
+                            styles.fileIconBoxMini,
+                            !doc && styles.fileIconBoxMiniDisabled,
                           ]}
                         >
-                          <View
-                            style={[
-                              styles.fileIconBoxMini,
-                              !doc && styles.fileIconBoxMiniDisabled,
-                            ]}
-                          >
+                          {isImage && thumbnailUri ? (
+                            <Image
+                              source={{ uri: thumbnailUri }}
+                              style={styles.fileThumbnail}
+                              resizeMode="cover"
+                            />
+                          ) : (
                             <Ionicons
                               name={
                                 doc
@@ -707,28 +1385,65 @@ export default function StatusDetails() {
                                   : "#BDBDBD"
                               }
                             />
-                          </View>
+                          )}
+                        </View>
 
-                          <View style={{ flex: 1 }}>
-                            <Text style={styles.fileNameMini} numberOfLines={1}>
-                              {doc ? fileName : "No file selected"}
-                            </Text>
-                            <Text style={styles.fileSizeMini} numberOfLines={1}>
-                              {doc ? sizeTxt || " " : " "}
-                            </Text>
-                          </View>
-                        </Pressable>
-                      </View>
-                    );
-                  })}
-                </View>
-              </View>
-            ) : null}
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.fileNameMini} numberOfLines={1}>
+                            {doc ? fileName : "No optional attachment submitted"}
+                          </Text>
+                          <Text style={styles.fileSizeMini} numberOfLines={1}>
+                            {doc ? " " : " "}
+                          </Text>
+                        </View>
+                      </Pressable>
+                    </View>
+                  );
+                })()
+              ) : null}
+            </View>
           </View>
-
-          <View style={{ height: STEP2 + 72 + EXTRA }} />
         </View>
       </ScrollView>
+      )}
+
+      <Modal
+        visible={previewOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setPreviewOpen(false)}
+      >
+        <Pressable
+          style={styles.previewOverlay}
+          onPress={() => setPreviewOpen(false)}
+        >
+          <View style={styles.previewHeader}>
+            <Text style={styles.previewTitle} numberOfLines={1}>{previewName}</Text>
+            <Pressable
+              onPress={() => setPreviewOpen(false)}
+              style={({ pressed }) => [styles.previewCloseBtn, pressed && { opacity: 0.7 }]}
+            >
+              <Ionicons name="close" size={24} color="#FFF" />
+            </Pressable>
+          </View>
+
+          <Pressable style={styles.previewContent} onPress={() => {}}>
+            {previewUri ? (
+              <Image
+                source={{ uri: previewUri }}
+                style={styles.previewImage}
+                resizeMode="contain"
+              />
+            ) : null}
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {loadingPreview ? (
+        <View style={styles.loadingOverlay}>
+          <ActivityIndicator size="large" color="#FFF" />
+        </View>
+      ) : null}
     </SafeAreaView>
   );
 }
@@ -744,6 +1459,32 @@ function InfoRow({ label, value }: { label: string; value: string }) {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: BG },
+
+  initialLoadingWrap: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 20,
+    gap: 14,
+  },
+  initialSkeletonCard: {
+    width: "100%",
+    height: 120,
+    borderRadius: 14,
+    backgroundColor: "#EEF3F3",
+  },
+  initialSkeletonLine: {
+    width: "100%",
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: "#F2F6F6",
+  },
+  initialSkeletonPanel: {
+    width: "100%",
+    height: 220,
+    borderRadius: 14,
+    backgroundColor: "#EEF3F3",
+  },
 
   topBar: {
     height: 52,
@@ -816,6 +1557,44 @@ const styles = StyleSheet.create({
     color: "#4A2E5B",
   },
 
+  requestCodeBlock: {
+    marginTop: 12,
+    marginHorizontal: 12,
+    borderWidth: 1,
+    borderColor: "#D9ECEB",
+    borderRadius: 10,
+    backgroundColor: "#F6FEFE",
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+  },
+  requestCodeLabel: {
+    fontFamily: FONT,
+    fontWeight: "700",
+    fontSize: 10,
+    color: TEXT_MUTED,
+    textTransform: "uppercase",
+    letterSpacing: 0.4,
+  },
+  requestCodeValue: {
+    marginTop: 4,
+    fontFamily: FONT,
+    fontWeight: "800",
+    fontSize: 15,
+    color: TEXT_DARK,
+  },
+  codeSyncRow: {
+    marginTop: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  codeSyncText: {
+    fontFamily: FONT,
+    fontWeight: "500",
+    fontSize: 10,
+    color: TEXT_MUTED,
+  },
+
   infoRows: { marginTop: 10, paddingHorizontal: 12, gap: 6 },
   infoRow: { flexDirection: "row", justifyContent: "space-between", gap: 10 },
   infoLabel: {
@@ -832,7 +1611,102 @@ const styles = StyleSheet.create({
     color: TEXT_DARK,
   },
 
-  timelineWrap: { position: "relative", marginTop: 100, paddingTop: 26 },
+  timelineWrap: { marginTop: 10 },
+
+  progressPanel: {
+    borderRadius: 12,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "#E7EEEE",
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    marginBottom: 10,
+  },
+  progressRow: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  progressTrackCol: {
+    width: 24,
+    alignItems: "center",
+  },
+  progressDot: {
+    width: 18,
+    height: 18,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "#CFCFCF",
+    backgroundColor: "#F7F7F7",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  progressDotActive: {
+    borderColor: GREEN,
+    backgroundColor: GREEN,
+  },
+  progressDotCurrent: {
+    borderColor: "#F0A13A",
+    backgroundColor: "#F0A13A",
+  },
+  progressLine: {
+    width: 2,
+    flex: 1,
+    minHeight: 30,
+    backgroundColor: "#DADADA",
+    marginTop: 4,
+    marginBottom: 4,
+  },
+  progressLineActive: {
+    backgroundColor: "#92D66A",
+  },
+  progressCard: {
+    flex: 1,
+    borderRadius: 10,
+    backgroundColor: "#EEF2F2",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 10,
+  },
+  progressTitle: {
+    fontFamily: FONT,
+    fontWeight: "700",
+    fontSize: 11,
+    color: TEXT_DARK,
+  },
+  progressDesc: {
+    marginTop: 4,
+    fontFamily: FONT,
+    fontWeight: "400",
+    fontSize: 10,
+    lineHeight: 14,
+    color: TEXT_MUTED,
+  },
+  progressTime: {
+    marginTop: 6,
+    fontFamily: FONT,
+    fontWeight: "600",
+    fontSize: 9.5,
+    color: TEXT_DARK,
+  },
+  timelineActionLinkWrap: {
+    marginTop: 8,
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
+    borderWidth: 1,
+    borderColor: "#FFD59E",
+    backgroundColor: "#FFF4E4",
+    borderRadius: 8,
+    paddingVertical: 5,
+    paddingHorizontal: 8,
+  },
+  timelineActionLink: {
+    fontFamily: FONT,
+    fontWeight: "700",
+    fontSize: 10,
+    color: "#D07C00",
+  },
 
   line: {
     position: "absolute",
@@ -918,16 +1792,6 @@ const styles = StyleSheet.create({
     color: TEXT_MUTED,
   },
 
-  eventCard2: {
-    position: "absolute",
-    left: EVENT_LEFT,
-    right: 10,
-    borderRadius: 10,
-    backgroundColor: "#FFFFFF",
-    paddingVertical: 8,
-    paddingHorizontal: 0,
-  },
-
   submitBtn: {
     alignSelf: "flex-start",
     borderRadius: 10,
@@ -942,20 +1806,6 @@ const styles = StyleSheet.create({
     fontWeight: "400",
     fontSize: 10.5,
     color: TEXT_DARK,
-  },
-
-  viewDocsRow: {
-    marginTop: 8,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    paddingLeft: 2,
-  },
-  viewDocsText: {
-    fontFamily: FONT,
-    fontWeight: "400",
-    fontSize: 10,
-    color: TEXT_MUTED,
   },
 
   /* ✅ minimized panel */
@@ -991,6 +1841,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 10,
     marginBottom: 8,
+  },
+  reqNoStatusIcon: {
+    width: 18,
+    height: 18,
   },
   reqTitle: {
     fontFamily: FONT,
@@ -1030,6 +1884,12 @@ const styles = StyleSheet.create({
     borderColor: "#D5D5D5",
     backgroundColor: "#FAFAFA",
   },
+  fileThumbnail: {
+    width: 24,
+    height: 24,
+    borderRadius: 6,
+    backgroundColor: "#E8F4F4",
+  },
   fileNameMini: {
     fontFamily: FONT,
     fontWeight: "800",
@@ -1042,5 +1902,66 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     fontSize: 11,
     color: TEXT_MUTED,
+  },
+  additionalInfoCard: {
+    marginLeft: 26,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#DCDCDC",
+    backgroundColor: "#F9FAFA",
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+  },
+  additionalInfoText: {
+    fontFamily: FONT,
+    fontWeight: "400",
+    fontSize: 11.5,
+    lineHeight: 16,
+    color: TEXT_DARK,
+  },
+
+  previewOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.9)",
+  },
+  previewHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingTop: 50,
+    paddingBottom: 16,
+  },
+  previewTitle: {
+    flex: 1,
+    fontFamily: FONT,
+    fontWeight: "600",
+    fontSize: 16,
+    color: "#FFFFFF",
+    marginRight: 16,
+  },
+  previewImage: {
+    width: "100%",
+    height: "100%",
+  },
+  previewCloseBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "rgba(255,255,255,0.2)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  previewContent: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 16,
+  },
+  loadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.6)",
+    alignItems: "center",
+    justifyContent: "center",
   },
 });

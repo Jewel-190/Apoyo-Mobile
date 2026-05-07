@@ -1,11 +1,14 @@
 // app/Home/Applications.ts
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { STORAGE_KEYS } from "../../lib/storageKeys";
 
 export type Category = "medical" | "financial" | "burial";
 export type ServiceStatus =
   | "Pending"
   | "In Progress"
   | "Action Required"
+  | "For Approval"
+  | "Scheduled"
   | "Approved";
 
 export type ApplicationItem = {
@@ -21,7 +24,7 @@ export type ApplicationItem = {
   dateLabel?: string; // e.g. Feb 8, 2026
 };
 
-const STORAGE_KEY_STATUS_LIST = "apoyo_status_applications_v1";
+const STORAGE_KEY_STATUS_LIST = STORAGE_KEYS.statusApplicationsV1;
 
 export async function getStatusApplications(): Promise<ApplicationItem[]> {
   try {
@@ -44,7 +47,10 @@ export async function getStatusApplications(): Promise<ApplicationItem[]> {
       .filter((x) => x.title.trim().length > 0);
 
     return cleaned;
-  } catch {
+  } catch (err) {
+    if (__DEV__) {
+      console.warn("[Applications] failed to read status cache", err);
+    }
     return [];
   }
 }

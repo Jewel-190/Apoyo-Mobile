@@ -39,7 +39,9 @@ export default function Login() {
 
   useEffect(() => {
     const { data } = supabase.auth.onAuthStateChange((event, session) => {
-      console.log("[auth]", event, session?.user?.id ?? "no-session");
+      if (__DEV__) {
+        console.log("[auth]", event, session?.user?.id ?? "no-session");
+      }
     });
 
     return () => {
@@ -113,7 +115,9 @@ export default function Login() {
       }
 
       // Login successful - session is automatically managed by Supabase
-      console.log("Login successful, user:", data.user?.id);
+      if (__DEV__) {
+        console.log("Login successful, user:", data.user?.id);
+      }
 
       // Cache user data for instant loading on Home/Account screens
       if (data.user?.id) {

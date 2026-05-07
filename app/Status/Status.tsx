@@ -21,7 +21,7 @@ import {
   Text,
   View,
 } from "react-native";
-import BottomNavBar, { NAV_TOTAL_HEIGHT, TabKey } from "../../components/BottomNavBar";
+import BottomNavBar, { NAV_TOTAL_HEIGHT } from "../../components/BottomNavBar";
 
 const FONT = "SF Pro Rounded";
 
@@ -36,13 +36,13 @@ const CANCEL_BG = "#BDBDBD";
 const BADGE_PENDING = "#E8C6FF";
 const BADGE_PROGRESS = "#B9E3FF";
 const BADGE_ACTION = "#FFD59E";
+const BADGE_RESUBMITTED = "#FFE082";
+/** Request milestone before final approval (matches DB `for approval`). */
+const BADGE_FOR_APPROVAL = "#C8EDE9";
+/** Matches DB `scheduled` (e.g. payout / service date set). */
+const BADGE_SCHEDULED = "#D8E6FA";
 const BADGE_APPROVED = "#C8F1C8";
 const BADGE_DRAFT = "#D4D4D4";
-
-/* ========= STORAGE + ROUTES ========= */
-const STORAGE_KEY_VERIFIED_V2 = "apoyo_verified_v2";
-const STORAGE_KEY_VERIFIED_V1 = "apoyo_verified_v1";
-const CACHE_USER = "apoyo_user_cache";
 
 const ROUTE_TIMELINE = "/Status/StatusDetails";
 const STORAGE_KEY_STATUS_LIST = "apoyo_status_applications_v1";
@@ -57,9 +57,27 @@ const ICON_BURIAL = require("../../assets/images/Burial.png");
 const ICON_CREMATION = require("../../assets/images/Cremation.png");
 const ICON_COLOMBARIUM = require("../../assets/images/Colombarium.png");
 
-type FilterKey = "all" | "pending" | "progress" | "action" | "approved" | "draft";
+type FilterKey =
+  | "all"
+  | "pending"
+  | "progress"
+  | "action"
+  | "resubmitted"
+  | "forApproval"
+  | "scheduled"
+  /** Final DB `approved`; no chip — only listed under All. */
+  | "approvedFinal"
+  | "draft";
 type Category = "medical" | "financial" | "burial";
-type ServiceStatus = "Pending" | "In Progress" | "Action Required" | "Approved" | "Draft";
+type ServiceStatus =
+  | "Pending"
+  | "In Progress"
+  | "Action Required"
+  | "Resubmitted"
+  | "For Approval"
+  | "Scheduled"
+  | "Approved"
+  | "Draft";
 
 type ApplicationItem = {
   id: string;
@@ -69,19 +87,34 @@ type ApplicationItem = {
   category: Category;
   service?: string;
   createdAt?: number;
+  requestCode?: string;
 };
+
+const REQUEST_STATUSES = [
+  "draft",
+  "pending",
+  "in progress",
+  "action required",
+  "resubmitted",
+  "for approval",
+  "scheduled",
+  "approved",
+  // keep legacy compatibility
+  "submitted",
+] as const;
 
 // Normalize raw DB/cached status values to `ServiceStatus`
 function normalizeStatus(raw?: string): ServiceStatus {
   if (!raw) return "Pending";
-  const s = raw.toString().trim().toLowerCase();
+  const s = raw.toString().trim().toLowerCase().replace(/_/g, " ");
   if (s === "submitted" || s === "pending") return "Pending";
-  if (s === "in progress" || s === "in_progress" || s === "inprogress" || s === "processing") return "In Progress";
-  if (s === "action required" || s === "action_required" || s === "action") return "Action Required";
+  if (s === "resubmitted") return "Resubmitted";
+  if (s === "in progress" || s === "inprogress" || s === "processing") return "In Progress";
+  if (s === "action required" || s === "action") return "Action Required";
+  if (s === "for approval") return "For Approval";
+  if (s === "scheduled") return "Scheduled";
   if (s === "approved" || s === "accepted") return "Approved";
   if (s === "draft") return "Draft";
-  // fallback: if it already matches one of our labels
-  if (s === "pending" ) return "Pending";
   return "Pending";
 }
 
@@ -93,6 +126,12 @@ function badgeColor(status: ServiceStatus) {
       return BADGE_PROGRESS;
     case "Action Required":
       return BADGE_ACTION;
+    case "Resubmitted":
+      return BADGE_RESUBMITTED;
+    case "For Approval":
+      return BADGE_FOR_APPROVAL;
+    case "Scheduled":
+      return BADGE_SCHEDULED;
     case "Approved":
       return BADGE_APPROVED;
     case "Draft":
@@ -100,6 +139,12 @@ function badgeColor(status: ServiceStatus) {
     default:
       return "#EEE";
   }
+}
+
+function badgeLabelColor(status: ServiceStatus): string {
+  if (status === "For Approval") return "#0D5C58";
+  if (status === "Scheduled") return "#2F4F7A";
+  return "#333";
 }
 
 function statusToFilter(status: ServiceStatus): Exclude<FilterKey, "all"> {
@@ -110,8 +155,14 @@ function statusToFilter(status: ServiceStatus): Exclude<FilterKey, "all"> {
       return "progress";
     case "Action Required":
       return "action";
+    case "Resubmitted":
+      return "resubmitted";
+    case "For Approval":
+      return "forApproval";
+    case "Scheduled":
+      return "scheduled";
     case "Approved":
-      return "approved";
+      return "approvedFinal";
     case "Draft":
       return "draft";
   }
@@ -148,6 +199,14 @@ function iconForTitle(title: string) {
   return ICON_HOSPITAL;
 }
 
+function cardRequestId(item: ApplicationItem) {
+  const code = (item.requestCode || "").toString().trim();
+  if (code) return code;
+
+  const id = (item.id || "").toString();
+  return id.startsWith("draft_") ? id.replace("draft_", "") : id;
+}
+
 const PAD_X = 16;
 const GAP = 12;
 const { width } = Dimensions.get("window");
@@ -156,7 +215,6 @@ const BODY_PAD_BOTTOM = NAV_TOTAL_HEIGHT + 26;
 
 export default function Status() {
   const router = useRouter();
-  const [verified, setVerified] = useState(false);
   const [activeFilter, setActiveFilter] = useState<FilterKey>("all");
   const [apps, setApps] = useState<ApplicationItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -165,50 +223,7 @@ export default function Status() {
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ApplicationItem | null>(null);
 
-  const loadVerified = async () => {
-    try {
-      // Keep UI responsive by using cached profile first.
-      const cached = await AsyncStorage.getItem(CACHE_USER);
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        if (typeof parsed?.verified === "boolean") {
-          setVerified(parsed.verified);
-        }
-      }
-
-      // Then refresh from source of truth in DB.
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-
-      if (user?.id) {
-        const { data } = await supabase
-          .from("users")
-          .select("verified")
-          .eq("id", user.id)
-          .single();
-
-        if (typeof data?.verified === "boolean") {
-          setVerified(data.verified === true);
-
-          try {
-            const current = await AsyncStorage.getItem(CACHE_USER);
-            const next = current ? JSON.parse(current) : {};
-            next.verified = data.verified === true;
-            await AsyncStorage.setItem(CACHE_USER, JSON.stringify(next));
-          } catch {}
-          return;
-        }
-      }
-    } catch {}
-
-    // Legacy fallback for older installs that still rely on v1/v2 flags.
-    const v2 = await AsyncStorage.getItem(STORAGE_KEY_VERIFIED_V2);
-    const v1 = await AsyncStorage.getItem(STORAGE_KEY_VERIFIED_V1);
-    setVerified(v2 === "1" || v1 === "1");
-  };
-
-  // Fetch drafts and recent submitted hospitalization_requests and treatment_requests for this user
+  // Fetch request rows in all status states for this user
   const fetchDraftsFromSupabase = async (): Promise<ApplicationItem[]> => {
     try {
       const { data: userData } = await supabase.auth.getUser();
@@ -217,72 +232,72 @@ export default function Status() {
       const [{ data: hospData, error: hospError } = {} as any] = [
         await supabase
           .from("hospitalization_requests")
-          .select("id, status, created_at, updated_at")
+          .select("id, status, created_at, updated_at, request_code")
           .eq("user_id", userData.user.id)
-          .in("status", ["draft", "submitted"]),
+          .in("status", [...REQUEST_STATUSES]),
       ];
 
       // treatment requests
       const [{ data: treatData, error: treatError } = {} as any] = [
         await supabase
           .from("treatment_requests")
-          .select("id, status, created_at, updated_at")
+          .select("id, status, created_at, updated_at, request_code")
           .eq("user_id", userData.user.id)
-          .in("status", ["draft", "submitted"]),
+          .in("status", [...REQUEST_STATUSES]),
       ];
 
       // medical requests
       const [{ data: medData, error: medError } = {} as any] = [
         await supabase
           .from("medical_requests")
-          .select("id, status, created_at, updated_at")
+          .select("id, status, created_at, updated_at, request_code")
           .eq("user_id", userData.user.id)
-          .in("status", ["draft", "submitted"]),
+          .in("status", [...REQUEST_STATUSES]),
       ];
 
       // financial requests
       const [{ data: finData, error: finError } = {} as any] = [
         await supabase
           .from("financial_requests")
-          .select("id, status, created_at, updated_at")
+          .select("id, status, created_at, updated_at, request_code")
           .eq("user_id", userData.user.id)
-          .in("status", ["draft", "submitted"]),
+          .in("status", [...REQUEST_STATUSES]),
       ];
 
       // monetary requests
       const [{ data: monData, error: monError } = {} as any] = [
         await supabase
           .from("monetary_requests")
-          .select("id, status, created_at, updated_at")
+          .select("id, status, created_at, updated_at, request_code")
           .eq("user_id", userData.user.id)
-          .in("status", ["draft", "submitted"]),
+          .in("status", [...REQUEST_STATUSES]),
       ];
 
       // burial site requests
       const [{ data: burData, error: burError } = {} as any] = [
         await supabase
           .from("burial_requests")
-          .select("id, status, created_at, updated_at")
+          .select("id, status, created_at, updated_at, request_code")
           .eq("user_id", userData.user.id)
-          .in("status", ["draft", "submitted"]),
+          .in("status", [...REQUEST_STATUSES]),
       ];
 
       // cremation requests
       const [{ data: creData, error: creError } = {} as any] = [
         await supabase
           .from("cremation_requests")
-          .select("id, status, created_at, updated_at")
+          .select("id, status, created_at, updated_at, request_code")
           .eq("user_id", userData.user.id)
-          .in("status", ["draft", "submitted"]),
+          .in("status", [...REQUEST_STATUSES]),
       ];
 
       // columbarium requests
       const [{ data: colData, error: colError } = {} as any] = [
         await supabase
           .from("columbarium_requests")
-          .select("id, status, created_at, updated_at")
+          .select("id, status, created_at, updated_at, request_code")
           .eq("user_id", userData.user.id)
-          .in("status", ["draft", "submitted"]),
+          .in("status", [...REQUEST_STATUSES]),
       ];
 
       const items: ApplicationItem[] = [];
@@ -296,12 +311,14 @@ export default function Status() {
 
           items.push({
             id,
-            title: isDraft ? "Hospitalization Draft" : "Hospitalization Request",
+            title: "Hospitalization Expense",
             description: isDraft ? "Continue your application" : "View application status",
             status: status as ServiceStatus,
             category: "medical" as Category,
             service: "hospitalization",
             createdAt: new Date(row.updated_at || row.created_at).getTime(),
+            requestCode:
+              typeof row.request_code === "string" ? row.request_code : undefined,
           });
         }
       }
@@ -315,12 +332,14 @@ export default function Status() {
 
           items.push({
             id,
-            title: isDraft ? "Treatment Draft" : "Treatment Request",
+            title: "Treatment & Procedures",
             description: isDraft ? "Continue your application" : "View application status",
             status: status as ServiceStatus,
             category: "medical" as Category,
             service: "treatment",
             createdAt: new Date(row.updated_at || row.created_at).getTime(),
+            requestCode:
+              typeof row.request_code === "string" ? row.request_code : undefined,
           });
         }
       }
@@ -334,12 +353,14 @@ export default function Status() {
 
           items.push({
             id,
-            title: isDraft ? "Medical Draft" : "Medical Request",
+            title: "Medical Operations",
             description: isDraft ? "Continue your application" : "View application status",
             status: status as ServiceStatus,
             category: "medical" as Category,
             service: "medical",
             createdAt: new Date(row.updated_at || row.created_at).getTime(),
+            requestCode:
+              typeof row.request_code === "string" ? row.request_code : undefined,
           });
         }
       }
@@ -353,12 +374,14 @@ export default function Status() {
 
           items.push({
             id,
-            title: isDraft ? "Financial Draft" : "Financial Request",
+            title: "Emergency Financial Relief",
             description: isDraft ? "Continue your application" : "View application status",
             status: status as ServiceStatus,
             category: "financial" as Category,
             service: "financial",
             createdAt: new Date(row.updated_at || row.created_at).getTime(),
+            requestCode:
+              typeof row.request_code === "string" ? row.request_code : undefined,
           });
         }
       }
@@ -372,12 +395,14 @@ export default function Status() {
 
           items.push({
             id,
-            title: isDraft ? "Monetary Burial Aid Draft" : "Monetary Burial Aid Request",
+            title: "Monetary Burial Aid",
             description: isDraft ? "Continue your application" : "View application status",
             status: status as ServiceStatus,
             category: "financial" as Category,
             service: "monetary",
             createdAt: new Date(row.updated_at || row.created_at).getTime(),
+            requestCode:
+              typeof row.request_code === "string" ? row.request_code : undefined,
           });
         }
       }
@@ -391,12 +416,14 @@ export default function Status() {
 
           items.push({
             id,
-            title: isDraft ? "Burial Site Assistance Draft" : "Burial Site Assistance Request",
+            title: "Burial Site Assistance",
             description: isDraft ? "Continue your application" : "View application status",
             status: status as ServiceStatus,
             category: "burial" as Category,
             service: "burial-site",
             createdAt: new Date(row.updated_at || row.created_at).getTime(),
+            requestCode:
+              typeof row.request_code === "string" ? row.request_code : undefined,
           });
         }
       }
@@ -410,12 +437,14 @@ export default function Status() {
 
           items.push({
             id,
-            title: isDraft ? "Cremation Assistance Draft" : "Cremation Assistance Request",
+            title: "Cremation Assistance",
             description: isDraft ? "Continue your application" : "View application status",
             status: status as ServiceStatus,
             category: "burial" as Category,
             service: "cremation",
             createdAt: new Date(row.updated_at || row.created_at).getTime(),
+            requestCode:
+              typeof row.request_code === "string" ? row.request_code : undefined,
           });
         }
       }
@@ -429,12 +458,14 @@ export default function Status() {
 
           items.push({
             id,
-            title: isDraft ? "Columbarium Allocation Draft" : "Columbarium Allocation Request",
+            title: "Columbarium Allocation",
             description: isDraft ? "Continue your application" : "View application status",
             status: status as ServiceStatus,
             category: "burial" as Category,
             service: "colombarium",
             createdAt: new Date(row.updated_at || row.created_at).getTime(),
+            requestCode:
+              typeof row.request_code === "string" ? row.request_code : undefined,
           });
         }
       }
@@ -489,18 +520,9 @@ export default function Status() {
 
   useFocusEffect(
     useCallback(() => {
-      loadVerified();
       loadApps();
     }, [])
   );
-
-  const handleBeforeNavigate = (tabKey: TabKey, route: string): boolean => {
-    if (!verified) {
-      alert("Please verify your account to access this feature.");
-      return false;
-    }
-    return true;
-  };
 
   const filtered = useMemo(() => {
     if (activeFilter === "all") return apps;
@@ -532,6 +554,15 @@ export default function Status() {
 
     try {
       setDeletingId(item.id);
+
+      const { error: attachmentDeleteError } = await supabase
+        .from("request_attachments")
+        .delete()
+        .eq("request_table", table)
+        .eq("request_uid", realId);
+
+      if (attachmentDeleteError) throw attachmentDeleteError;
+
       const { error } = await supabase.from(table).delete().eq("id", realId);
       if (error) throw error;
 
@@ -602,10 +633,22 @@ export default function Status() {
             onPress={() => setActiveFilter("action")}
           />
           <Chip
-            active={activeFilter === "approved"}
-            label="Approved"
+            active={activeFilter === "resubmitted"}
+            label="Resubmitted"
+            icon="refresh-circle-outline"
+            onPress={() => setActiveFilter("resubmitted")}
+          />
+          <Chip
+            active={activeFilter === "forApproval"}
+            label="For approval"
             icon="checkmark-circle-outline"
-            onPress={() => setActiveFilter("approved")}
+            onPress={() => setActiveFilter("forApproval")}
+          />
+          <Chip
+            active={activeFilter === "scheduled"}
+            label="Scheduled"
+            icon="calendar-outline"
+            onPress={() => setActiveFilter("scheduled")}
           />
           <Chip
             active={activeFilter === "draft"}
@@ -656,13 +699,6 @@ export default function Status() {
 
                   <Pressable
                     onPress={() => {
-                      if (!verified) {
-                        alert(
-                          "Please verify your account to access this feature."
-                        );
-                        return;
-                      }
-
                       // If it's a draft, navigate to the appropriate form to continue editing
                       if (a.status === "Draft") {
                         // a.id is prefixed with 'draft_' so strip it to get the real request id
@@ -735,7 +771,28 @@ export default function Status() {
                         return;
                       }
 
-                      // For submitted applications, go to status details
+                      // Post-verification monitoring (for approval → scheduled → approved)
+                      if (
+                        a.status === "For Approval" ||
+                        a.status === "Scheduled" ||
+                        a.status === "Approved"
+                      ) {
+                        router.push({
+                          pathname: "/Home/ApprovedAssistance",
+                          params: {
+                            id: a.id,
+                            title: a.title,
+                            status: a.status,
+                            category: a.category,
+                            createdAt: String(a.createdAt ?? ""),
+                            requestCode: a.requestCode,
+                            service: a.service,
+                          },
+                        } as any);
+                        return;
+                      }
+
+                      // Other submitted applications → timeline
                       router.push({
                         pathname: ROUTE_TIMELINE,
                         params: {
@@ -744,6 +801,8 @@ export default function Status() {
                           status: a.status,
                           category: a.category,
                           createdAt: String(a.createdAt ?? ""),
+                          requestCode: a.requestCode,
+                          service: a.service,
                         },
                       } as any);
                     }}
@@ -760,12 +819,19 @@ export default function Status() {
                           { backgroundColor: badgeColor(a.status) },
                         ]}
                       >
-                        <Text style={styles.badgeText}>{a.status}</Text>
+                        <Text
+                          style={[styles.badgeText, { color: badgeLabelColor(a.status) }]}
+                        >
+                          {a.status}
+                        </Text>
                       </View>
                     </View>
 
                     <Text style={styles.cardTitle} numberOfLines={2}>
                       {a.title}
+                    </Text>
+                    <Text style={styles.cardMeta} numberOfLines={1}>
+                      {a.status !== "Draft" ? "Request ID: " + cardRequestId(a) : ""}
                     </Text>
                     <Text style={styles.cardDesc} numberOfLines={3}>
                       {a.description}
@@ -839,7 +905,7 @@ export default function Status() {
         </Pressable>
       </Modal>
 
-      <BottomNavBar activeTab="status" maskColor="transparent" onBeforeNavigate={handleBeforeNavigate} />
+      <BottomNavBar activeTab="status" maskColor="transparent" />
     </SafeAreaView>
   );
 }
@@ -987,6 +1053,13 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     fontSize: 13,
     color: TEXT_DARK,
+    marginBottom: 6,
+  },
+  cardMeta: {
+    fontFamily: FONT,
+    fontWeight: "600",
+    fontSize: 9.5,
+    color: "#6A6A6A",
     marginBottom: 6,
   },
   cardDesc: {

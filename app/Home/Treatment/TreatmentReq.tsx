@@ -7,6 +7,12 @@ import { useFocusEffect } from "@react-navigation/native";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import NetInfo from "@react-native-community/netinfo";
 import {
+  deleteRequestAttachment,
+  inferAttachmentName,
+  listRequestAttachments,
+  upsertRequestAttachment,
+} from "../../../lib/requestAttachments";
+import {
   Alert,
   Animated,
   Easing,
@@ -308,7 +314,8 @@ function SwipeDeletePill({
 }
 
 // Storage bucket name (as provided)
-const BUCKET_NAME = "treatment-documents";
+const BUCKET_NAME = "request-documents";
+const REQUEST_TABLE = "treatment_requests";
 
 // File metadata stored in DB
 type FileMetadata = {
@@ -347,12 +354,6 @@ async function uploadFileToStorage(
     size: file.size,
     mimeType: file.mimeType,
   };
-}
-
-// Delete file from Supabase Storage
-async function deleteFileFromStorage(filePath: string): Promise<void> {
-  const { error } = await supabase.storage.from(BUCKET_NAME).remove([filePath]);
-  if (error) throw error;
 }
 
 // Get signed URL for a file (for viewing)
@@ -449,40 +450,35 @@ export default function TreatmentReq() {
         if (data && !error) {
           setRequestId(data.id);
           setAdditionalInfo(data.additional_info || "");
-          setRequesterName(data.requester_name || "");
-          setRequesterContactNumber(data.requester_contact_number || "");
-          setRequesterEmail(data.requester_email || "");
-          setRequesterPresentAddress(data.requester_present_address || "");
 
-          const parseFileMeta = (raw: string | null): { path: string; name: string } | null => {
-            if (!raw) return null;
-            try {
-              const meta = JSON.parse(raw) as FileMetadata;
-              return { path: meta.path, name: meta.originalName };
-            } catch {
-              return { path: raw, name: raw.split("/").pop() || "file" };
-            }
-          };
-
-          const paths: Record<string, string> = {};
-          const medMeta = parseFileMeta(data.med_cert_file_path);
-          if (medMeta) { paths.medCert = medMeta.path; setMedCertFile({ name: medMeta.name, uri: "" }); }
-          const rxMeta = parseFileMeta(data.rx_file_path);
-          if (rxMeta) { paths.rx = rxMeta.path; setRxFile({ name: rxMeta.name, uri: "" }); }
-          const labMeta = parseFileMeta(data.lab_file_path);
-          if (labMeta) { paths.lab = labMeta.path; setLabFile({ name: labMeta.name, uri: "" }); }
-          const letterMeta = parseFileMeta(data.letter_file_path);
-          if (letterMeta) { paths.letter = letterMeta.path; setLetterFile({ name: letterMeta.name, uri: "" }); }
-          const voterMeta = parseFileMeta(data.voter_id_file_path);
-          if (voterMeta) { paths.voterId = voterMeta.path; setVoterIdFile({ name: voterMeta.name, uri: "" }); }
-          const birthMeta = parseFileMeta(data.birth_cert_file_path);
-          if (birthMeta) { paths.birthCert = birthMeta.path; setBirthCertFile({ name: birthMeta.name, uri: "" }); }
-          const barangayMeta = parseFileMeta(data.barangay_endorsement_file_path);
-          if (barangayMeta) { paths.barangay = barangayMeta.path; setBarangayEndorsementFile({ name: barangayMeta.name, uri: "" }); }
-          const indigencyMeta = parseFileMeta(data.indigency_cert_file_path);
-          if (indigencyMeta) { paths.indigency = indigencyMeta.path; setIndigencyCertFile({ name: indigencyMeta.name, uri: "" }); }
-          const attachmentMeta = parseFileMeta(data.attachment_file_path);
-          if (attachmentMeta) { paths.attachment = attachmentMeta.path; setAttachmentFile({ name: attachmentMeta.name, uri: "" }); }
+          const paths = await listRequestAttachments(REQUEST_TABLE, data.id);
+          if (paths.medCert) {
+            setMedCertFile({ name: inferAttachmentName(paths.medCert, "medCert"), uri: "" });
+          }
+          if (paths.rx) {
+            setRxFile({ name: inferAttachmentName(paths.rx, "rx"), uri: "" });
+          }
+          if (paths.lab) {
+            setLabFile({ name: inferAttachmentName(paths.lab, "lab"), uri: "" });
+          }
+          if (paths.letter) {
+            setLetterFile({ name: inferAttachmentName(paths.letter, "letter"), uri: "" });
+          }
+          if (paths.voterId) {
+            setVoterIdFile({ name: inferAttachmentName(paths.voterId, "voterId"), uri: "" });
+          }
+          if (paths.birthCert) {
+            setBirthCertFile({ name: inferAttachmentName(paths.birthCert, "birthCert"), uri: "" });
+          }
+          if (paths.barangay) {
+            setBarangayEndorsementFile({ name: inferAttachmentName(paths.barangay, "barangay"), uri: "" });
+          }
+          if (paths.indigency) {
+            setIndigencyCertFile({ name: inferAttachmentName(paths.indigency, "indigency"), uri: "" });
+          }
+          if (paths.attachment) {
+            setAttachmentFile({ name: inferAttachmentName(paths.attachment, "attachment"), uri: "" });
+          }
 
           setUploadedPaths(paths);
         }
@@ -498,26 +494,11 @@ export default function TreatmentReq() {
     if (requestId) return requestId;
     if (!userId) throw new Error("User not logged in");
 
-    let requesterPayload: Record<string, any> = {};
-    try {
-      const raw = await AsyncStorage.getItem(`apoyo_requestinfo_${serviceId}`);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        requesterPayload = {
-          requester_name: parsed.name || null,
-          requester_contact_number: `${parsed.countryCode || ""}${parsed.phone || ""}` || null,
-          requester_email: parsed.email || null,
-          requester_present_address: parsed.address || null,
-        };
-      }
-    } catch (e) {}
-
     const sid = /^\d+$/.test(String(serviceId)) ? Number(serviceId) : undefined;
     const insertPayload = {
       user_id: userId,
       status: "draft",
       ...(sid ? { service_id: sid } : {}),
-      ...requesterPayload,
     };
 
     const { data, error } = await supabase
@@ -528,26 +509,7 @@ export default function TreatmentReq() {
 
     if (error) throw error;
     setRequestId(data.id);
-    setRequesterName(requesterPayload.requester_name || "");
-    setRequesterContactNumber(requesterPayload.requester_contact_number || "");
-    setRequesterEmail(requesterPayload.requester_email || "");
-    setRequesterPresentAddress(requesterPayload.requester_present_address || "");
     return data.id;
-  };
-
-  const getColumnName = (fileType: string): string => {
-    const map: Record<string, string> = {
-      medCert: "med_cert_file_path",
-      rx: "rx_file_path",
-      lab: "lab_file_path",
-      letter: "letter_file_path",
-      voterId: "voter_id_file_path",
-      birthCert: "birth_cert_file_path",
-      barangay: "barangay_endorsement_file_path",
-      indigency: "indigency_cert_file_path",
-      attachment: "attachment_file_path",
-    };
-    return map[fileType] || fileType;
   };
 
   const handleFilePick = async (
@@ -561,26 +523,16 @@ export default function TreatmentReq() {
       setIsSaving(true);
       const reqId = await ensureRequestId();
       const fileMetadata = await uploadFileToStorage(userId, reqId, fileType, file);
-      const columnName = getColumnName(fileType);
-      await supabase
-        .from("treatment_requests")
-        .update({ [columnName]: JSON.stringify(fileMetadata) })
-        .eq("id", reqId);
-
-      // Keep track of previous path to remove it after successful replacement
-      const previousPath = uploadedPaths[fileType];
+      await upsertRequestAttachment({
+        requestTable: REQUEST_TABLE,
+        requestUid: reqId,
+        fileType,
+        path: fileMetadata.path,
+      });
 
       // Update local state to reflect new upload immediately
       setFile(file);
       setUploadedPaths(prev => ({ ...prev, [fileType]: fileMetadata.path }));
-
-      if (previousPath && previousPath !== fileMetadata.path) {
-        try {
-          await deleteFileFromStorage(previousPath);
-        } catch (e) {
-          console.log("Failed to delete previous file from storage:", previousPath, e);
-        }
-      }
     } catch (err: any) {
       Alert.alert("Upload Error", err.message || "Failed to upload file");
     } finally {
@@ -594,12 +546,11 @@ export default function TreatmentReq() {
 
     try {
       setIsSaving(true);
-      await deleteFileFromStorage(filePath);
-      const columnName = getColumnName(fileType);
-      await supabase
-        .from("treatment_requests")
-        .update({ [columnName]: null })
-        .eq("id", requestId);
+      await deleteRequestAttachment({
+        requestTable: REQUEST_TABLE,
+        requestUid: requestId,
+        fileType,
+      });
 
       setUploadedPaths(prev => {
         const updated = { ...prev };
@@ -756,7 +707,7 @@ export default function TreatmentReq() {
       setIsSubmitting(true);
       const { error } = await supabase
         .from("treatment_requests")
-        .update({ status: "submitted", submitted_at: new Date().toISOString() })
+        .update({ status: "pending", submitted_at: new Date().toISOString() })
         .eq("id", requestId);
       if (error) throw error;
       router.push({ pathname: "/Home/Treatment/SubmissionSuccess", params: { serviceId, requestId } } as any);
@@ -1215,8 +1166,6 @@ export default function TreatmentReq() {
         </View>
 
         <Text style={styles.sectionTitle}>Service Requirements</Text>
-        <Text style={styles.stepTitle}>Step {currentStep + 1} out of {totalSteps}</Text>
-
         <View style={styles.noteRow}>
           {isSaving ? (<ActivityIndicator size={14} color={TEAL} style={{ marginTop: 1 }} />) : (
             <Ionicons name="cloud-upload-outline" size={14} color="#B7C2C2" style={{ marginTop: 1 }} />
@@ -1224,60 +1173,58 @@ export default function TreatmentReq() {
           <Text style={styles.sectionNote}>{isSaving ? "Saving..." : "Your files are auto-saved"}</Text>
         </View>
 
-        {!isInfoStep ? (
-          <>
-            <Text style={styles.reqLabel}>
-              {stepLabels[currentStepKey]} <Text style={styles.reqStar}>*</Text>
-            </Text>
-            {!currentFile ? (
-              <Pressable onPress={() => pickForKey(currentStepKey)} style={({ pressed }) => [styles.dropBox, pressed && { opacity: 0.92 }]}>
-                <View style={styles.plusCol}><Ionicons name="add" size={26} color={TEAL} /></View>
-                <View style={{ flex: 1 }}><Text style={styles.dropTitle}>Attach requested files.</Text><Text style={styles.dropSub}>Files supported (jpeg, pdf, png) Max 5 MB</Text></View>
-              </Pressable>
-            ) : (
-              <View style={styles.dropBoxFilled}><SwipeDeletePill file={currentFile} onRequestRemove={() => openRemove(currentStepKey)} thumbnailUri={signedUrls[currentStepKey]} onPress={() => openPreview(currentStepKey, currentFile.name)} /></View>
-            )}
-            {renderTips(currentStepKey)}
-          </>
-        ) : null}
+        {requiredStepOrder.map((stepKey) => {
+          const stepFile = getFileByKey(stepKey);
+          return (
+            <View key={stepKey}>
+              <Text style={styles.reqLabel}>
+                {stepLabels[stepKey]} <Text style={styles.reqStar}>*</Text>
+              </Text>
+              {!stepFile ? (
+                <Pressable onPress={() => pickForKey(stepKey)} style={({ pressed }) => [styles.dropBox, pressed && { opacity: 0.92 }]}>
+                  <View style={styles.plusCol}><Ionicons name="add" size={26} color={TEAL} /></View>
+                  <View style={{ flex: 1 }}><Text style={styles.dropTitle}>Attach requested files.</Text><Text style={styles.dropSub}>Files supported (jpeg, pdf, png) Max 5 MB</Text></View>
+                </Pressable>
+              ) : (
+                <View style={styles.dropBoxFilled}><SwipeDeletePill file={stepFile} onRequestRemove={() => openRemove(stepKey)} thumbnailUri={signedUrls[stepKey]} onPress={() => openPreview(stepKey, stepFile.name)} /></View>
+              )}
+            </View>
+          );
+        })}
 
-        {isInfoStep ? (
-          <>
-            <Text style={styles.additionalTitle}>Additional Information</Text>
-            <Text style={styles.reqLabel}>Description or Other Relevant Information (optional)</Text>
-            <TextInput style={styles.textArea} placeholder="Provide any additional details or requirements." placeholderTextColor={"#A0A9A9"} multiline maxLength={400} value={additionalInfo} onChangeText={handleAdditionalChange} textAlignVertical="top" editable={!isSaving} />
-            <Text style={styles.charCount}>{additionalInfo.length}/400 characters</Text>
+        <Text style={styles.additionalTitle}>Additional Information</Text>
+        <Text style={styles.reqLabel}>Description or Other Relevant Information (optional)</Text>
+        <TextInput style={styles.textArea} placeholder="Provide any additional details or requirements." placeholderTextColor={"#A0A9A9"} multiline maxLength={400} value={additionalInfo} onChangeText={handleAdditionalChange} textAlignVertical="top" editable={!isSaving} />
+        <Text style={styles.charCount}>{additionalInfo.length}/400 characters</Text>
 
-            <Text style={styles.reqLabel}>Attachments (optional)</Text>
-            {!attachmentFile ? (
-              <Pressable onPress={pickAttachment} style={({ pressed }) => [styles.dropBox, pressed && { opacity: 0.92 }]}>
-                <View style={styles.plusCol}><Ionicons name="add" size={26} color={TEAL} /></View>
-                <View style={{ flex: 1 }}><Text style={styles.dropTitle}>Attach requested files.</Text><Text style={styles.dropSub}>Files supported (jpeg, pdf, png) Max 5 MB</Text></View>
-              </Pressable>
-            ) : (
-              <View style={styles.dropBoxFilled}><SwipeDeletePill file={attachmentFile} onRequestRemove={() => openRemove("attachment")} thumbnailUri={signedUrls.attachment} onPress={() => openPreview("attachment", attachmentFile.name)} /></View>
-            )}
-          </>
-        ) : null}
+        <Text style={styles.reqLabel}>Attachments (optional)</Text>
+        {!attachmentFile ? (
+          <Pressable onPress={pickAttachment} style={({ pressed }) => [styles.dropBox, pressed && { opacity: 0.92 }]}>
+            <View style={styles.plusCol}><Ionicons name="add" size={26} color={TEAL} /></View>
+            <View style={{ flex: 1 }}><Text style={styles.dropTitle}>Attach requested files.</Text><Text style={styles.dropSub}>Files supported (jpeg, pdf, png) Max 5 MB</Text></View>
+          </Pressable>
+        ) : (
+          <View style={styles.dropBoxFilled}><SwipeDeletePill file={attachmentFile} onRequestRemove={() => openRemove("attachment")} thumbnailUri={signedUrls.attachment} onPress={() => openPreview("attachment", attachmentFile.name)} /></View>
+        )}
 
         <View style={{ height: 140 }} />
       </ScrollView>
 
       <View style={styles.bottomBar}>
         <View style={{ flexDirection: "row", gap: 12 }}>
-          <Pressable onPress={onPreviousStep} style={({ pressed }) => [styles.prevBtn, pressed && { opacity: 0.92 }]}>
-            <Text style={styles.prevText}>{currentStep === 0 ? "Back" : "Previous"}</Text>
+          <Pressable onPress={() => setBackConfirmOpen(true)} style={({ pressed }) => [styles.prevBtn, pressed && { opacity: 0.92 }]}>
+            <Text style={styles.prevText}>Back</Text>
           </Pressable>
 
           <Pressable
-            onPress={onNextStep}
-            disabled={isLastStep ? !canSubmit : !canProceedStep}
-            onPressIn={isLastStep ? (canSubmit ? nextAnim.pressIn : undefined) : (canProceedStep ? nextAnim.pressIn : undefined)}
-            onPressOut={isLastStep ? (canSubmit ? nextAnim.pressOut : undefined) : (canProceedStep ? nextAnim.pressOut : undefined)}
+            onPress={onSubmit}
+            disabled={!canSubmit}
+            onPressIn={canSubmit ? nextAnim.pressIn : undefined}
+            onPressOut={canSubmit ? nextAnim.pressOut : undefined}
             style={{ flex: 1 }}
           >
-            <Animated.View style={[styles.nextBtn, (isLastStep ? !canSubmit : !canProceedStep) && styles.nextBtnDisabled, { transform: [{ scale: nextAnim.scale }] }]}>
-              <Text style={[styles.nextText, (isLastStep ? !canSubmit : !canProceedStep) && styles.nextTextDisabled]}>{isLastStep ? "Submit" : "Next"}</Text>
+            <Animated.View style={[styles.nextBtn, !canSubmit && styles.nextBtnDisabled, { transform: [{ scale: nextAnim.scale }] }]}>
+              <Text style={[styles.nextText, !canSubmit && styles.nextTextDisabled]}>Submit</Text>
             </Animated.View>
           </Pressable>
         </View>

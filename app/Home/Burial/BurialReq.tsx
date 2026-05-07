@@ -1,5 +1,5 @@
 // app/Home/Burial/BurialReq.tsx
-import { Feather, Ionicons } from "@expo/vector-icons";
+import { Ionicons } from "@expo/vector-icons";
 import * as DocumentPicker from "expo-document-picker";
 import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -7,6 +7,12 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useFocusEffect } from "@react-navigation/native";
 import NetInfo from "@react-native-community/netinfo";
+import {
+  deleteRequestAttachment,
+  inferAttachmentName,
+  listRequestAttachments,
+  upsertRequestAttachment,
+} from "../../../lib/requestAttachments";
 import { supabase } from "../../../lib/supabase";
 import {
   ActivityIndicator,
@@ -32,10 +38,6 @@ import {
 
 const ICON_BURIAL = require("../../../assets/images/Burial.png");
 const TRASHCAN_PNG = require("../../../assets/images/Trashcan.png");
-const SAMPLE_DEATH_CERT_PNG = require("../../../assets/images/DeathCert.png");
-const SAMPLE_VOTERS_PNG = require("../../../assets/images/VotersCert.png");
-const SAMPLE_ENDORSEMENT_PNG = require("../../../assets/images/Endorsement.png");
-const SAMPLE_INDIGENCY_PNG = require("../../../assets/images/Indigency.png");
 
 const FONT = "SF Pro Rounded";
 const TEAL = "#0B8F8B";
@@ -58,7 +60,7 @@ const SWIPE_OPEN_PX = 56;
 const SWIPE_DELETE_PX = 120;
 const ROW_HEIGHT = 64;
 
-const BUCKET_NAME = "burial-documents";
+const BUCKET_NAME = "request-documents";
 const REQUEST_TABLE = "burial_requests";
 type CoverageChoice = "Add Funeral Aid" | "Service Only";
 
@@ -154,11 +156,6 @@ async function uploadFileToStorage(
   });
   if (error) throw error;
   return { path: filePath, originalName: file.name, size: file.size, mimeType: file.mimeType };
-}
-
-async function deleteFileFromStorage(filePath: string): Promise<void> {
-  const { error } = await supabase.storage.from(BUCKET_NAME).remove([filePath]);
-  if (error) throw error;
 }
 
 async function getSignedUrl(filePath: string): Promise<string | null> {
@@ -288,7 +285,8 @@ const removeTargetLabels: Record<string, string> = {
 export default function BurialReq() {
   const router = useRouter();
   const params = useLocalSearchParams<{ serviceId?: string; requestId?: string; coverage?: string; funeralAid?: string }>();
-  const serviceId = params?.serviceId || "burial-site";
+  const routeServiceId = (params?.serviceId || "burial-site").toString().trim().toLowerCase();
+  const serviceId = "burial";
   const existingRequestId = params?.requestId;
 
   // Loading & network state
@@ -341,11 +339,6 @@ export default function BurialReq() {
   const [previewUri, setPreviewUri] = useState<string | null>(null);
   const [previewName, setPreviewName] = useState("");
   const [loadingPreview, setLoadingPreview] = useState(false);
-  const [openTipId, setOpenTipId] = useState<string | null>(null);
-  const [samplePreviewOpen, setSamplePreviewOpen] = useState(false);
-  const [samplePreviewImage, setSamplePreviewImage] = useState<any>(null);
-  const [samplePreviewTitle, setSamplePreviewTitle] = useState("Sample Document");
-
   const submitAnim = usePressScale();
   const nextAnim = submitAnim;
 
@@ -428,16 +421,16 @@ export default function BurialReq() {
       setUserId(user.id);
       await checkRequestTableAvailability();
 
-      // If not editing an existing request, try to prefill from verified `users` profile
+      // If not editing an existing request, try to prefill from `users` profile
       if (!existingRequestId) {
         try {
           const { data: profile, error: profileError } = await supabase
             .from("users")
-            .select("first_name,middle_name,last_name,suffix,contact_number,email,address,verified")
+            .select("first_name,middle_name,last_name,suffix,contact_number,email,address")
             .eq("id", user.id)
             .single();
 
-          if (profile && profile.verified) {
+          if (profile) {
             const parts = [profile.first_name, profile.middle_name, profile.last_name].filter(Boolean);
             const name = `${parts.join(" ")}${profile.suffix ? " " + profile.suffix : ""}`.trim();
             setRequesterName(name);
@@ -451,25 +444,13 @@ export default function BurialReq() {
         }
 
         if (!funeralAid) {
-          const infoRaw = await AsyncStorage.getItem(`apoyo_requestinfo_${serviceId}`);
+          const infoRaw = await AsyncStorage.getItem(`apoyo_requestinfo_${routeServiceId}`);
           if (infoRaw) {
             const parsed = JSON.parse(infoRaw);
             setFuneralAid(normalizeCoverage(parsed?.coverage || parsed?.funeralAid));
           }
         }
       }
-
-      // Helper to parse file metadata (handles both old string format and new JSON format)
-      const parseFileMeta = (raw: string | null): { path: string; name: string; mimeType?: string; size?: number } | null => {
-        if (!raw) return null;
-        try {
-          const meta = JSON.parse(raw) as FileMetadata;
-          return { path: meta.path, name: meta.originalName, mimeType: meta.mimeType, size: meta.size };
-        } catch {
-          // Old format - just a path string
-          return { path: raw, name: raw.split("/").pop() || "file" };
-        }
-      };
 
       // Only load a draft when an explicit requestId param is provided
       if (existingRequestId) {
@@ -487,26 +468,22 @@ export default function BurialReq() {
           setAdditionalInfo(existingRequest.additional_info || "");
           setFuneralAid(normalizeCoverage(existingRequest.coverage ?? existingRequest.funeral_aid));
 
-          // populate requester fields from DB if present (don't overwrite if locked from verified profile)
-          if (!requesterLocked) {
-            setRequesterName(existingRequest.requester_name || "");
-            setRequesterContactNumber(existingRequest.requester_contact_number || "");
-            setRequesterEmail(existingRequest.requester_email || "");
-            setRequesterPresentAddress(existingRequest.requester_present_address || "");
+          const paths = await listRequestAttachments(REQUEST_TABLE, existingRequest.id);
+          if (paths.deathCert) {
+            setDeathCertFile({ name: inferAttachmentName(paths.deathCert, "deathCert"), uri: "" });
           }
-
-          // Store uploaded paths and set file states
-          const paths: Record<string, string> = {};
-          const deathMeta = parseFileMeta(existingRequest.death_cert_file_path);
-          if (deathMeta) { paths.deathCert = deathMeta.path; setDeathCertFile({ name: deathMeta.name, uri: "", mimeType: deathMeta.mimeType, size: deathMeta.size }); }
-          const validIdMeta = parseFileMeta(existingRequest.valid_id_file_path);
-          if (validIdMeta) { paths.validId = validIdMeta.path; setValidIdFile({ name: validIdMeta.name, uri: "", mimeType: validIdMeta.mimeType, size: validIdMeta.size }); }
-          const barangayMeta = parseFileMeta(existingRequest.barangay_endorsement_file_path);
-          if (barangayMeta) { paths.barangay = barangayMeta.path; setBarangayFile({ name: barangayMeta.name, uri: "", mimeType: barangayMeta.mimeType, size: barangayMeta.size }); }
-          const indigencyMeta = parseFileMeta(existingRequest.indigency_cert_file_path);
-          if (indigencyMeta) { paths.indigency = indigencyMeta.path; setIndigencyCertFile({ name: indigencyMeta.name, uri: "", mimeType: indigencyMeta.mimeType, size: indigencyMeta.size }); }
-          const attachmentMeta = parseFileMeta(existingRequest.attachment_file_path);
-          if (attachmentMeta) { paths.attachment = attachmentMeta.path; setAttachmentFile({ name: attachmentMeta.name, uri: "", mimeType: attachmentMeta.mimeType, size: attachmentMeta.size }); }
+          if (paths.validId) {
+            setValidIdFile({ name: inferAttachmentName(paths.validId, "validId"), uri: "" });
+          }
+          if (paths.barangay) {
+            setBarangayFile({ name: inferAttachmentName(paths.barangay, "barangay"), uri: "" });
+          }
+          if (paths.indigency) {
+            setIndigencyCertFile({ name: inferAttachmentName(paths.indigency, "indigency"), uri: "" });
+          }
+          if (paths.attachment) {
+            setAttachmentFile({ name: inferAttachmentName(paths.attachment, "attachment"), uri: "" });
+          }
           setUploadedPaths(paths);
         }
       }
@@ -524,38 +501,6 @@ export default function BurialReq() {
     if (requestId) return requestId;
     if (!userId) throw new Error("User not logged in");
 
-    let requesterPayload: Record<string, any> = {
-      requester_name: requesterName || null,
-      requester_contact_number: requesterContactNumber || null,
-      requester_email: requesterEmail || null,
-      requester_present_address: requesterPresentAddress || null,
-    };
-
-    try {
-      const raw = await AsyncStorage.getItem(`apoyo_requestinfo_${serviceId}`);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        requesterPayload = {
-          requester_name: parsed.name || requesterPayload.requester_name,
-          requester_contact_number:
-            `${parsed.countryCode || ""}${parsed.phone || ""}` ||
-            requesterPayload.requester_contact_number,
-          requester_email: parsed.email || requesterPayload.requester_email,
-          requester_present_address:
-            parsed.address || requesterPayload.requester_present_address,
-        };
-
-        if (!requesterLocked) {
-          setRequesterName(requesterPayload.requester_name || "");
-          setRequesterContactNumber(requesterPayload.requester_contact_number || "");
-          setRequesterEmail(requesterPayload.requester_email || "");
-          setRequesterPresentAddress(requesterPayload.requester_present_address || "");
-        }
-      }
-    } catch {
-      // Ignore malformed cached requester data and continue with local state.
-    }
-
     const { data, error } = await supabase
       .from(REQUEST_TABLE)
       .insert({
@@ -563,24 +508,12 @@ export default function BurialReq() {
         status: "draft",
         service_id: serviceId,
         coverage: funeralAid,
-        ...requesterPayload,
       })
       .select("id")
       .single();
     if (error) throw error;
     setRequestId(data.id);
     return data.id;
-  };
-
-  const getColumnName = (fileType: string) => {
-    const map: Record<string, string> = {
-      deathCert: "death_cert_file_path",
-      validId: "valid_id_file_path",
-      barangay: "barangay_endorsement_file_path",
-      indigency: "indigency_cert_file_path",
-      attachment: "attachment_file_path",
-    };
-    return map[fileType] || fileType;
   };
 
   const handleFilePickAndUpload = async (fileType: string, setFile: (f: PickedFile | null) => void) => {
@@ -590,8 +523,12 @@ export default function BurialReq() {
       setIsSaving(true);
       const reqId = await ensureRequestId();
       const fileMetadata = await uploadFileToStorage(userId, reqId, fileType, file);
-      const columnName = getColumnName(fileType);
-      await supabase.from(REQUEST_TABLE).update({ [columnName]: JSON.stringify(fileMetadata) }).eq("id", reqId);
+      await upsertRequestAttachment({
+        requestTable: REQUEST_TABLE,
+        requestUid: reqId,
+        fileType,
+        path: fileMetadata.path,
+      });
       setFile(file);
       setUploadedPaths((p) => ({ ...p, [fileType]: fileMetadata.path }));
     } catch (err: any) {
@@ -606,9 +543,11 @@ export default function BurialReq() {
     if (!path || !requestId) return;
     try {
       setIsSaving(true);
-      await deleteFileFromStorage(path);
-      const columnName = getColumnName(fileType);
-      await supabase.from(REQUEST_TABLE).update({ [columnName]: null }).eq("id", requestId);
+      await deleteRequestAttachment({
+        requestTable: REQUEST_TABLE,
+        requestUid: requestId,
+        fileType,
+      });
       setUploadedPaths((prev) => { const n = { ...prev }; delete n[fileType]; return n; });
       clearFile(null);
     } catch (err: any) {
@@ -699,10 +638,6 @@ export default function BurialReq() {
       await supabase.from(REQUEST_TABLE).update({
         additional_info: additionalInfo,
         coverage: funeralAid,
-        requester_name: requesterName || null,
-        requester_contact_number: requesterContactNumber || null,
-        requester_email: requesterEmail || null,
-        requester_present_address: requesterPresentAddress || null,
       }).eq("id", reqId);
     } catch (e) {
       console.log("Error saving draft on back:", e);
@@ -729,14 +664,10 @@ export default function BurialReq() {
       const { error } = await supabase
         .from(REQUEST_TABLE)
         .update({
-          status: "submitted",
+          status: "pending",
           submitted_at: new Date().toISOString(),
           coverage: funeralAid,
           additional_info: additionalInfo,
-          requester_name: requesterName || null,
-          requester_contact_number: requesterContactNumber || null,
-          requester_email: requesterEmail || null,
-          requester_present_address: requesterPresentAddress || null,
         })
         .eq("id", reqId);
       if (error) throw error;
@@ -749,123 +680,8 @@ export default function BurialReq() {
     }
   };
 
-  const requirementTips = {
-    deathCert: {
-      title: "Tips on Getting Requirements",
-      items: [
-        {
-          id: "where",
-          title: "Where to Get It",
-          details: "Request this from the Local Civil Registrar where the death was recorded.",
-        },
-        {
-          id: "bring",
-          title: "What to Bring",
-          details: "Bring your valid ID, relationship proof if required, and reference details of the deceased.",
-        },
-        {
-          id: "how",
-          title: "How to Get It",
-          details: "Submit request form, pay applicable fees, and claim certified copy with seal.",
-        },
-        { id: "sample", title: "Sample Document", details: "", image: SAMPLE_DEATH_CERT_PNG },
-      ],
-    },
-    validId: {
-      title: "Tips on Getting Requirements",
-      items: [
-        {
-          id: "accepted",
-          title: "List of Accepted ID's",
-          details:
-            "PhilID/ePhilID, Passport, Driver's License, UMID, PRC, Postal ID, Voter's ID/Certificate, SSS/GSIS, Senior Citizen ID, PWD ID, TIN, and PhilHealth.",
-        },
-        { id: "sample", title: "Sample Document", details: "", image: SAMPLE_VOTERS_PNG },
-      ],
-    },
-    barangay: {
-      title: "Tips on Getting Requirements",
-      items: [
-        {
-          id: "where",
-          title: "Where to Get It",
-          details: "Request this from your barangay hall where the deceased or family currently resides.",
-        },
-        {
-          id: "bring",
-          title: "What to Bring",
-          details: "Bring valid ID, proof of residency, and any burial assistance related documents.",
-        },
-        {
-          id: "how",
-          title: "How to Get It",
-          details: "Request endorsement letter and secure authorized signature with barangay dry seal.",
-        },
-        { id: "sample", title: "Sample Document", details: "", image: SAMPLE_ENDORSEMENT_PNG },
-      ],
-    },
-    indigency: {
-      title: "Tips on Getting Requirements",
-      items: [
-        { id: "where", title: "Where to Get It", details: "Get this from your barangay hall or local social welfare office." },
-        { id: "bring", title: "What to Bring", details: "Bring valid ID, proof of residency, and documents related to burial assistance." },
-        { id: "how", title: "How to Get It", details: "Complete assessment and claim signed certificate with official seal." },
-        { id: "sample", title: "Sample Document", details: "", image: SAMPLE_INDIGENCY_PNG },
-      ],
-    },
-  };
-
-  const renderTips = (fieldKey: keyof typeof requirementTips) => {
-    const tipGroup = requirementTips[fieldKey];
-    return (
-      <>
-        <Text style={styles.tipSectionTitle}>{tipGroup.title}</Text>
-        {tipGroup.items.map((tip) => {
-          const scopedId = `${fieldKey}-${tip.id}`;
-          const expanded = openTipId === scopedId;
-          return (
-            <View key={scopedId} style={styles.tipCard}>
-              <Pressable
-                onPress={() => {
-                  LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-                  setOpenTipId((prev) => (prev === scopedId ? null : scopedId));
-                }}
-                style={({ pressed }) => [styles.tipHead, pressed && { opacity: 0.86 }]}
-              >
-                <Text style={styles.tipTitle}>{tip.title}</Text>
-                <Feather name={expanded ? "arrow-down-right" : "arrow-up-right"} size={20} color="#D0D0D0" />
-              </Pressable>
-              {expanded ? (
-                <>
-                  {tip.details ? <Text style={styles.tipBody}>{tip.details}</Text> : null}
-                  {tip.image ? (
-                    <View style={styles.tipImageContainer}>
-                      <Pressable
-                        onPress={() => {
-                          setSamplePreviewImage(tip.image);
-                          setSamplePreviewTitle(tip.title || "Sample Document");
-                          setSamplePreviewOpen(true);
-                        }}
-                        style={({ pressed }) => [pressed && { opacity: 0.9 }]}
-                      >
-                        <Image source={tip.image} style={styles.tipImage} resizeMode="contain" />
-                      </Pressable>
-                    </View>
-                  ) : null}
-                </>
-              ) : null}
-            </View>
-          );
-        })}
-      </>
-    );
-  };
-
   const requiredStepOrder = ["deathCert", "validId", "barangay", "indigency"] as const;
   type RequiredStepKey = (typeof requiredStepOrder)[number];
-
-  const [currentStep, setCurrentStep] = useState(0);
-  const [stepInitialized, setStepInitialized] = useState(false);
 
   const stepLabels: Record<RequiredStepKey, string> = {
     deathCert: "Submit Death Certificate",
@@ -886,38 +702,6 @@ export default function BurialReq() {
     if (key === "validId") return pickValidId();
     if (key === "barangay") return pickBarangay();
     return pickIndigencyCert();
-  };
-
-  useEffect(() => {
-    if (isLoading || stepInitialized) return;
-    const firstMissingIndex = requiredStepOrder.findIndex((key) => !getFileByKey(key));
-    setCurrentStep(firstMissingIndex === -1 ? requiredStepOrder.length : firstMissingIndex);
-    setStepInitialized(true);
-  }, [isLoading, stepInitialized, deathCertFile, validIdFile, barangayFile, indigencyCertFile]);
-
-  const totalSteps = requiredStepOrder.length + 1;
-  const infoStepIndex = requiredStepOrder.length;
-  const isInfoStep = currentStep === infoStepIndex;
-  const currentStepKey = requiredStepOrder[Math.min(currentStep, requiredStepOrder.length - 1)];
-  const currentFile = isInfoStep ? null : getFileByKey(currentStepKey);
-  const isLastStep = isInfoStep;
-  const canProceedStep = isInfoStep ? true : (!!currentFile && !isSaving && !isSubmitting);
-
-  const onPreviousStep = () => {
-    if (currentStep > 0) {
-      setCurrentStep((prev) => Math.max(prev - 1, 0));
-      return;
-    }
-    setBackConfirmOpen(true);
-  };
-
-  const onNextStep = () => {
-    if (!canProceedStep) return;
-    if (isLastStep) {
-      onSubmit();
-      return;
-    }
-    setCurrentStep((prev) => Math.min(prev + 1, requiredStepOrder.length));
   };
 
   // Loading screen
@@ -975,7 +759,6 @@ export default function BurialReq() {
         </View>
 
         <Text style={styles.sectionTitle}>Service Requirements</Text>
-        <Text style={styles.stepTitle}>Step {currentStep + 1} out of {totalSteps}</Text>
         <View style={styles.noteRow}>
           {isSaving ? (
             <ActivityIndicator size={14} color={TEAL} style={{ marginTop: 1 }} />
@@ -1010,47 +793,47 @@ export default function BurialReq() {
           </Text>
         </View>
 
-        {!isInfoStep ? (
-          <>
-            <Text style={styles.reqLabel}>
-              {stepLabels[currentStepKey]} <Text style={styles.reqStar}>*</Text>
-            </Text>
+        {requiredStepOrder.map((stepKey) => {
+          const stepFile = getFileByKey(stepKey);
+          return (
+            <View key={stepKey}>
+              <Text style={styles.reqLabel}>
+                {stepLabels[stepKey]} <Text style={styles.reqStar}>*</Text>
+              </Text>
 
-            {!currentFile ? (
-              <Pressable
-                onPress={() => pickForKey(currentStepKey)}
-                style={({ pressed }) => [
-                  styles.dropBox,
-                  pressed && { opacity: 0.92 },
-                ]}
-              >
-                <View style={styles.plusCol}>
-                  <Ionicons name="add" size={26} color={TEAL} />
+              {!stepFile ? (
+                <Pressable
+                  onPress={() => pickForKey(stepKey)}
+                  style={({ pressed }) => [
+                    styles.dropBox,
+                    pressed && { opacity: 0.92 },
+                  ]}
+                >
+                  <View style={styles.plusCol}>
+                    <Ionicons name="add" size={26} color={TEAL} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.dropTitle}>Attach requested files.</Text>
+                    <Text style={styles.dropSub}>
+                      Files supported (jpeg, pdf, png) Max 5 MB
+                    </Text>
+                  </View>
+                </Pressable>
+              ) : (
+                <View style={styles.dropBoxFilled}>
+                  <SwipeDeletePill
+                    file={stepFile}
+                    onRequestRemove={() => openRemove(stepKey)}
+                    thumbnailUri={signedUrls[stepKey]}
+                    onPress={() => openPreview(stepKey, stepFile.name)}
+                  />
                 </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.dropTitle}>Attach requested files.</Text>
-                  <Text style={styles.dropSub}>
-                    Files supported (jpeg, pdf, png) Max 5 MB
-                  </Text>
-                </View>
-              </Pressable>
-            ) : (
-              <View style={styles.dropBoxFilled}>
-                <SwipeDeletePill
-                  file={currentFile}
-                  onRequestRemove={() => openRemove(currentStepKey)}
-                  thumbnailUri={signedUrls[currentStepKey]}
-                  onPress={() => openPreview(currentStepKey, currentFile.name)}
-                />
-              </View>
-            )}
-            {renderTips(currentStepKey)}
-          </>
-        ) : null}
+              )}
+            </View>
+          );
+        })}
 
-        {isInfoStep ? (
-          <>
-            <Text style={styles.additionalTitle}>Additional Information</Text>
+        <Text style={styles.additionalTitle}>Additional Information</Text>
 
         <Text style={styles.reqLabel}>
           Description or Other Relevant Information (optional)
@@ -1100,8 +883,7 @@ export default function BurialReq() {
             />
           </View>
             )}
-          </>
-        ) : null}
+
 
         <View style={{ height: 140 }} />
       </ScrollView>
@@ -1109,30 +891,30 @@ export default function BurialReq() {
       <View style={styles.bottomBar}>
         <View style={{ flexDirection: "row", gap: 12 }}>
           <Pressable
-            onPress={onPreviousStep}
+            onPress={() => setBackConfirmOpen(true)}
             style={({ pressed }) => [styles.prevBtn, pressed && { opacity: 0.92 }]}
           >
-            <Text style={styles.prevText}>{currentStep === 0 ? "Back" : "Previous"}</Text>
+            <Text style={styles.prevText}>Back</Text>
           </Pressable>
 
           <Pressable
-            onPress={onNextStep}
-            disabled={isLastStep ? !canSubmit : !canProceedStep}
-            onPressIn={isLastStep ? (canSubmit ? nextAnim.pressIn : undefined) : (canProceedStep ? nextAnim.pressIn : undefined)}
-            onPressOut={isLastStep ? (canSubmit ? nextAnim.pressOut : undefined) : (canProceedStep ? nextAnim.pressOut : undefined)}
+            onPress={onSubmit}
+            disabled={!canSubmit}
+            onPressIn={canSubmit ? nextAnim.pressIn : undefined}
+            onPressOut={canSubmit ? nextAnim.pressOut : undefined}
             style={{ flex: 1 }}
           >
             <Animated.View
               style={[
                 styles.nextBtn,
-                (isLastStep ? !canSubmit : !canProceedStep) && styles.nextBtnDisabled,
+                !canSubmit && styles.nextBtnDisabled,
                 { transform: [{ scale: nextAnim.scale }] },
               ]}
             >
               <Text
-                style={[styles.nextText, (isLastStep ? !canSubmit : !canProceedStep) && styles.nextTextDisabled]}
+                style={[styles.nextText, !canSubmit && styles.nextTextDisabled]}
               >
-                {isLastStep ? "Submit" : "Next"}
+                Submit
               </Text>
             </Animated.View>
           </Pressable>
@@ -1232,27 +1014,6 @@ export default function BurialReq() {
                 resizeMode="contain"
               />
             )}
-          </Pressable>
-        </Pressable>
-      </Modal>
-
-      <Modal transparent visible={samplePreviewOpen} animationType="fade">
-        <Pressable style={styles.previewOverlay} onPress={() => setSamplePreviewOpen(false)}>
-          <View style={styles.previewHeader}>
-            <Text style={styles.previewTitle} numberOfLines={1}>
-              {samplePreviewTitle}
-            </Text>
-            <Pressable
-              onPress={() => setSamplePreviewOpen(false)}
-              style={({ pressed }) => [styles.previewCloseBtn, pressed && { opacity: 0.7 }]}
-            >
-              <Ionicons name="close" size={24} color="#FFF" />
-            </Pressable>
-          </View>
-          <Pressable style={styles.previewContent} onPress={() => {}}>
-            {samplePreviewImage ? (
-              <Image source={samplePreviewImage} style={styles.previewImage} resizeMode="contain" />
-            ) : null}
           </Pressable>
         </Pressable>
       </Modal>

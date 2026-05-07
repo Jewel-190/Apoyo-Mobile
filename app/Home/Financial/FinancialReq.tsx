@@ -7,6 +7,12 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useFocusEffect } from "@react-navigation/native";
 import NetInfo from "@react-native-community/netinfo";
+import {
+  deleteRequestAttachment,
+  inferAttachmentName,
+  listRequestAttachments,
+  upsertRequestAttachment,
+} from "../../../lib/requestAttachments";
 import { supabase } from "../../../lib/supabase";
 import {
   ActivityIndicator,
@@ -58,7 +64,8 @@ const SWIPE_OPEN_PX = 56;
 const SWIPE_DELETE_PX = 120;
 const ROW_HEIGHT = 64;
 
-const BUCKET_NAME = "financial-documents";
+const BUCKET_NAME = "request-documents";
+const REQUEST_TABLE = "financial_requests";
 
 function usePressScale() {
   const scale = useRef(new Animated.Value(1)).current;
@@ -142,11 +149,6 @@ async function uploadFileToStorage(
   });
   if (error) throw error;
   return { path: filePath, originalName: file.name, size: file.size, mimeType: file.mimeType };
-}
-
-async function deleteFileFromStorage(filePath: string): Promise<void> {
-  const { error } = await supabase.storage.from(BUCKET_NAME).remove([filePath]);
-  if (error) throw error;
 }
 
 async function getSignedUrl(filePath: string): Promise<string | null> {
@@ -276,9 +278,18 @@ const removeTargetLabels: Record<string, string> = {
 
 export default function FinancialReq() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ serviceId?: string; requestId?: string }>();
-  const serviceId = params?.serviceId || "financial";
+  const params = useLocalSearchParams<{
+    serviceId?: string;
+    requestId?: string;
+    financialRequestType?: string;
+  }>();
+  // This screen is strictly for financial_requests; keep service_id canonical.
+  const serviceId = "financial";
+  const routeServiceId = (params?.serviceId || "emergency-finance").toString();
+  const paramFinancialType = (params?.financialRequestType || "").toString().trim();
   const existingRequestId = params?.requestId;
+
+  const [financialRequestType, setFinancialRequestType] = useState(paramFinancialType);
 
   // Loading & network state
   const [isLoading, setIsLoading] = useState(true);
@@ -394,16 +405,16 @@ export default function FinancialReq() {
       }
       setUserId(user.id);
 
-      // If not editing an existing request, try to prefill from verified `users` profile
+      // If not editing an existing request, try to prefill from `users` profile
       if (!existingRequestId) {
         try {
           const { data: profile, error: profileError } = await supabase
             .from("users")
-            .select("first_name,middle_name,last_name,suffix,contact_number,email,address,verified")
+            .select("first_name,middle_name,last_name,suffix,contact_number,email,address")
             .eq("id", user.id)
             .single();
 
-          if (profile && profile.verified) {
+          if (profile) {
             const parts = [profile.first_name, profile.middle_name, profile.last_name].filter(Boolean);
             const name = `${parts.join(" ")}${profile.suffix ? " " + profile.suffix : ""}`.trim();
             setRequesterName(name);
@@ -415,24 +426,25 @@ export default function FinancialReq() {
         } catch (e) {
           console.log("Failed to load user profile:", e);
         }
-      }
 
-      // Helper to parse file metadata (handles both old string format and new JSON format)
-      const parseFileMeta = (raw: string | null): { path: string; name: string; mimeType?: string; size?: number } | null => {
-        if (!raw) return null;
-        try {
-          const meta = JSON.parse(raw) as FileMetadata;
-          return { path: meta.path, name: meta.originalName, mimeType: meta.mimeType, size: meta.size };
-        } catch {
-          // Old format - just a path string
-          return { path: raw, name: raw.split("/").pop() || "file" };
+        if (!paramFinancialType) {
+          try {
+            const infoRaw = await AsyncStorage.getItem(`apoyo_requestinfo_${routeServiceId}`);
+            if (infoRaw) {
+              const parsed = JSON.parse(infoRaw) as { financialRequestType?: string };
+              const fromStore = (parsed?.financialRequestType || "").toString().trim();
+              if (fromStore) setFinancialRequestType(fromStore);
+            }
+          } catch {
+            /* ignore bad JSON */
+          }
         }
-      };
+      }
 
       // Only load a draft when an explicit requestId param is provided
       if (existingRequestId) {
         const { data: existingRequest, error } = await supabase
-          .from("financial_requests")
+          .from(REQUEST_TABLE)
           .select("*")
           .eq("user_id", user.id)
           .eq("id", existingRequestId)
@@ -443,29 +455,29 @@ export default function FinancialReq() {
         if (existingRequest && !error) {
           setRequestId(existingRequest.id);
           setAdditionalInfo(existingRequest.additional_info || "");
+          const rowType = (existingRequest as { financial_request_type?: string | null })
+            .financial_request_type;
+          if (rowType) setFinancialRequestType(rowType);
 
-          // populate requester fields from DB if present (don't overwrite if locked from verified profile)
-          if (!requesterLocked) {
-            setRequesterName(existingRequest.requester_name || "");
-            setRequesterContactNumber(existingRequest.requester_contact_number || "");
-            setRequesterEmail(existingRequest.requester_email || "");
-            setRequesterPresentAddress(existingRequest.requester_present_address || "");
+          const paths = await listRequestAttachments(REQUEST_TABLE, existingRequest.id);
+          if (paths.letter) {
+            setLetterFile({ name: inferAttachmentName(paths.letter, "letter"), uri: "" });
           }
-
-          // Store uploaded paths and set file states
-          const paths: Record<string, string> = {};
-          const letterMeta = parseFileMeta(existingRequest.letter_file_path);
-          if (letterMeta) { paths.letter = letterMeta.path; setLetterFile({ name: letterMeta.name, uri: "", mimeType: letterMeta.mimeType, size: letterMeta.size }); }
-          const voterIdMeta = parseFileMeta(existingRequest.voter_id_file_path);
-          if (voterIdMeta) { paths.voterId = voterIdMeta.path; setVoterIdFile({ name: voterIdMeta.name, uri: "", mimeType: voterIdMeta.mimeType, size: voterIdMeta.size }); }
-          const validIdMeta = parseFileMeta(existingRequest.valid_id_file_path);
-          if (validIdMeta) { paths.validId = validIdMeta.path; setValidIdFile({ name: validIdMeta.name, uri: "", mimeType: validIdMeta.mimeType, size: validIdMeta.size }); }
-          const barangayMeta = parseFileMeta(existingRequest.barangay_endorsement_file_path);
-          if (barangayMeta) { paths.barangay = barangayMeta.path; setBarangayFile({ name: barangayMeta.name, uri: "", mimeType: barangayMeta.mimeType, size: barangayMeta.size }); }
-          const indigencyMeta = parseFileMeta(existingRequest.indigency_cert_file_path);
-          if (indigencyMeta) { paths.indigency = indigencyMeta.path; setIndigencyCertFile({ name: indigencyMeta.name, uri: "", mimeType: indigencyMeta.mimeType, size: indigencyMeta.size }); }
-          const attachmentMeta = parseFileMeta(existingRequest.attachment_file_path);
-          if (attachmentMeta) { paths.attachment = attachmentMeta.path; setAttachmentFile({ name: attachmentMeta.name, uri: "", mimeType: attachmentMeta.mimeType, size: attachmentMeta.size }); }
+          if (paths.voterId) {
+            setVoterIdFile({ name: inferAttachmentName(paths.voterId, "voterId"), uri: "" });
+          }
+          if (paths.validId) {
+            setValidIdFile({ name: inferAttachmentName(paths.validId, "validId"), uri: "" });
+          }
+          if (paths.barangay) {
+            setBarangayFile({ name: inferAttachmentName(paths.barangay, "barangay"), uri: "" });
+          }
+          if (paths.indigency) {
+            setIndigencyCertFile({ name: inferAttachmentName(paths.indigency, "indigency"), uri: "" });
+          }
+          if (paths.attachment) {
+            setAttachmentFile({ name: inferAttachmentName(paths.attachment, "attachment"), uri: "" });
+          }
           setUploadedPaths(paths);
         }
       }
@@ -481,33 +493,18 @@ export default function FinancialReq() {
     if (!userId) throw new Error("User not logged in");
 
     const { data, error } = await supabase
-      .from("financial_requests")
+      .from(REQUEST_TABLE)
       .insert({
         user_id: userId,
         status: "draft",
         service_id: serviceId,
-        requester_name: requesterName || null,
-        requester_contact_number: requesterContactNumber || null,
-        requester_email: requesterEmail || null,
-        requester_present_address: requesterPresentAddress || null,
+        financial_request_type: financialRequestType || null,
       })
       .select("id")
       .single();
     if (error) throw error;
     setRequestId(data.id);
     return data.id;
-  };
-
-  const getColumnName = (fileType: string) => {
-    const map: Record<string, string> = {
-      letter: "letter_file_path",
-      voterId: "voter_id_file_path",
-      validId: "valid_id_file_path",
-      barangay: "barangay_endorsement_file_path",
-      indigency: "indigency_cert_file_path",
-      attachment: "attachment_file_path",
-    };
-    return map[fileType] || fileType;
   };
 
   const handleFilePickAndUpload = async (fileType: string, setFile: (f: PickedFile | null) => void) => {
@@ -517,8 +514,12 @@ export default function FinancialReq() {
       setIsSaving(true);
       const reqId = await ensureRequestId();
       const fileMetadata = await uploadFileToStorage(userId, reqId, fileType, file);
-      const columnName = getColumnName(fileType);
-      await supabase.from("financial_requests").update({ [columnName]: JSON.stringify(fileMetadata) }).eq("id", reqId);
+      await upsertRequestAttachment({
+        requestTable: REQUEST_TABLE,
+        requestUid: reqId,
+        fileType,
+        path: fileMetadata.path,
+      });
       setFile(file);
       setUploadedPaths((p) => ({ ...p, [fileType]: fileMetadata.path }));
     } catch (err: any) {
@@ -533,9 +534,11 @@ export default function FinancialReq() {
     if (!path || !requestId) return;
     try {
       setIsSaving(true);
-      await deleteFileFromStorage(path);
-      const columnName = getColumnName(fileType);
-      await supabase.from("financial_requests").update({ [columnName]: null }).eq("id", requestId);
+      await deleteRequestAttachment({
+        requestTable: REQUEST_TABLE,
+        requestUid: requestId,
+        fileType,
+      });
       setUploadedPaths((prev) => { const n = { ...prev }; delete n[fileType]; return n; });
       clearFile(null);
     } catch (err: any) {
@@ -627,10 +630,6 @@ export default function FinancialReq() {
       const reqId = await ensureRequestId();
       await supabase.from("financial_requests").update({
         additional_info: additionalInfo,
-        requester_name: requesterName || null,
-        requester_contact_number: requesterContactNumber || null,
-        requester_email: requesterEmail || null,
-        requester_present_address: requesterPresentAddress || null,
       }).eq("id", reqId);
     } catch (e) {
       console.log("Error saving draft on back:", e);
@@ -652,12 +651,8 @@ export default function FinancialReq() {
       const { error } = await supabase
         .from("financial_requests")
         .update({
-          status: "submitted",
+          status: "pending",
           submitted_at: new Date().toISOString(),
-          requester_name: requesterName || null,
-          requester_contact_number: requesterContactNumber || null,
-          requester_email: requesterEmail || null,
-          requester_present_address: requesterPresentAddress || null,
         })
         .eq("id", reqId);
       if (error) throw error;
@@ -876,7 +871,6 @@ export default function FinancialReq() {
         </View>
 
         <Text style={styles.sectionTitle}>Service Requirements</Text>
-        <Text style={styles.stepTitle}>Step {currentStep + 1} out of {totalSteps}</Text>
         <View style={styles.noteRow}>
           {isSaving ? (
             <ActivityIndicator size={14} color={TEAL} style={{ marginTop: 1 }} />
@@ -886,98 +880,127 @@ export default function FinancialReq() {
           <Text style={styles.sectionNote}>{isSaving ? "Saving..." : "Your files are auto-saved"}</Text>
         </View>
 
-        {!isInfoStep ? (
-          <>
-            <Text style={styles.reqLabel}>
-              {stepLabels[currentStepKey]} <Text style={styles.reqStar}>*</Text>
-            </Text>
+        <Text style={styles.reqLabel}>
+          Type of Financial Assistance<Text style={styles.reqStar}> *</Text>
+        </Text>
 
-            {!currentFile ? (
-              <Pressable
-                onPress={() => pickForKey(currentStepKey)}
-                style={({ pressed }) => [
-                  styles.dropBox,
-                  pressed && { opacity: 0.92 },
-                ]}
-              >
-                <View style={styles.plusCol}>
-                  <Ionicons name="add" size={26} color={TEAL} />
+        <View
+          style={[
+            styles.coverageCard,
+            {
+              borderColor: financialRequestType ? "#CDEBEB" : "#F1D1D1",
+              backgroundColor: financialRequestType ? "#F2FCFC" : "#FFF5F5",
+            },
+          ]}
+        >
+          <Text
+            style={[
+              styles.coverageTitle,
+              { color: financialRequestType ? TEAL : DANGER },
+            ]}
+          >
+            Selected Request Type
+          </Text>
+          <Text
+            style={[
+              styles.coverageValue,
+              { color: financialRequestType ? TEAL : DANGER },
+            ]}
+          >
+            {financialRequestType || "No selection. Please choose in Financial Details."}
+          </Text>
+        </View>
+
+        {requiredStepOrder.map((stepKey) => {
+          const stepFile = getFileByKey(stepKey);
+          return (
+            <View key={stepKey}>
+              <Text style={styles.reqLabel}>
+                {stepLabels[stepKey]} <Text style={styles.reqStar}>*</Text>
+              </Text>
+
+              {!stepFile ? (
+                <Pressable
+                  onPress={() => pickForKey(stepKey)}
+                  style={({ pressed }) => [
+                    styles.dropBox,
+                    pressed && { opacity: 0.92 },
+                  ]}
+                >
+                  <View style={styles.plusCol}>
+                    <Ionicons name="add" size={26} color={TEAL} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.dropTitle}>Attach requested files.</Text>
+                    <Text style={styles.dropSub}>
+                      Files supported (jpeg, pdf, png) Max 5 MB
+                    </Text>
+                  </View>
+                </Pressable>
+              ) : (
+                <View style={styles.dropBoxFilled}>
+                  <SwipeDeletePill
+                    file={stepFile}
+                    onRequestRemove={() => openRemove(stepKey)}
+                    thumbnailUri={signedUrls[stepKey]}
+                    onPress={() => openPreview(stepKey, stepFile.name)}
+                  />
                 </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.dropTitle}>Attach requested files.</Text>
-                  <Text style={styles.dropSub}>
-                    Files supported (jpeg, pdf, png) Max 5 MB
-                  </Text>
-                </View>
-              </Pressable>
-            ) : (
-              <View style={styles.dropBoxFilled}>
-                <SwipeDeletePill
-                  file={currentFile}
-                  onRequestRemove={() => openRemove(currentStepKey)}
-                  thumbnailUri={signedUrls[currentStepKey]}
-                  onPress={() => openPreview(currentStepKey, currentFile.name)}
-                />
-              </View>
-            )}
-            {renderTips(currentStepKey)}
-          </>
-        ) : null}
+              )}
+            </View>
+          );
+        })}
 
-        {isInfoStep ? (
-          <>
-            <Text style={styles.additionalTitle}>Additional Information</Text>
+        <Text style={styles.additionalTitle}>Additional Information</Text>
 
-            <Text style={styles.reqLabel}>
-              Description or Other Relevant Information (optional)
-            </Text>
-            <TextInput
-              style={styles.textArea}
-              placeholder="Provide any additional details or requirements."
-              placeholderTextColor={"#A0A9A9"}
-              multiline
-              maxLength={400}
-              value={additionalInfo}
-              onChangeText={handleAdditionalChange}
-              textAlignVertical="top"
-              editable={!isSaving}
+        <Text style={styles.reqLabel}>
+          Description or Other Relevant Information (optional)
+        </Text>
+        <TextInput
+          style={styles.textArea}
+          placeholder="Provide any additional details or requirements."
+          placeholderTextColor={"#A0A9A9"}
+          multiline
+          maxLength={400}
+          value={additionalInfo}
+          onChangeText={handleAdditionalChange}
+          textAlignVertical="top"
+          editable={!isSaving}
+        />
+        <Text style={styles.charCount}>
+          {additionalInfo.length}/400 characters
+        </Text>
+
+        <Text style={styles.reqLabel}>Attachments (optional)</Text>
+
+        {!attachmentFile ? (
+          <Pressable
+            onPress={pickAttachment}
+            style={({ pressed }) => [
+              styles.dropBox,
+              pressed && { opacity: 0.92 },
+            ]}
+          >
+            <View style={styles.plusCol}>
+              <Ionicons name="add" size={26} color={TEAL} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.dropTitle}>Attach requested files.</Text>
+              <Text style={styles.dropSub}>
+                Files supported (jpeg, pdf, png) Max 5 MB
+              </Text>
+            </View>
+          </Pressable>
+        ) : (
+          <View style={styles.dropBoxFilled}>
+            <SwipeDeletePill
+              file={attachmentFile}
+              onRequestRemove={() => openRemove("attachment")}
+              thumbnailUri={signedUrls.attachment}
+              onPress={() => openPreview("attachment", attachmentFile.name)}
             />
-            <Text style={styles.charCount}>
-              {additionalInfo.length}/400 characters
-            </Text>
-
-            <Text style={styles.reqLabel}>Attachments (optional)</Text>
-
-            {!attachmentFile ? (
-              <Pressable
-                onPress={pickAttachment}
-                style={({ pressed }) => [
-                  styles.dropBox,
-                  pressed && { opacity: 0.92 },
-                ]}
-              >
-                <View style={styles.plusCol}>
-                  <Ionicons name="add" size={26} color={TEAL} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.dropTitle}>Attach requested files.</Text>
-                  <Text style={styles.dropSub}>
-                    Files supported (jpeg, pdf, png) Max 5 MB
-                  </Text>
-                </View>
-              </Pressable>
-            ) : (
-              <View style={styles.dropBoxFilled}>
-                <SwipeDeletePill
-                  file={attachmentFile}
-                  onRequestRemove={() => openRemove("attachment")}
-                  thumbnailUri={signedUrls.attachment}
-                  onPress={() => openPreview("attachment", attachmentFile.name)}
-                />
-              </View>
-            )}
-          </>
-        ) : null}
+          </View>
+        )}
 
         <View style={{ height: 140 }} />
       </ScrollView>
@@ -985,30 +1008,30 @@ export default function FinancialReq() {
       <View style={styles.bottomBar}>
         <View style={{ flexDirection: "row", gap: 12 }}>
           <Pressable
-            onPress={onPreviousStep}
+            onPress={() => setBackConfirmOpen(true)}
             style={({ pressed }) => [styles.prevBtn, pressed && { opacity: 0.92 }]}
           >
-            <Text style={styles.prevText}>{currentStep === 0 ? "Back" : "Previous"}</Text>
+            <Text style={styles.prevText}>Back</Text>
           </Pressable>
 
           <Pressable
-            onPress={onNextStep}
-            disabled={isLastStep ? !canSubmit : !canProceedStep}
-            onPressIn={isLastStep ? (canSubmit ? nextAnim.pressIn : undefined) : (canProceedStep ? nextAnim.pressIn : undefined)}
-            onPressOut={isLastStep ? (canSubmit ? nextAnim.pressOut : undefined) : (canProceedStep ? nextAnim.pressOut : undefined)}
+            onPress={onSubmit}
+            disabled={!canSubmit}
+            onPressIn={canSubmit ? nextAnim.pressIn : undefined}
+            onPressOut={canSubmit ? nextAnim.pressOut : undefined}
             style={{ flex: 1 }}
           >
             <Animated.View
               style={[
                 styles.nextBtn,
-                (isLastStep ? !canSubmit : !canProceedStep) && styles.nextBtnDisabled,
+                !canSubmit && styles.nextBtnDisabled,
                 { transform: [{ scale: nextAnim.scale }] },
               ]}
             >
               <Text
-                style={[styles.nextText, (isLastStep ? !canSubmit : !canProceedStep) && styles.nextTextDisabled]}
+                style={[styles.nextText, !canSubmit && styles.nextTextDisabled]}
               >
-                {isLastStep ? "Submit" : "Next"}
+                Submit
               </Text>
             </Animated.View>
           </Pressable>
@@ -1279,6 +1302,24 @@ const styles = StyleSheet.create({
     fontWeight: "400",
     fontSize: 10.8,
     color: "#B7C2C2",
+  },
+  coverageCard: {
+    marginTop: 10,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderWidth: 1,
+  },
+  coverageTitle: {
+    fontFamily: FONT,
+    fontWeight: "700",
+    fontSize: 11.5,
+  },
+  coverageValue: {
+    marginTop: 3,
+    fontFamily: FONT,
+    fontWeight: "600",
+    fontSize: 12,
   },
 
   reqLabel: {

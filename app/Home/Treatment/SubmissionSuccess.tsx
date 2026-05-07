@@ -1,6 +1,7 @@
-import { useRouter } from "expo-router";
-import React, { useMemo } from "react";
+import { useLocalSearchParams, useRouter } from "expo-router";
+import React, { useEffect, useState } from "react";
 import {
+  ActivityIndicator,
   Image,
   Platform,
   Pressable,
@@ -10,6 +11,7 @@ import {
   Text,
   View,
 } from "react-native";
+import { supabase } from "../../../lib/supabase";
 
 /* ===== FONT RULE ===== */
 const FONT_REGULAR = Platform.select({
@@ -36,7 +38,50 @@ const BG = "#FFFFFF";
 
 export default function SubmissionSuccess() {
   const router = useRouter();
-  const appId = useMemo(() => "MAHB-2026-001", []);
+  const params = useLocalSearchParams<{
+    requestId?: string;
+    requestCode?: string;
+  }>();
+  const requestId = (params?.requestId || "").toString().trim();
+  const initialRequestCode = (params?.requestCode || "").toString().trim();
+  const [requestCode, setRequestCode] = useState<string | null>(
+    initialRequestCode || null
+  );
+  const [isRequestCodeLoading, setIsRequestCodeLoading] = useState(false);
+
+  useEffect(() => {
+    if (requestCode || !requestId) return;
+
+    let active = true;
+
+    (async () => {
+      try {
+        setIsRequestCodeLoading(true);
+        const { data, error } = await supabase
+          .from("treatment_requests")
+          .select("request_code")
+          .eq("id", requestId)
+          .maybeSingle();
+
+        if (error) throw error;
+
+        const code =
+          typeof data?.request_code === "string" ? data.request_code.trim() : "";
+
+        if (active && code) {
+          setRequestCode(code);
+        }
+      } catch (e) {
+        console.log("Fetch treatment request code failed:", e);
+      } finally {
+        if (active) setIsRequestCodeLoading(false);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [requestCode, requestId]);
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -57,7 +102,14 @@ export default function SubmissionSuccess() {
           <Text style={styles.linkish}>Treatment & Procedures</Text>.
         </Text>
 
-        <Text style={styles.appId}>Application ID: {appId}</Text>
+        {requestCode ? (
+          <Text style={styles.appId}>Request Code: {requestCode}</Text>
+        ) : isRequestCodeLoading ? (
+          <View style={styles.loadingCodeRow}>
+            <ActivityIndicator size="small" color={TEAL} />
+            <Text style={styles.loadingCodeText}>Loading request code...</Text>
+          </View>
+        ) : null}
 
         {/* card */}
         <View style={styles.card}>
@@ -154,6 +206,19 @@ const styles = StyleSheet.create({
     fontFamily: FONT_REGULAR,
     fontSize: 12, // Increased font size
     color: TEXT, // Updated to black
+  },
+
+  loadingCodeRow: {
+    marginTop: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+
+  loadingCodeText: {
+    fontFamily: FONT_REGULAR,
+    fontSize: 12,
+    color: TEXT,
   },
 
   card: {

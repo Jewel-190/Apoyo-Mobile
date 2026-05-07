@@ -1,6 +1,7 @@
 import { useLocalSearchParams, useRouter } from "expo-router";
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
+  ActivityIndicator,
   Image,
   Platform,
   Pressable,
@@ -10,6 +11,7 @@ import {
   Text,
   View,
 } from "react-native";
+import { supabase } from "../../../lib/supabase";
 
 /* ========= ASSETS ========= */
 const BOOK_PNG = require("../../../assets/images/Book.png");
@@ -26,28 +28,64 @@ const TEAL = "#0B8F8B";
 const GREEN = "#7CCB53";
 const BORDER = "#E7EEEE";
 
-function fallbackAppId(prefix: string) {
-  const year = new Date().getFullYear();
-  const n = (Date.now() % 900) + 100;
-  return `${prefix}-${year}-${n}`;
-}
-
 export default function SubmissionSuccess() {
   const router = useRouter();
   const params = useLocalSearchParams<{
+    requestId?: string;
+    requestCode?: string;
     serviceTitle?: string;
     applicationId?: string;
   }>();
+  const requestId = (params?.requestId || "").toString().trim();
+  const initialRequestCode = (
+    params?.requestCode ||
+    params?.applicationId ||
+    ""
+  )
+    .toString()
+    .trim();
+  const [requestCode, setRequestCode] = useState<string | null>(
+    initialRequestCode || null
+  );
+  const [isRequestCodeLoading, setIsRequestCodeLoading] = useState(false);
 
   const serviceTitle = (
     params?.serviceTitle || "Monetary Burial Aid"
   ).toString();
 
-  const appId = useMemo(() => {
-    const passed = (params?.applicationId || "").toString().trim();
-    if (passed) return passed;
-    return fallbackAppId("MBAR");
-  }, [params?.applicationId]);
+  useEffect(() => {
+    if (requestCode || !requestId) return;
+
+    let active = true;
+
+    (async () => {
+      try {
+        setIsRequestCodeLoading(true);
+        const { data, error } = await supabase
+          .from("monetary_requests")
+          .select("request_code")
+          .eq("id", requestId)
+          .maybeSingle();
+
+        if (error) throw error;
+
+        const code =
+          typeof data?.request_code === "string" ? data.request_code.trim() : "";
+
+        if (active && code) {
+          setRequestCode(code);
+        }
+      } catch (e) {
+        console.log("Fetch monetary request code failed:", e);
+      } finally {
+        if (active) setIsRequestCodeLoading(false);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [requestCode, requestId]);
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -67,7 +105,14 @@ export default function SubmissionSuccess() {
         Financial Assistance - <Text style={styles.link}>{serviceTitle}</Text>.
       </Text>
 
-      <Text style={styles.appId}>Application ID: {appId}</Text>
+      {requestCode ? (
+        <Text style={styles.appId}>Request Code: {requestCode}</Text>
+      ) : isRequestCodeLoading ? (
+        <View style={styles.loadingCodeRow}>
+          <ActivityIndicator size="small" color={TEAL} />
+          <Text style={styles.loadingCodeText}>Loading request code...</Text>
+        </View>
+      ) : null}
 
       <View style={styles.cardShadow}>
         <View style={styles.card}>
@@ -160,6 +205,21 @@ const styles = StyleSheet.create({
     fontFamily: FONT,
     fontWeight: "600",
     fontSize: 12.5,
+    color: TEXT,
+  },
+
+  loadingCodeRow: {
+    marginTop: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+
+  loadingCodeText: {
+    fontFamily: FONT,
+    fontWeight: "500",
+    fontSize: 12,
     color: TEXT,
   },
 

@@ -2,8 +2,8 @@ import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { LinearGradient } from "expo-linear-gradient";
 import { Image as ExpoImage } from "expo-image";
-import { useLocalSearchParams, useRouter } from "expo-router";
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "expo-router";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   Dimensions,
   Image,
@@ -18,8 +18,14 @@ import {
   TextInput,
   View,
 } from "react-native";
-import BottomNavBar, { NAV_TOTAL_HEIGHT, TabKey } from "../../components/BottomNavBar";
-import VerifyModal from "../../components/VerifyModal";
+import BottomNavBar, { NAV_TOTAL_HEIGHT } from "../../components/BottomNavBar";
+import { ROUTES } from "../../lib/routes";
+import {
+  getHomeRequirements,
+  getHomeRequirementTips,
+  type HomeRequirementItem,
+  type RequirementTipItem,
+} from "../../lib/serviceRequirements";
 import { supabase } from "../../lib/supabase";
 
 const { width } = Dimensions.get("window");
@@ -41,7 +47,6 @@ const FONT = "SF Pro Rounded";
 const CACHE_USER = "apoyo_user_cache";
 
 const ROUTE_REQUEST = "/Home/RequestInfo";
-const ROUTE_APPROVED = "/Home/ApprovedAssistance";
 
 const PROFILE_PNG = require("../../assets/images/ProfileIcon.png");
 const APPROVED_ICON_PNG = require("../../assets/images/Book2.png");
@@ -66,7 +71,8 @@ type Service = {
   icon: any;
 };
 
-type ReqItem = { id: string; title: string; details?: string };
+type ReqItem = HomeRequirementItem;
+type ReqTipItem = RequirementTipItem;
 
 type DetailsPage = {
   headerTitle: string;
@@ -81,28 +87,21 @@ type DetailsPage = {
   applyLabel: string;
 };
 
-type GateTarget =
-  | { type: "service"; serviceId: string }
-  | { type: "route"; path: string }
-  | null;
-
 export default function Assistance() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ verified?: string }>();
 
   const [chip, setChip] = useState<ChipKey>("all");
-  const [verified, setVerified] = useState(false);
-
-  const [showVerifyModal, setShowVerifyModal] = useState(false);
 
   const [openDetailsId, setOpenDetailsId] = useState<string | null>(null);
 
   const [openReq, setOpenReq] = useState<
     Record<string, Record<string, boolean>>
   >({});
+  const [openReqTipId, setOpenReqTipId] = useState<string | null>(null);
+  const [samplePreviewOpen, setSamplePreviewOpen] = useState(false);
+  const [samplePreviewImage, setSamplePreviewImage] = useState<any>(null);
+  const [samplePreviewTitle, setSamplePreviewTitle] = useState("Sample Document");
 
-  const successHandledOnce = useRef(false);
-  const pendingTarget = useRef<GateTarget>(null);
   const [displayName, setDisplayName] = useState("");
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
 
@@ -195,34 +194,7 @@ export default function Assistance() {
         reminderBody:
           "The request for medical assistance must be processed by the patient or their immediate family member who lives in the same household (e.g., spouse, child, parent, or sibling)",
         requirementsTitle: "Requirements",
-        requirements: [
-          {
-            id: "pl",
-            title: "Personal Letter",
-            details:
-              "A letter addressed to Mayor Jennifer Austria-Barzaga stating the specific assistance being requested.",
-          },
-          {
-            id: "voter",
-            title: "Patient's Voters ID/ Certificate",
-            details:
-              "Patient must be legitimate registered voters of the City of Dasmariñas.",
-          },
-          {
-            id: "endorse",
-            title: "Patient's Endorsement & Indigency Certificate",
-            details:
-              "Endorsement and Certificate of Indigency issued by the Barangay Captain.",
-          },
-          {
-            id: "validid",
-            title: "Patient's Valid ID",
-            details:
-              "Valid ID or Birth Certificate of the patient and requestor.",
-          },
-          { id: "abstract", title: "Medical Abstract" },
-          { id: "bill", title: "Partial Hospital Bill" },
-        ],
+        requirements: getHomeRequirements("hospital"),
         applyLabel: "Apply Now",
       },
 
@@ -238,50 +210,7 @@ export default function Assistance() {
         reminderBody:
           "The request for medical assistance must be processed by the patient or their immediate family member who lives in the same household (e.g., spouse, child, parent, or sibling)",
         requirementsTitle: "Requirements",
-        requirements: [
-          {
-            id: "pl",
-            title: "Personal Letter",
-            details:
-              "A letter addressed to Mayor Jennifer Austria-Barzaga stating the specific assistance being requested.",
-          },
-          {
-            id: "voter",
-            title: "Patient's Voters ID/ Certificate",
-            details:
-              "Patient must be legitimate registered voters of the City of Dasmariñas.",
-          },
-          {
-            id: "endorse",
-            title: "Patient's Endorsement & Indigency Certificate",
-            details:
-              "Endorsement and Certificate of Indigency issued by the Barangay Captain.",
-          },
-          {
-            id: "validid",
-            title: "Patient's Valid ID",
-            details:
-              "Valid ID or Birth Certificate of the patient and requestor.",
-          },
-          {
-            id: "medcert",
-            title: "Medical Certificate",
-            details:
-              "Latest medical certificate indicating diagnosis and recommended management/treatment.",
-          },
-          {
-            id: "rx",
-            title: "Doctor's Prescription",
-            details:
-              "Official prescription for medicines/procedures needed, signed by the attending physician.",
-          },
-          {
-            id: "lab",
-            title: "Laboratory Request",
-            details:
-              "Laboratory request or result relevant to the patient's case (if applicable).",
-          },
-        ],
+        requirements: getHomeRequirements("treatment"),
         applyLabel: "Apply Now",
       },
 
@@ -297,50 +226,7 @@ export default function Assistance() {
         reminderBody:
           "The request for medical assistance must be processed by the patient or their immediate family member who lives in the same household (e.g., spouse, child, parent, or sibling)",
         requirementsTitle: "Requirements",
-        requirements: [
-          {
-            id: "pl",
-            title: "Personal Letter",
-            details:
-              "A letter addressed to Mayor Jennifer Austria-Barzaga stating the specific assistance being requested.",
-          },
-          {
-            id: "voter",
-            title: "Patient's Voters ID/ Certificate",
-            details:
-              "Patient must be legitimate registered voters of the City of Dasmariñas.",
-          },
-          {
-            id: "endorse",
-            title: "Patient's Endorsement & Indigency Certificate",
-            details:
-              "Endorsement and Certificate of Indigency issued by the Barangay Captain.",
-          },
-          {
-            id: "validid",
-            title: "Patient's Valid ID",
-            details:
-              "Valid ID or Birth Certificate of the patient and requestor.",
-          },
-          {
-            id: "medcert",
-            title: "Medical Certificate",
-            details:
-              "Latest medical certificate indicating diagnosis and recommended management/treatment.",
-          },
-          {
-            id: "rx",
-            title: "Doctor's Prescription",
-            details:
-              "Official prescription for medicines/procedures needed, signed by the attending physician.",
-          },
-          {
-            id: "quote",
-            title: "Quotation of Expenses",
-            details:
-              "Itemized quotation/billing statement (dialysis/chemo/procedure) from hospital/clinic.",
-          },
-        ],
+        requirements: getHomeRequirements("operations"),
         applyLabel: "Apply Now",
       },
 
@@ -356,32 +242,7 @@ export default function Assistance() {
         reminderBody:
           "Requests must be filed by the concerned individual or an immediate family member residing in the same household, and supporting documents must be complete upon submission.",
         requirementsTitle: "Requirements",
-        requirements: [
-          {
-            id: "pl",
-            title: "Personal Letter",
-            details:
-              "A letter addressed to Mayor Jennifer Austria-Barzaga stating the specific assistance being requested.",
-          },
-          {
-            id: "voter",
-            title: "Applicant's Voters ID/ Certificate",
-            details:
-              "Applicant must be a legitimate registered voter of the City of Dasmariñas.",
-          },
-          {
-            id: "endorse",
-            title: "Endorsement & Indigency Certificate",
-            details:
-              "Endorsement and Certificate of Indigency issued by the Barangay Captain.",
-          },
-          {
-            id: "validid",
-            title: "Valid ID",
-            details:
-              "Valid ID or Birth Certificate of the applicant and requestor (if representative).",
-          },
-        ],
+        requirements: getHomeRequirements("emergency-finance"),
         applyLabel: "Apply Now",
       },
 
@@ -398,8 +259,8 @@ export default function Assistance() {
         reminderTitle: "Reminder",
         reminderBody:
           "For burial assistance, the request must be processed by an immediate family member, and documents must be consistent with the deceased's records.",
-        requirementsTitle: "",
-        requirements: [],
+        requirementsTitle: "Requirements",
+        requirements: getHomeRequirements("burial-money"),
         applyLabel: "Apply Now",
       },
 
@@ -413,8 +274,8 @@ export default function Assistance() {
         reminderTitle: "Reminder",
         reminderBody:
           "Requests must be filed by an immediate family member and documents must be complete upon submission.",
-        requirementsTitle: "",
-        requirements: [],
+        requirementsTitle: "Requirements",
+        requirements: getHomeRequirements("burial-site"),
         applyLabel: "Apply Now",
       },
 
@@ -429,8 +290,8 @@ export default function Assistance() {
         reminderTitle: "Reminder",
         reminderBody:
           "Requests must be filed by an immediate family member and documents must be complete upon submission.",
-        requirementsTitle: "",
-        requirements: [],
+        requirementsTitle: "Requirements",
+        requirements: getHomeRequirements("cremation"),
         applyLabel: "Apply Now",
       },
 
@@ -445,8 +306,8 @@ export default function Assistance() {
         reminderTitle: "Reminder",
         reminderBody:
           "Requests must be filed by an immediate family member and documents must be complete upon submission.",
-        requirementsTitle: "",
-        requirements: [],
+        requirementsTitle: "Requirements",
+        requirements: getHomeRequirements("colombarium"),
         applyLabel: "Apply Now",
       },
     }),
@@ -460,7 +321,6 @@ export default function Assistance() {
       if (cached) {
         const parsed = JSON.parse(cached);
         if (parsed.first_name) setDisplayName(parsed.first_name);
-        if (typeof parsed.verified === "boolean") setVerified(parsed.verified);
         if (parsed.avatar_url) {
           setAvatarUrl(parsed.avatar_url);
           ExpoImage.prefetch(parsed.avatar_url);
@@ -472,77 +332,24 @@ export default function Assistance() {
       if (user) {
         const { data } = await supabase
           .from("users")
-          .select("first_name, middle_name, last_name, contact_number, email, verified, avatar_url")
+          .select("first_name, middle_name, last_name, contact_number, email, avatar_url")
           .eq("id", user.id)
           .single();
         
         if (data) {
           if (data.first_name) setDisplayName(data.first_name);
-          setVerified(data.verified === true);
           if (data.avatar_url) {
             setAvatarUrl(data.avatar_url);
             ExpoImage.prefetch(data.avatar_url);
           } else {
             setAvatarUrl(null);
           }
-          // Update cache (preserve all fields for Verify-acc)
+          // Update cached profile for quick subsequent loads
           await AsyncStorage.setItem(CACHE_USER, JSON.stringify(data));
         }
       }
     })();
   }, []);
-
-  useEffect(() => {
-    (async () => {
-      if (params?.verified === "1" && !successHandledOnce.current) {
-        successHandledOnce.current = true;
-
-        // Refresh verified status from database
-        const { data: { user } } = await supabase.auth.getUser();
-        if (user) {
-          const { data } = await supabase
-            .from("users")
-            .select("verified")
-            .eq("id", user.id)
-            .single();
-          if (data?.verified) {
-            setVerified(true);
-            // Update cache
-            const cached = await AsyncStorage.getItem(CACHE_USER);
-            if (cached) {
-              const parsed = JSON.parse(cached);
-              parsed.verified = true;
-              await AsyncStorage.setItem(CACHE_USER, JSON.stringify(parsed));
-            }
-          }
-        }
-
-        // Handle any pending navigation target
-        const target = pendingTarget.current;
-        pendingTarget.current = null;
-
-        if (target) {
-          setTimeout(() => {
-            if (target.type === "route") {
-              router.push(target.path as any);
-            } else if (target.type === "service") {
-              openDetails(target.serviceId);
-            }
-          }, 300);
-        }
-      }
-    })();
-  }, [params?.verified]);
-
-  const requireVerify = (target?: GateTarget) => {
-    if (target) pendingTarget.current = target;
-    setShowVerifyModal(true);
-  };
-
-  const guardedNavigate = (path: string) => {
-    if (!verified) return requireVerify({ type: "route", path });
-    router.push(path as any);
-  };
 
   // Check if user has an existing draft for a service type
   const checkForDraft = async (serviceId: string): Promise<string | null> => {
@@ -567,21 +374,27 @@ export default function Assistance() {
 
       const { data, error } = await supabase
         .from(table)
-        .select("id")
+        .select("id, status, submitted_at, created_at")
         .eq("user_id", userData.user.id)
-        .eq("status", "draft")
-        .limit(1);
+        .order("created_at", { ascending: false })
+        .limit(10);
 
       if (error || !data || data.length === 0) return null;
-      return data[0]?.id?.toString() || null;
+
+      const draftLike = data.find((row: any) => {
+        const raw = (row?.status ?? "").toString().trim().toLowerCase();
+        const isDraftStatus = raw === "draft";
+        const isUnsubmitted = !row?.submitted_at;
+        return isDraftStatus || isUnsubmitted;
+      });
+
+      return draftLike?.id?.toString() || null;
     } catch {
       return null;
     }
   };
 
   const guardedOpenService = async (serviceId: string) => {
-    if (!verified) return requireVerify({ type: "service", serviceId });
-
     if (serviceId === "cremation") {
       const draftId = await checkForDraft(serviceId);
       if (draftId) {
@@ -598,12 +411,23 @@ export default function Assistance() {
       return;
     }
 
-    // Check for existing draft for hospital, treatment, operations, emergency-finance, burial-money, burial-site, or colombarium
+    if (serviceId === "emergency-finance") {
+      const draftId = await checkForDraft(serviceId);
+      if (draftId) {
+        setPendingServiceId(serviceId);
+        setPendingDraftId(draftId);
+        setShowDraftDialog(true);
+        return;
+      }
+      router.push({ pathname: "/Home/Financial/FinancialDetails" } as any);
+      return;
+    }
+
+    // Check for existing draft for hospital, treatment, operations, burial-money, burial-site, or colombarium
     if (
       serviceId === "hospital" ||
       serviceId === "treatment" ||
       serviceId === "operations" ||
-      serviceId === "emergency-finance" ||
       serviceId === "burial-money" ||
       serviceId === "burial-site" ||
       serviceId === "colombarium"
@@ -636,8 +460,13 @@ export default function Assistance() {
   };
 
   const handleDraftDialogNew = () => {
-    // User wants to make another request - open the service details
     setShowDraftDialog(false);
+    if (pendingServiceId === "emergency-finance") {
+      router.push({ pathname: "/Home/Financial/FinancialDetails" } as any);
+      setPendingServiceId(null);
+      setPendingDraftId(null);
+      return;
+    }
     if (pendingServiceId) {
       openDetails(pendingServiceId);
     }
@@ -648,8 +477,43 @@ export default function Assistance() {
   const stripe = (a: Accent) =>
     a === "blue" ? GRAD.blue : a === "yellow" ? GRAD.yellow : GRAD.purple;
 
+  const requirementTipsByService: Record<string, Record<string, ReqTipItem[]>> = useMemo(
+    () => {
+      const byService: Record<string, Record<string, ReqTipItem[]>> = {};
+
+      services.forEach((service) => {
+        const reqTips: Record<string, ReqTipItem[]> = {};
+        const requirements = getHomeRequirements(service.id);
+
+        requirements.forEach((req) => {
+          const tips = getHomeRequirementTips({
+            serviceId: service.id,
+            requirementId: req.id,
+          });
+
+          if (tips.length) {
+            reqTips[req.id] = tips;
+          }
+        });
+
+        byService[service.id] = reqTips;
+      });
+
+      // Keep compatibility for either spelling if referenced externally.
+      if (byService.colombarium && !byService.columbarium) {
+        byService.columbarium = byService.colombarium;
+      }
+
+      return byService;
+    },
+    []
+  );
+
   const openDetails = (id: string) => {
     setOpenDetailsId(id);
+    setOpenReqTipId(null);
+    setSamplePreviewOpen(false);
+    setSamplePreviewImage(null);
     setOpenReq((prev) => ({ ...prev, [id]: prev[id] || {} }));
   };
 
@@ -714,7 +578,7 @@ export default function Assistance() {
           </View>
           <Pressable
             style={styles.approvedBtn}
-            onPress={() => guardedNavigate(ROUTE_APPROVED)}
+            onPress={() => router.push(ROUTES.status as any)}
           >
             <Image
               source={APPROVED_ICON_PNG}
@@ -746,9 +610,7 @@ export default function Assistance() {
             <Text style={styles.hiText}>
               Hi, <Text style={styles.hiName}>{displayName}</Text>
             </Text>
-            <Text style={styles.hiSubText}>
-              {verified ? "Account verified" : "Verify your account"}
-            </Text>
+            <Text style={styles.hiSubText}>Explore available city assistance</Text>
           </View>
         </View>
       </View>
@@ -820,26 +682,7 @@ export default function Assistance() {
         </ScrollView>
       </View>
 
-      <BottomNavBar 
-        activeTab="home" 
-        maskColor="transparent"
-        onBeforeNavigate={(tabKey: TabKey) => {
-          if (tabKey === "home" || tabKey === "account") return true;
-          if (!verified) {
-            requireVerify({ type: "route", path: "" });
-            return false;
-          }
-          return true;
-        }}
-      />
-
-      <VerifyModal
-        visible={showVerifyModal}
-        onClose={() => {
-          pendingTarget.current = null;
-          setShowVerifyModal(false);
-        }}
-      />
+      <BottomNavBar activeTab="home" maskColor="transparent" />
 
       {/* Draft Confirmation Dialog */}
       <Modal
@@ -955,19 +798,147 @@ export default function Assistance() {
               </Text>
             </View>
 
+            {(current?.requirements || []).length > 0 && (
+              <View style={styles.reqWrapShadow}>
+                <View style={styles.reqWrap}>
+                  <View style={styles.reqHeader}>
+                    <Text style={styles.reqHeaderText}>
+                      {current?.requirementsTitle || "Requirements"}
+                    </Text>
+                  </View>
+
+                  <View style={styles.reqBody}>
+                    {(current?.requirements || []).map((r, idx) => {
+                      const hasTipItems =
+                        !!openDetailsId &&
+                        !!requirementTipsByService[openDetailsId]?.[r.id]?.length;
+                      const hasDropdown = !!r.details || hasTipItems;
+                      const expanded =
+                        !!openDetailsId && !!openReq[openDetailsId]?.[r.id];
+
+                      return (
+                        <View key={r.id} style={styles.reqRowWrap}>
+                          <Pressable
+                            disabled={!hasDropdown}
+                            onPress={() =>
+                              openDetailsId && hasDropdown
+                                ? toggleReq(openDetailsId, r.id)
+                                : undefined
+                            }
+                            style={({ pressed }) => [
+                              styles.reqRow,
+                              hasDropdown && pressed && { opacity: 0.92 },
+                            ]}
+                          >
+                            <View style={styles.reqLeft}>
+                              <Ionicons
+                                name="checkmark"
+                                size={18}
+                                color="#2FA44F"
+                                style={{ marginRight: 10 }}
+                              />
+                              <Text style={styles.reqTitle}>{r.title}</Text>
+                            </View>
+
+                            {hasDropdown ? (
+                              <Ionicons
+                                name={expanded ? "chevron-up" : "chevron-down"}
+                                size={18}
+                                color="#A0A7A7"
+                              />
+                            ) : (
+                              <View style={{ width: 18, height: 18 }} />
+                            )}
+                          </Pressable>
+
+                          {hasDropdown && expanded && (
+                            <View style={styles.reqDetails}>
+                              {!!r.details && (
+                                <Text style={styles.reqDetailsText}>{r.details}</Text>
+                              )}
+
+                              {!!openDetailsId &&
+                                !!requirementTipsByService[openDetailsId]?.[r.id] && (
+                                  <View style={styles.reqTipsGroup}>
+                                    {requirementTipsByService[openDetailsId][r.id].map((tip: ReqTipItem) => {
+                                      const tipScopedId = `${openDetailsId}-${r.id}-${tip.id}`;
+                                      const tipExpanded = openReqTipId === tipScopedId;
+                                      return (
+                                        <View key={tipScopedId} style={styles.reqTipCard}>
+                                          <Pressable
+                                            onPress={() =>
+                                              setOpenReqTipId((prev) =>
+                                                prev === tipScopedId ? null : tipScopedId
+                                              )
+                                            }
+                                            style={({ pressed }) => [
+                                              styles.reqTipHead,
+                                              pressed && { opacity: 0.9 },
+                                            ]}
+                                          >
+                                            <Text style={styles.reqTipTitle}>{tip.title}</Text>
+                                            <Ionicons
+                                              name={tipExpanded ? "chevron-up" : "chevron-down"}
+                                              size={16}
+                                              color="#9AA6A6"
+                                            />
+                                          </Pressable>
+                                          {tipExpanded && (
+                                            <>
+                                              {!!tip.details && (
+                                                <Text style={styles.reqTipText}>{tip.details}</Text>
+                                              )}
+                                              {!!tip.image && (
+                                                <Pressable
+                                                  onPress={() => {
+                                                    setSamplePreviewImage(tip.image);
+                                                    setSamplePreviewTitle(tip.title || "Sample Document");
+                                                    setSamplePreviewOpen(true);
+                                                  }}
+                                                  style={({ pressed }) => [pressed && { opacity: 0.92 }]}
+                                                >
+                                                  <Image
+                                                    source={tip.image}
+                                                    style={styles.reqTipImage}
+                                                    resizeMode="contain"
+                                                  />
+                                                </Pressable>
+                                              )}
+                                            </>
+                                          )}
+                                        </View>
+                                      );
+                                    })}
+                                  </View>
+                                )}
+                            </View>
+                          )}
+
+                          {idx !== (current?.requirements || []).length - 1 && (
+                            <View style={styles.reqDivider} />
+                          )}
+                        </View>
+                      );
+                    })}
+                  </View>
+                </View>
+              </View>
+            )}
+
             {/* content spacer -- Apply button moved to footer */}
             <View style={{ height: 22 }} />
           </ScrollView>
-          {/* Fixed footer with Apply button */}
-          <View style={{ padding: 16, backgroundColor: "#FFFFFF" }}>
+          {/* Fixed footer with Apply button (matches RequestInfo / detail screens) */}
+          <View style={styles.detailsModalFooter}>
             <Pressable
-              style={({ pressed }) => [
-                styles.applyBtn,
-                pressed && { opacity: 0.92, transform: [{ scale: 0.99 }] },
-              ]}
+              style={({ pressed }) => [styles.applyBtn, pressed && { opacity: 0.92 }]}
               onPress={() => {
                 if (!openDetailsId) return;
                 setOpenDetailsId(null);
+                if (openDetailsId === "emergency-finance") {
+                  router.push({ pathname: "/Home/Financial/FinancialDetails" } as any);
+                  return;
+                }
                 goRequestInfo(openDetailsId);
               }}
             >
@@ -975,6 +946,39 @@ export default function Assistance() {
             </Pressable>
           </View>
         </SafeAreaView>
+      </Modal>
+
+      <Modal
+        visible={samplePreviewOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSamplePreviewOpen(false)}
+      >
+        <Pressable
+          style={styles.samplePreviewOverlay}
+          onPress={() => setSamplePreviewOpen(false)}
+        >
+          <View style={styles.samplePreviewHeader}>
+            <Text style={styles.samplePreviewTitle} numberOfLines={1}>
+              {samplePreviewTitle}
+            </Text>
+            <Pressable
+              onPress={() => setSamplePreviewOpen(false)}
+              style={({ pressed }) => [styles.samplePreviewCloseBtn, pressed && { opacity: 0.8 }]}
+            >
+              <Ionicons name="close" size={24} color="#FFFFFF" />
+            </Pressable>
+          </View>
+          <Pressable style={styles.samplePreviewContent} onPress={() => {}}>
+            {samplePreviewImage ? (
+              <Image
+                source={samplePreviewImage}
+                style={styles.samplePreviewImage}
+                resizeMode="contain"
+              />
+            ) : null}
+          </Pressable>
+        </Pressable>
       </Modal>
     </SafeAreaView>
   );
@@ -1188,67 +1192,6 @@ const styles = StyleSheet.create({
     color: TEXT_MUTED,
     lineHeight: 14,
   },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.25)",
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 18,
-  },
-  verifyCard: {
-    width: "100%",
-    maxWidth: 380,
-    backgroundColor: "#FFFFFF",
-    borderRadius: 16,
-    paddingHorizontal: 20,
-    paddingTop: 22,
-    paddingBottom: 18,
-    alignItems: "center",
-  },
-  warningImg: { width: 70, height: 70, marginBottom: 10 },
-  verifyTitle: {
-    fontSize: 20,
-    fontFamily: FONT,
-    fontWeight: "700",
-    color: TEXT_DARK,
-  },
-  verifySub: {marginTop: 6,
-    fontSize: 13,
-    fontFamily: FONT,
-    fontWeight: "600",
-    color: TEXT_MUTED,
-    textAlign: "center",
-  },
-  verifyBtn: {
-    marginTop: 16,
-    width: "100%",
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: TEAL,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  verifyBtnText: {
-    color: "#FFFFFF",
-    fontFamily: FONT,
-    fontWeight: "700",
-    fontSize: 15,
-  },
-  cancelBtnModal: {
-    marginTop: 10,
-    width: "100%",
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: "#EDEDED",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  cancelBtnText: {
-    color: TEXT_DARK,
-    fontFamily: FONT,
-    fontWeight: "700",
-    fontSize: 15,
-  },
   detailsSafe: { flex: 1, backgroundColor: "#FFFFFF" },
   detailsTopBar: {
     height: 52,
@@ -1450,17 +1393,107 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 18,
   },
+  reqTipsGroup: {
+    marginTop: 10,
+    gap: 8,
+  },
+  reqTipCard: {
+    borderWidth: 1,
+    borderColor: "#E7EEEE",
+    borderRadius: 10,
+    backgroundColor: "#FAFCFC",
+    overflow: "hidden",
+  },
+  reqTipHead: {
+    minHeight: 40,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 8,
+  },
+  reqTipTitle: {
+    flex: 1,
+    fontFamily: FONT,
+    fontWeight: "700",
+    fontSize: 11,
+    color: "#3E4E4E",
+  },
+  reqTipText: {
+    paddingHorizontal: 10,
+    paddingBottom: 10,
+    fontFamily: FONT,
+    fontWeight: "500",
+    fontSize: 10.5,
+    lineHeight: 15,
+    color: "#5F6F6F",
+  },
+  reqTipImage: {
+    width: "100%",
+    height: 180,
+    borderTopWidth: 1,
+    borderTopColor: "#E7EEEE",
+    backgroundColor: "#FFFFFF",
+  },
+  samplePreviewOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.92)",
+    paddingTop: 42,
+    paddingBottom: 18,
+  },
+  samplePreviewHeader: {
+    height: 56,
+    paddingHorizontal: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  samplePreviewTitle: {
+    flex: 1,
+    marginRight: 10,
+    color: "#FFFFFF",
+    fontFamily: FONT,
+    fontWeight: "700",
+    fontSize: 14,
+  },
+  samplePreviewCloseBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  samplePreviewContent: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 12,
+  },
+  samplePreviewImage: {
+    width: "100%",
+    height: "100%",
+  },
   reqDivider: {
     height: 1,
     backgroundColor: "#E9EEEE",
     marginLeft: 14,
     marginRight: 14,
   },
+  detailsModalFooter: {
+    paddingHorizontal: 20,
+    paddingTop: 10,
+    paddingBottom: 14,
+    borderTopWidth: 1,
+    borderTopColor: "#E9EDED",
+    backgroundColor: "#FFFFFF",
+  },
   applyBtn: {
-    marginTop: 14,
-    height: 52,
-    borderRadius: 26,
+    height: 50,
+    borderRadius: 25,
     backgroundColor: TEAL,
+    borderWidth: 1,
+    borderColor: "#0A7F7C",
     alignItems: "center",
     justifyContent: "center",
     shadowColor: "#000",
@@ -1471,7 +1504,7 @@ const styles = StyleSheet.create({
   },
   applyBtnText: {
     fontFamily: FONT,
-    fontWeight: "800",
+    fontWeight: "600",
     color: "#FFFFFF",
     fontSize: 14,
   },

@@ -17,8 +17,7 @@ import {
   Text,
   View,
 } from "react-native";
-import BottomNavBar, { NAV_TOTAL_HEIGHT, TabKey } from "../../components/BottomNavBar";
-import VerifyModal from "../../components/VerifyModal";
+import BottomNavBar, { NAV_TOTAL_HEIGHT } from "../../components/BottomNavBar";
 import { supabase } from "../../lib/supabase";
 
 const TEAL = "#0B8F8B";
@@ -44,12 +43,10 @@ export default function Account() {
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
-  const [verified, setVerified] = useState(false);
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
 
   const [showLogoutModal, setShowLogoutModal] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
-  const [showVerifyModal, setShowVerifyModal] = useState(false);
   const [showAvatarModal, setShowAvatarModal] = useState(false);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
 
@@ -75,7 +72,6 @@ export default function Account() {
         if (parsed.first_name) setName(parsed.first_name);
         if (parsed.contact_number) setPhone(parsed.contact_number);
         if (parsed.email) setEmail(parsed.email);
-        if (typeof parsed.verified === "boolean") setVerified(parsed.verified);
         if (parsed.avatar_url) {
           setAvatarUrl(parsed.avatar_url);
           // Prefetch image into memory for instant display
@@ -88,7 +84,7 @@ export default function Account() {
       if (user) {
         const { data } = await supabase
           .from("users")
-          .select("first_name, middle_name, last_name, contact_number, email, verified, avatar_url")
+          .select("first_name, middle_name, last_name, contact_number, email, avatar_url")
           .eq("id", user.id)
           .single();
         
@@ -96,7 +92,6 @@ export default function Account() {
           if (data.first_name) setName(data.first_name);
           if (data.contact_number) setPhone(data.contact_number);
           if (data.email) setEmail(data.email);
-          setVerified(data.verified === true);
           if (data.avatar_url) {
             setAvatarUrl(data.avatar_url);
             // Prefetch fresh avatar URL
@@ -104,7 +99,7 @@ export default function Account() {
           } else {
             setAvatarUrl(null);
           }
-          // Update cache (preserve all fields for Verify-acc)
+          // Update cached profile for quick subsequent loads
           await AsyncStorage.setItem(CACHE_USER, JSON.stringify(data));
         }
       }
@@ -274,9 +269,7 @@ export default function Account() {
             <Text style={styles.hiText}>
               Hi, <Text style={styles.hiName}>{name}</Text>
             </Text>
-            <Text style={styles.profileSubText}>
-              {verified ? "Account verified" : "Verify your account"}
-            </Text>
+            <Text style={styles.profileSubText}>Manage your account settings</Text>
             <Text style={styles.profileDetail}>{phone}</Text>
             <Text style={styles.profileDetail}>{email}</Text>
           </View>
@@ -306,22 +299,7 @@ export default function Account() {
         </View>
       </ScrollView>
 
-      <BottomNavBar
-        activeTab="account"
-        onBeforeNavigate={(tabKey: TabKey) => {
-          if (tabKey === "home" || tabKey === "account") return true;
-          if (!verified) {
-            setShowVerifyModal(true);
-            return false;
-          }
-          return true;
-        }}
-      />
-
-      <VerifyModal
-        visible={showVerifyModal}
-        onClose={() => setShowVerifyModal(false)}
-      />
+      <BottomNavBar activeTab="account" />
 
       {/* Logout Modal */}
       <Modal transparent visible={showLogoutModal || loggingOut} animationType="fade">

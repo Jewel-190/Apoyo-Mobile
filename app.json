@@ -37,7 +37,14 @@
           }
         }
       ],
-      "expo-font"
+      "expo-font",
+      "@react-native-community/datetimepicker",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow $(PRODUCT_NAME) to use the camera to verify your identity against your ID."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

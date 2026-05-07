@@ -1,14 +1,15 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRouter } from "expo-router";
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   Dimensions,
   Image,
   KeyboardAvoidingView,
   Modal,
+  ScrollView,
   Platform,
   Pressable,
-  AppState,
   SafeAreaView,
   StyleSheet,
   Switch,
@@ -17,6 +18,12 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import DateTimePicker, {
+  DateTimePickerEvent,
+} from "@react-native-community/datetimepicker";
+import * as ImagePicker from "expo-image-picker";
+import { CameraView, useCameraPermissions } from "expo-camera";
+import { Ionicons } from "@expo/vector-icons";
 import { supabase } from "../../lib/supabase";
 
 // Imports & constants: React, navigation, storage, RN components and shared constants
@@ -30,6 +37,87 @@ const RED = "#E23B3B";
 
 const FONT = Platform.select({ ios: "SF Pro Rounded", android: "System" })!;
 const SUFFIX_OPTIONS = ["", "Jr.", "Sr.", "II", "III", "IV"];
+const SEX_OPTIONS = [
+  { label: "Male", value: "M" as const },
+  { label: "Female", value: "F" as const },
+];
+const BARANGAY_OPTIONS = [
+  "Burol Main",
+  "Burol I",
+  "Burol II",
+  "Burol III",
+  "Datu Esmael (Bago-a-Ingud)",
+  "Emmanuel Bergado I",
+  "Emmanuel Bergado II",
+  "Fatima I",
+  "Fatima II",
+  "Fatima III",
+  "H-2 (Santa Veronica)",
+  "Langkaan I",
+  "Langkaan II",
+  "Luzviminda I",
+  "Luzviminda II",
+  "Paliparan I",
+  "Paliparan II",
+  "Paliparan III",
+  "Sabang",
+  "Salawag",
+  "Saint Peter I",
+  "Saint Peter II",
+  "Salitran I",
+  "Salitran II",
+  "Salitran III",
+  "Salitran IV",
+  "Sampaloc I",
+  "Sampaloc II",
+  "Sampaloc III",
+  "Sampaloc IV",
+  "Sampaloc V",
+  "San Agustin I",
+  "San Agustin II",
+  "San Agustin III",
+  "San Andres I",
+  "San Andres II",
+  "San Antonio De Padua I",
+  "San Antonio De Padua II",
+  "San Dionisio",
+  "San Esteban",
+  "San Francisco I",
+  "San Francisco II",
+  "San Isidro Labrador I",
+  "San Isidro Labrador II",
+  "San Jose",
+  "San Juan",
+  "San Lorenzo Ruiz I",
+  "San Lorenzo Ruiz II",
+  "San Luis I",
+  "San Luis II",
+  "San Manuel I",
+  "San Manuel II",
+  "San Mateo",
+  "San Miguel I",
+  "San Miguel II",
+  "San Nicolas I",
+  "San Nicolas II",
+  "San Roque",
+  "San Simon",
+  "Santa Cristina I",
+  "Santa Cristina II",
+  "Santa Cruz I",
+  "Santa Cruz II",
+  "Santa Fe",
+  "Santa Lucia",
+  "Santa Maria",
+  "Santo Cristo",
+  "Santo Nino I",
+  "Santo Nino II",
+  "Victoria Reyes",
+  "Zone I",
+  "Zone I-B",
+  "Zone II",
+  "Zone III",
+  "Zone IV",
+];
 
 // sanitizeName: clean input to letters/spaces and title-case each word
 function sanitizeName(raw: string) {
@@ -65,6 +153,46 @@ function normalizeMobile(raw: string) {
   return "";
 }
 
+function formatBirthDateValue(date: Date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function parseBirthDateValue(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+
+  const [yRaw, mRaw, dRaw] = value.split("-");
+  const y = Number(yRaw);
+  const m = Number(mRaw);
+  const d = Number(dRaw);
+
+  if (!Number.isInteger(y) || !Number.isInteger(m) || !Number.isInteger(d)) return null;
+  if (m < 1 || m > 12) return null;
+  if (d < 1 || d > 31) return null;
+
+  const date = new Date(y, m - 1, d);
+  if (
+    date.getFullYear() !== y ||
+    date.getMonth() !== m - 1 ||
+    date.getDate() !== d
+  ) {
+    return null;
+  }
+
+  return date;
+}
+
+function isValidBirthDate(value: string) {
+  const candidate = parseBirthDateValue(value);
+  if (!candidate) return false;
+
+  const today = new Date();
+  const todayDateOnly = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  return candidate <= todayDateOnly;
+}
+
 /* ---------- Supabase helpers (prep only) ---------- */
 // Sends a verification email. Handles both new users and existing unverified users.
 async function sendVerificationEmail(email: string, pin: string) {
@@ -78,7 +206,9 @@ async function sendVerificationEmail(email: string, pin: string) {
     // Check if user already exists (identities array is empty for existing users)
     if (data?.user && data.user.identities?.length === 0) {
       // User exists - try to resend confirmation email
-      console.log("User exists, attempting to resend confirmation...");
+      if (__DEV__) {
+        console.log("User exists, attempting to resend confirmation...");
+      }
       const resendResult = await supabase.auth.resend({
         type: "signup",
         email,
@@ -128,36 +258,102 @@ async function isEmailConfirmed(email: string, pin: string) {
 }
 
 // Insert a profile row into public.users linked to auth.users via user_id.
+type FacialVerificationPayload = {
+  ok?: boolean;
+  verified?: boolean;
+  error?: string;
+  code?: string;
+};
+
+/** Supabase `invoke` throws on non-2xx before parsing JSON; read body from `error.context` when needed. */
+async function readFacialVerificationPayload(
+  data: unknown,
+  error: unknown,
+): Promise<FacialVerificationPayload | null> {
+  if (data !== null && data !== undefined && typeof data === "object") {
+    return data as FacialVerificationPayload;
+  }
+  if (
+    error &&
+    typeof error === "object" &&
+    "context" in error &&
+    error.context instanceof Response
+  ) {
+    try {
+      const res = error.context as Response;
+      const ct = res.headers.get("Content-Type") ?? "";
+      if (ct.includes("application/json")) {
+        const parsed: unknown = await res.clone().json();
+        if (parsed && typeof parsed === "object") {
+          return parsed as FacialVerificationPayload;
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  return null;
+}
+
 async function insertUserProfile(payload: {
-  user_id: string; // Links to auth.users.id
+  attempt_token: string;
   first_name: string;
   middle_name?: string | null;
   last_name: string;
   suffix?: string | null;
   contact_number: string;
   email: string;
+  voter_id_number?: string | null;
   address?: string | null;
   birth_date?: string | null;
   sex?: string | null;
 }) {
   try {
-    const { data, error } = await supabase.from("users").insert({
-      id: payload.user_id, // Use the same ID as auth.users
-      first_name: payload.first_name,
-      middle_name: payload.middle_name ?? null,
-      last_name: payload.last_name,
-      suffix: payload.suffix ?? null,
-      contact_number: payload.contact_number,
-      email: payload.email,
-      address: payload.address ?? null,
-      birth_date: payload.birth_date ?? null,
-      sex: payload.sex ?? null,
-    }).select("*").single();
+    const { data, error } = await supabase.rpc("finalize_registration_profile", {
+      p_attempt_token: payload.attempt_token,
+      p_first_name: payload.first_name,
+      p_middle_name: payload.middle_name ?? null,
+      p_last_name: payload.last_name,
+      p_suffix: payload.suffix ?? null,
+      p_contact_number: payload.contact_number,
+      p_email: payload.email,
+      p_voter_id_number: payload.voter_id_number ?? null,
+      p_address: payload.address ?? null,
+      p_birth_date: payload.birth_date ?? null,
+      p_sex: payload.sex ?? null,
+    });
 
     return { data, error };
   } catch (err) {
     return { data: null, error: err };
   }
+}
+
+function mapFinalizeRegistrationError(raw: unknown): string {
+  const msg =
+    typeof raw === "object" && raw !== null && "message" in raw
+      ? String((raw as { message?: string }).message || "")
+      : String(raw ?? "");
+  const lower = msg.toLowerCase();
+  if (lower.includes("outdated")) {
+    return "This verification link is no longer valid. Please restart registration.";
+  }
+  if (lower.includes("already used")) {
+    return "This step was already completed. Try logging in with your email and PIN.";
+  }
+  if (lower.includes("no active registration")) {
+    return "Registration session expired. Please restart registration.";
+  }
+  if (lower.includes("invalid registration attempt")) {
+    return "Registration session expired. Please restart registration.";
+  }
+  if (lower.includes("unauthorized")) {
+    return "Unable to verify your session. Please try again.";
+  }
+  if (__DEV__ && msg) {
+    return msg;
+  }
+  return "Could not save your profile. Please try again.";
 }
 
 async function checkEmailExists(email: string) {
@@ -174,9 +370,8 @@ async function checkEmailExists(email: string) {
 export default function Register() {
   const router = useRouter();
 
-  // step: 0=register,2=enter-mobile,3=create-mpin,4=re-enter-mpin,5=enable-notifs,6=verify-email,7=success (step 1 skipped)
+  // step: 0=register,1=additional-info,2=mobile,3=id-upload,4=facial-verify,5=mpin,6=re-mpin,7=verify-email,8=success
   const [step, setStep] = useState<number>(0);
-  const stepRef = useRef(step);
 
   // Shared state: holds user-entered values used across steps
   const [firstName, setFirstName] = useState("");
@@ -184,9 +379,28 @@ export default function Register() {
   const [middleName, setMiddleName] = useState("");
   const [noMiddle, setNoMiddle] = useState(false);
   const [lastName, setLastName] = useState("");
+  const [barangay, setBarangay] = useState("");
+  const [barangayOpen, setBarangayOpen] = useState(false);
   const [email, setEmail] = useState("");
+  const [voterIdNumber, setVoterIdNumber] = useState("");
+  const [birthDate, setBirthDate] = useState("");
+  const [birthDatePickerOpen, setBirthDatePickerOpen] = useState(false);
+  const [birthDateDraft, setBirthDateDraft] = useState(new Date(2000, 0, 1));
+  const [sex, setSex] = useState<"" | "M" | "F">("");
+  const [sexOpen, setSexOpen] = useState(false);
+  const [houseUnit, setHouseUnit] = useState("");
+  const [streetLine, setStreetLine] = useState("");
   const [mobile, setMobile] = useState("");
   const [mpin, setMpin] = useState("");
+  const [registrationAttemptToken, setRegistrationAttemptToken] = useState("");
+
+  const [idImageUri, setIdImageUri] = useState<string | null>(null);
+  const [idImageBase64, setIdImageBase64] = useState<string | null>(null);
+  const [facialVerifying, setFacialVerifying] = useState(false);
+  const [facialError, setFacialError] = useState("");
+  const [cameraReady, setCameraReady] = useState(false);
+  const [camPermission, requestCamPermission] = useCameraPermissions();
+  const cameraRef = useRef<React.ComponentRef<typeof CameraView> | null>(null);
 
   const [emailExistsError, setEmailExistsError] = useState("");
 
@@ -203,14 +417,56 @@ export default function Register() {
     return "";
   }, [email]);
 
+  const voterIdError = useMemo(() => {
+    const t = voterIdNumber.trim();
+    if (!t) return "";
+    if (!/^\d+$/.test(t)) return "Voter's ID Number must contain numbers only";
+    return "";
+  }, [voterIdNumber]);
+
+  const birthDateError = useMemo(() => {
+    const t = birthDate.trim();
+    if (!t) return "";
+    if (!isValidBirthDate(t)) return "Enter a valid birth date (YYYY-MM-DD)";
+    return "";
+  }, [birthDate]);
+
+  const sexError = useMemo(() => {
+    if (!sex) return "";
+    if (sex !== "M" && sex !== "F") return "Select Male or Female";
+    return "";
+  }, [sex]);
+
   const canCreate = useMemo(() => {
     if (!firstName.trim()) return false;
     if (!lastName.trim()) return false;
+    if (!birthDate.trim()) return false;
+    if (birthDateError) return false;
+    if (!sex) return false;
+    if (sexError) return false;
     if (!email.trim()) return false;
     if (emailError) return false;
     if (!noMiddle && !middleName.trim()) return false;
     return true;
-  }, [firstName, lastName, email, emailError, noMiddle, middleName]);
+  }, [firstName, lastName, birthDate, birthDateError, sex, sexError, email, emailError, noMiddle, middleName]);
+
+  const composedAddress = useMemo(() => {
+    const housePart = houseUnit.trim().replace(/\s+/g, " ");
+    const streetPart = streetLine.trim().replace(/\s+/g, " ");
+    const cityPart = "Dasmariñas, Cavite";
+
+    if (!housePart || !streetPart || !barangay) return "";
+    return `${housePart}, ${streetPart}, ${barangay}, ${cityPart}`;
+  }, [houseUnit, streetLine, barangay]);
+
+  const canNextFromAdditional = useMemo(() => {
+    if (!voterIdNumber.trim()) return false;
+    if (voterIdError) return false;
+    if (!barangay.trim()) return false;
+    if (!houseUnit.trim()) return false;
+    if (!streetLine.trim()) return false;
+    return true;
+  }, [voterIdNumber, voterIdError, barangay, houseUnit, streetLine]);
 
   const toggleNoMiddle = () => {
     setNoMiddle((v) => {
@@ -220,54 +476,35 @@ export default function Register() {
     });
   };
 
-  useEffect(() => {
-    stepRef.current = step;
-  }, [step]);
-
-  const onResetFlow = async () => {
-    setStep(0);
-    setAttempted(false);
-    setInvalid({ first: false, middle: false, last: false });
-    setSuffix("");
-    setSuffixOpen(false);
-    setNoMiddle(false);
-    setFirstName("");
-    setMiddleName("");
-    setLastName("");
-    setEmail("");
-    setEmailExistsError("");
-    setMobile("");
-    setPin("");
-    setMpin("");
-    setConfirmPin("");
-    setConfirmError("");
-    setEmailSeconds(180);
-    setEmailVerified(false);
-    setEmailChecking(false);
-    setEmailVerifyError("");
-    setEmailSendError("");
-    setProfileSaving(false);
-    setProfileError("");
-    setEnabled(false);
-
-    await AsyncStorage.multiRemove(["REG_FULLNAME", "REG_EMAIL", "REG_MOBILE"]);
-    await supabase.auth.signOut();
+  const openBirthDatePicker = () => {
+    const parsed = parseBirthDateValue(birthDate);
+    setBirthDateDraft(parsed || new Date(2000, 0, 1));
+    setBirthDatePickerOpen(true);
   };
 
-  useEffect(() => {
-    const sub = AppState.addEventListener("change", (state) => {
-      if ((state === "background" || state === "inactive") && stepRef.current > 0) {
-        void onResetFlow();
+  const onBirthDatePickerChange = (
+    event: DateTimePickerEvent,
+    selectedDate?: Date
+  ) => {
+    if (Platform.OS === "android") {
+      setBirthDatePickerOpen(false);
+      if (event.type === "set" && selectedDate) {
+        setBirthDate(formatBirthDateValue(selectedDate));
       }
-    });
+      return;
+    }
 
-    return () => {
-      sub.remove();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (selectedDate) {
+      setBirthDateDraft(selectedDate);
+    }
+  };
 
-  // onCreate: validate names/email, store full name and email, then advance
+  const applyBirthDateFromIosPicker = () => {
+    setBirthDate(formatBirthDateValue(birthDateDraft));
+    setBirthDatePickerOpen(false);
+  };
+
+  // onCreate: validate names/barangay/email, store full name and email, then advance
   const onCreate = async () => {
     setAttempted(true);
     if (!canCreate) return;
@@ -283,6 +520,16 @@ export default function Register() {
       return;
     }
 
+    const attemptRes = await supabase.rpc("begin_registration_attempt", {
+      p_email: email.trim().toLowerCase(),
+    });
+    if (attemptRes.error || !attemptRes.data) {
+      setEmailExistsError("Unable to start registration. Please try again.");
+      return;
+    }
+
+    setRegistrationAttemptToken(String(attemptRes.data));
+
     const fullName = [firstName, noMiddle ? "" : middleName, lastName, suffix]
       .filter(Boolean)
       .join(" ")
@@ -293,10 +540,18 @@ export default function Register() {
     await AsyncStorage.setItem("REG_EMAIL", email.trim());
 
     setEmailSendError("");
+    setAttempted(false);
+    setStep(1);
+  };
+
+  const onNextAdditional = () => {
+    setAttempted(true);
+    if (!canNextFromAdditional) return;
+    setAttempted(false);
     setStep(2);
   };
 
-  // Verify Email: manage resend cooldown and verification check (step 6)
+  // Verify Email: manage resend cooldown and verification check (step 5)
   const [emailSeconds, setEmailSeconds] = useState(180);
   const emailTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [emailVerified, setEmailVerified] = useState(false);
@@ -304,11 +559,24 @@ export default function Register() {
   const [emailVerifyError, setEmailVerifyError] = useState("");
 
   const [emailSendError, setEmailSendError] = useState("");
+  const [isSendingVerificationEmail, setIsSendingVerificationEmail] = useState(false);
+  const [didAttemptInitialVerificationEmail, setDidAttemptInitialVerificationEmail] = useState(false);
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileError, setProfileError] = useState("");
+  /** Step-7 poll effect only depends on [step], so `profileSaving` in that closure is stale; use this for single-flight finalize. */
+  const profileFinalizeInFlightRef = useRef(false);
 
   useEffect(() => {
-    if (step !== 6) return;
+    if (step !== 7) return;
+    if (didAttemptInitialVerificationEmail) return;
+
+    setDidAttemptInitialVerificationEmail(true);
+    void onFinish();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, didAttemptInitialVerificationEmail]);
+
+  useEffect(() => {
+    if (step !== 7) return;
     setEmailSeconds(180);
     emailTimerRef.current = setInterval(() => setEmailSeconds((p) => (p <= 1 ? 0 : p - 1)), 1000);
     return () => {
@@ -318,10 +586,12 @@ export default function Register() {
   }, [step]);
 
   useEffect(() => {
-    if (step !== 6) return;
+    if (step !== 7) return;
 
+    profileFinalizeInFlightRef.current = false;
     let active = true;
     const checkVerified = async () => {
+      if (!active || profileFinalizeInFlightRef.current) return;
       setEmailChecking(true);
       const res = await isEmailConfirmed(email.trim(), mpin || pin);
       if (!active) return;
@@ -331,19 +601,24 @@ export default function Register() {
       } else {
         setEmailVerifyError("");
         setEmailVerified(res.confirmed);
-        
-        // Auto-proceed when verified
-        if (res.confirmed && !profileSaving) {
+
+        if (res.confirmed) {
+          if (profileFinalizeInFlightRef.current) {
+            setEmailChecking(false);
+            return;
+          }
+          profileFinalizeInFlightRef.current = true;
           setEmailChecking(false);
           const saved = await onSaveProfileAfterVerification();
-          if (saved) setStep(7);
+          if (!saved) profileFinalizeInFlightRef.current = false;
+          if (saved) setStep(8);
           return;
         }
       }
       setEmailChecking(false);
     };
 
-    checkVerified();
+    void checkVerified();
     const intervalId = setInterval(checkVerified, 5000);
     return () => {
       active = false;
@@ -360,9 +635,47 @@ export default function Register() {
     return `Resend email code in ${m}:${s}`;
   }, [emailSeconds, emailCanResend]);
 
+  const goRegisterBack = useCallback(() => {
+    switch (step) {
+      case 1:
+        setAttempted(false);
+        setStep(0);
+        break;
+      case 2:
+        setAttempted(false);
+        setStep(1);
+        break;
+      case 3:
+        setAttempted(false);
+        setFacialError("");
+        setStep(2);
+        break;
+      case 4:
+        setFacialError("");
+        setFacialVerifying(false);
+        setCameraReady(false);
+        setStep(3);
+        break;
+      case 5:
+        setAttempted(false);
+        setStep(4);
+        break;
+      case 6:
+        setConfirmPin("");
+        setConfirmError("");
+        setStep(5);
+        break;
+      case 7:
+        if (!profileSaving) setStep(6);
+        break;
+      default:
+        break;
+    }
+  }, [step, profileSaving]);
+
   // Success screen: show for 2 seconds then navigate to login
   useEffect(() => {
-    if (step !== 7) return;
+    if (step !== 8) return;
     const timer = setTimeout(() => {
       router.replace("/phase1/login");
     }, 2000);
@@ -382,17 +695,137 @@ export default function Register() {
 
   const canNextFromMobile = useMemo(() => mobile.trim().length === 10 && !mobileError, [mobile, mobileError]);
 
+  const idImagePickerOptions: ImagePicker.ImagePickerOptions = {
+    mediaTypes: ["images"],
+    allowsEditing: true,
+    aspect: [16, 10],
+    quality: 0.85,
+    base64: true,
+  };
+
+  const applyIdImageAsset = (a: ImagePicker.ImagePickerAsset) => {
+    setIdImageUri(a.uri);
+    setIdImageBase64(a.base64 ?? null);
+    if (!a.base64) {
+      setFacialError("Could not read image. Try another photo.");
+    }
+  };
+
+  const pickIdFromGallery = async () => {
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) {
+      setFacialError("Photo library access is needed to choose your ID.");
+      return;
+    }
+    setFacialError("");
+    const res = await ImagePicker.launchImageLibraryAsync(idImagePickerOptions);
+    if (res.canceled || !res.assets[0]) return;
+    applyIdImageAsset(res.assets[0]);
+  };
+
+  const takeIdPhoto = async () => {
+    const perm = await ImagePicker.requestCameraPermissionsAsync();
+    if (!perm.granted) {
+      setFacialError("Camera access is needed to photograph your ID.");
+      return;
+    }
+    setFacialError("");
+    const res = await ImagePicker.launchCameraAsync(idImagePickerOptions);
+    if (res.canceled || !res.assets[0]) return;
+    applyIdImageAsset(res.assets[0]);
+  };
+
+  const canNextFromIdUpload = !!idImageBase64;
+
+  const onNextIdUpload = () => {
+    setAttempted(true);
+    if (!canNextFromIdUpload) return;
+    setAttempted(false);
+    setFacialError("");
+    setCameraReady(false);
+    setStep(4);
+  };
+
+  const invokeFacialVerification = useCallback(
+    async (body: {
+      email: string;
+      registrationAttemptToken: string;
+      idImageBase64: string;
+      selfieImageBase64: string;
+    }) => {
+      const { data, error } = await supabase.functions.invoke("facial-verification", {
+        body,
+      });
+      const payload = await readFacialVerificationPayload(data, error);
+
+      if (!payload) {
+        setFacialError(
+          error instanceof Error ? error.message : "Verification request failed.",
+        );
+        return;
+      }
+
+      if (!payload.ok) {
+        setFacialError(payload.error || "Verification failed.");
+        return;
+      }
+      if (!payload.verified) {
+        setFacialError(
+          "Face did not match your ID photo. Try again with clearer lighting and face the camera.",
+        );
+        return;
+      }
+      setStep(5);
+    },
+    [],
+  );
+
+  const runFacialVerification = async () => {
+    if (!idImageBase64 || !registrationAttemptToken || !email.trim()) {
+      setFacialError("Missing registration data. Go back and try again.");
+      return;
+    }
+    if (!cameraRef.current || !cameraReady) {
+      setFacialError("Camera is not ready yet.");
+      return;
+    }
+    setFacialVerifying(true);
+    setFacialError("");
+    try {
+      const photo = await cameraRef.current.takePictureAsync({
+        base64: true,
+        quality: 0.85,
+      });
+      if (!photo?.base64) {
+        setFacialError("Could not capture photo.");
+        return;
+      }
+      await invokeFacialVerification({
+        email: email.trim().toLowerCase(),
+        registrationAttemptToken,
+        idImageBase64,
+        selfieImageBase64: photo.base64,
+      });
+    } catch (e) {
+      setFacialError(e instanceof Error ? e.message : "Something went wrong.");
+    } finally {
+      setFacialVerifying(false);
+    }
+  };
+
   const onNextMobile = async () => {
     setAttempted(true);
     if (!canNextFromMobile) return;
     const normalized = normalizeMobile(mobile.trim());
     if (!normalized) return;
     await AsyncStorage.setItem("REG_MOBILE", normalized);
+    setAttempted(false);
+    setFacialError("");
     setStep(3);
   };
 
   // Create MPIN: accept and mask a 6-digit PIN and continue
-  /* ---------- Create MPIN (step 3) ---------- */
+  /* ---------- Create MPIN (step 5) ---------- */
   const [pin, setPin] = useState("");
   const pinInputRef = useRef<TextInput | null>(null);
   const canNextFromPin = useMemo(() => pin.length === 6, [pin]);
@@ -407,16 +840,19 @@ export default function Register() {
     setMpin(pin);
     setConfirmPin("");
     setConfirmError("");
-    setStep(4); // go to re-enter MPIN
+    setStep(6); // go to re-enter MPIN
   };
 
-  const onConfirmPin = () => {
+  const onConfirmPin = async () => {
     if (confirmPin.length !== 6) return;
     if (confirmPin !== mpin) {
       setConfirmError("MPINs do not match");
       return;
     }
-    setStep(5);
+
+    setConfirmError("");
+    setEmailSendError("");
+    setStep(7);
   };
 
   const onRetryPin = () => {
@@ -424,20 +860,22 @@ export default function Register() {
     setMpin("");
     setConfirmPin("");
     setConfirmError("");
-    setStep(3);
+    setDidAttemptInitialVerificationEmail(false);
+    setStep(5);
   };
 
   useEffect(() => {
-    if (confirmPin.length === 6) onConfirmPin();
+    if (step !== 6) return;
+    if (confirmPin.length !== 6) return;
+    void onConfirmPin();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [confirmPin]);
+  }, [step, confirmPin]);
 
-  // Enable Notifications: toggle to opt into notifications and finish registration
-  /* ---------- Enable notifications (step 5) ---------- */
-  const [enabled, setEnabled] = useState(false);
-  const canFinish = useMemo(() => enabled, [enabled]);
+  // Send verification email after MPIN confirmation
   const onFinish = async () => {
-    if (!canFinish) return;
+    if (isSendingVerificationEmail) return false;
+
+    setIsSendingVerificationEmail(true);
     setEmailSendError("");
 
     // Only send verification email - profile will be saved AFTER verification
@@ -451,12 +889,18 @@ export default function Register() {
       } else {
         setEmailSendError(`Could not send email: ${err.message || "Unknown error"}`);
       }
-      console.log("Email send error:", JSON.stringify(emailSend.error));
-      return;
+      if (__DEV__) {
+        console.log("Email send error:", JSON.stringify(emailSend.error));
+      }
+      setIsSendingVerificationEmail(false);
+      return false;
     }
 
-    console.log("Verification email sent:", JSON.stringify(emailSend.data));
-    setStep(6);
+    if (__DEV__) {
+      console.log("Verification email sent:", JSON.stringify(emailSend.data));
+    }
+    setIsSendingVerificationEmail(false);
+    return true;
   };
 
   // Save profile AFTER email is verified
@@ -464,6 +908,12 @@ export default function Register() {
     if (profileSaving) return false;
     setProfileSaving(true);
     setProfileError("");
+
+    if (!registrationAttemptToken) {
+      setProfileError("Registration session expired. Please restart registration.");
+      setProfileSaving(false);
+      return false;
+    }
 
     // Get the authenticated user (should be verified now)
     const { user, error: authError } = await getCurrentUser();
@@ -480,19 +930,51 @@ export default function Register() {
       return false;
     }
 
+    if (!voterIdNumber.trim() || !/^\d+$/.test(voterIdNumber.trim())) {
+      setProfileError("Invalid Voter's ID Number.");
+      setProfileSaving(false);
+      return false;
+    }
+
+    if (!isValidBirthDate(birthDate.trim())) {
+      setProfileError("Invalid birth date.");
+      setProfileSaving(false);
+      return false;
+    }
+
+    if (sex !== "M" && sex !== "F") {
+      setProfileError("Invalid sex value.");
+      setProfileSaving(false);
+      return false;
+    }
+
+    if (!composedAddress) {
+      setProfileError("Invalid address.");
+      setProfileSaving(false);
+      return false;
+    }
+
+    const profileEmail = email.trim().toLowerCase();
+
     const profileRes = await insertUserProfile({
-      user_id: user.id,
+      attempt_token: registrationAttemptToken,
       first_name: firstName.trim(),
       middle_name: noMiddle ? null : middleName.trim() || null,
       last_name: lastName.trim(),
       suffix: suffix || null,
       contact_number: fullMobile,
-      email: email.trim(),
+      email: profileEmail,
+      voter_id_number: voterIdNumber.trim(),
+      address: composedAddress,
+      birth_date: birthDate.trim(),
+      sex,
     });
 
     if (profileRes.error) {
-      console.log("Profile save error:", JSON.stringify(profileRes.error));
-      setProfileError("Could not save your profile. Please try again.");
+      setProfileError(mapFinalizeRegistrationError(profileRes.error));
+      if (__DEV__) {
+        console.log("Profile save error:", JSON.stringify(profileRes.error));
+      }
       setProfileSaving(false);
       return false;
     }
@@ -501,15 +983,17 @@ export default function Register() {
     await AsyncStorage.setItem("apoyo_user_cache", JSON.stringify({
       first_name: firstName.trim(),
       contact_number: fullMobile,
-      email: email.trim(),
+      email: profileEmail,
     }));
 
-    console.log("Profile saved successfully:", JSON.stringify(profileRes.data));
+    if (__DEV__) {
+      console.log("Profile saved successfully:", JSON.stringify(profileRes.data));
+    }
     setProfileSaving(false);
     return true;
   };
 
-  // Progress helpers: now using six segments, one per step (active if index <= step)
+  // Progress helpers: one segment per step (active if index <= step)
 
   // Layout helpers: compute responsive box sizes for OTP/MPIN inputs
   const H_PADDING = 22;
@@ -527,13 +1011,13 @@ export default function Register() {
       >
         <View style={styles.container}>
           <View style={styles.progressRow}>
-            {Array.from({ length: 8 }).map((_, i) => (
+            {Array.from({ length: 9 }).map((_, i) => (
               <View
                 key={i}
                 style={[
                   styles.progressSeg,
                   i <= step && styles.progressActive,
-                  i < 7 && { marginRight: 10 },
+                  i < 8 && { marginRight: 10 },
                 ]}
               />
             ))}
@@ -542,9 +1026,12 @@ export default function Register() {
           {/* --- Step 0: Register details --- */}
           {step === 0 && (
             <>
-              <Text style={styles.title}>Let’s Get Started!</Text>
-
-              {attempted && !canCreate && <Text style={styles.fillIn}>Fill in the Fields</Text>}
+              <View style={styles.step0HeaderRow}>
+                <Text style={[styles.title, styles.step0Title]}>Let’s Get Started!</Text>
+                {attempted && !canCreate ? (
+                  <Text style={styles.fillInInline}>Fill in the Fields</Text>
+                ) : null}
+              </View>
              
 
               <View style={styles.row}>
@@ -609,10 +1096,53 @@ export default function Register() {
               </View>
 
               <View style={{ marginTop: 14 }}>
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={openBirthDatePicker}
+                  style={[
+                    styles.inputWrap,
+                    attempted && (!birthDate.trim() || !!birthDateError) && styles.inputErrorBorder,
+                    attempted && !!birthDateError && styles.inputWrapWithInlineError,
+                  ]}
+                >
+                  <Text style={[styles.dropdownText, !birthDate && styles.dropdownPlaceholder]}>
+                    {birthDate || "Birth Date"}
+                  </Text>
+                  {attempted && !!birthDateError ? (
+                    <Text style={styles.errorInline} numberOfLines={1}>
+                      {birthDateError}
+                    </Text>
+                  ) : null}
+                </TouchableOpacity>
+              </View>
+
+              <View style={{ marginTop: 14 }}>
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={() => setSexOpen(true)}
+                  style={[
+                    styles.inputWrap,
+                    attempted && !sex && styles.inputErrorBorder,
+                    attempted && !sex && styles.inputWrapWithInlineError,
+                  ]}
+                >
+                  <Text style={[styles.dropdownText, !sex && styles.dropdownPlaceholder]}>
+                    {sex === "M" ? "Male" : sex === "F" ? "Female" : "Sex"}
+                  </Text>
+                  {attempted && !sex ? (
+                    <Text style={styles.errorInline} numberOfLines={1}>
+                      Select sex
+                    </Text>
+                  ) : null}
+                </TouchableOpacity>
+              </View>
+
+              <View style={{ marginTop: 14 }}>
                 <View
                   style={[
                     styles.inputWrap,
                     attempted && (!email.trim() || !!emailError || !!emailExistsError) && styles.inputErrorBorder,
+                    attempted && (!!emailError || !!emailExistsError) && styles.inputWrapWithInlineError,
                   ]}
                 >
                   <TextInput
@@ -625,11 +1155,22 @@ export default function Register() {
                     placeholderTextColor="#B3B3B3"
                     keyboardType="email-address"
                     autoCapitalize="none"
-                    style={styles.inputFull}
+                    style={[
+                      styles.inputFull,
+                      attempted && (!!emailError || !!emailExistsError) && styles.inputFullWithInlineError,
+                    ]}
                   />
+                  {attempted && !!emailError ? (
+                    <Text style={styles.errorInline} numberOfLines={1}>
+                      {emailError}
+                    </Text>
+                  ) : null}
+                  {!emailError && !!emailExistsError ? (
+                    <Text style={styles.errorInline} numberOfLines={1}>
+                      {emailExistsError}
+                    </Text>
+                  ) : null}
                 </View>
-                {attempted && !!emailError && <Text style={styles.error}>{emailError}</Text>}
-                {!emailError && !!emailExistsError && <Text style={styles.error}>{emailExistsError}</Text>}
               </View>
 
               <View style={styles.termsBox}>
@@ -647,7 +1188,7 @@ export default function Register() {
                 </View>
               </View>
 
-              <TouchableOpacity activeOpacity={0.9} onPress={onCreate} style={styles.createBtn}>
+              <TouchableOpacity activeOpacity={0.9} onPress={onCreate} style={[styles.createBtn, { marginTop: 30 }]}>
                 <Text style={styles.createBtnText}>Create Account</Text>
               </TouchableOpacity>
 
@@ -673,8 +1214,207 @@ export default function Register() {
                   </View>
                 </Pressable>
               </Modal>
+
+              <Modal visible={sexOpen} transparent animationType="fade" onRequestClose={() => setSexOpen(false)}>
+                <Pressable style={styles.modalOverlay} onPress={() => setSexOpen(false)}>
+                  <Pressable style={styles.modalCard}>
+                    <Text style={styles.modalTitle}>Select Sex</Text>
+                    {SEX_OPTIONS.map((opt) => (
+                      <TouchableOpacity
+                        key={opt.value}
+                        activeOpacity={0.85}
+                        style={styles.sexModalItem}
+                        onPress={() => {
+                          setSex(opt.value);
+                          setSexOpen(false);
+                        }}
+                      >
+                        <View style={[styles.sexRadioOuter, sex === opt.value && styles.sexRadioOuterActive]}>
+                          {sex === opt.value ? <View style={styles.sexRadioInner} /> : null}
+                        </View>
+                        <Text style={styles.modalItemText}>{opt.label}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </Pressable>
+                </Pressable>
+              </Modal>
             </>
           )}
+
+          {/* --- Step 1: Additional Information --- */}
+          {step === 1 && (
+            <>
+              <Text style={styles.title}>Additional Information</Text>
+              {attempted && !canNextFromAdditional && <Text style={styles.fillIn}>Fill in the Fields</Text>}
+
+              <View style={{ marginTop: 14 }}>
+                <View
+                  style={[
+                    styles.inputWrap,
+                    attempted && (!voterIdNumber.trim() || !!voterIdError) && styles.inputErrorBorder,
+                    attempted && !!voterIdError && styles.inputWrapWithInlineError,
+                  ]}
+                >
+                  <TextInput
+                    value={voterIdNumber}
+                    onChangeText={(value) => setVoterIdNumber(value.replace(/[^\d]/g, ""))}
+                    placeholder="Voter's ID Number"
+                    placeholderTextColor="#B3B3B3"
+                    keyboardType="number-pad"
+                    style={[
+                      styles.inputFull,
+                      attempted && !!voterIdError && styles.inputFullWithInlineError,
+                    ]}
+                  />
+                  {attempted && !!voterIdError ? (
+                    <Text style={styles.errorInline} numberOfLines={1}>
+                      {voterIdError}
+                    </Text>
+                  ) : null}
+                </View>
+              </View>
+
+              <View style={{ marginTop: 14 }}>
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={() => setBarangayOpen(true)}
+                  style={[styles.inputWrap, attempted && !barangay && styles.inputErrorBorder]}
+                >
+                  <Text style={[styles.dropdownText, !barangay && styles.dropdownPlaceholder]}>
+                    {barangay || "Barangay"}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              <Modal visible={barangayOpen} transparent animationType="fade" onRequestClose={() => setBarangayOpen(false)}>
+                <Pressable style={styles.modalOverlay} onPress={() => setBarangayOpen(false)}>
+                  <Pressable style={styles.modalCard}>
+                    <Text style={styles.modalTitle}>Select Barangay</Text>
+                    <ScrollView style={styles.modalList}>
+                      {BARANGAY_OPTIONS.map((opt) => (
+                        <TouchableOpacity
+                          key={opt}
+                          activeOpacity={0.85}
+                          style={styles.modalItem}
+                          onPress={() => {
+                            setBarangay(opt);
+                            setBarangayOpen(false);
+                          }}
+                        >
+                          <Text style={styles.modalItemText}>{opt}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </ScrollView>
+                  </Pressable>
+                </Pressable>
+              </Modal>
+
+              <View style={{ marginTop: 14 }}>
+                <View style={[styles.inputWrapAlt, attempted && !houseUnit.trim() && styles.inputErrorBorder]}>
+                  <TextInput
+                    value={houseUnit}
+                    onChangeText={setHouseUnit}
+                    placeholder="House No. / Block / Lot / Unit"
+                    placeholderTextColor="#B3B3B3"
+                    style={styles.inputAlt}
+                    autoCapitalize="words"
+                  />
+                </View>
+              </View>
+
+              <View style={{ marginTop: 10 }}>
+                <View style={[styles.inputWrapAlt, attempted && !streetLine.trim() && styles.inputErrorBorder]}>
+                  <TextInput
+                    value={streetLine}
+                    onChangeText={setStreetLine}
+                    placeholder="Street / Subdivision / Sitio / Purok"
+                    placeholderTextColor="#B3B3B3"
+                    style={styles.inputAlt}
+                    autoCapitalize="words"
+                  />
+                </View>
+              </View>
+
+              <View style={{ marginTop: 10 }}>
+                <View style={[styles.inputWrapAltDisabledPreview, attempted && !composedAddress && styles.inputErrorBorder]}>
+                  <Text style={[styles.inputAltDisabled, !composedAddress && styles.dropdownPlaceholder]}>
+                    {composedAddress || "Full Address (read-only auto-generated)"}
+                  </Text>
+                </View>
+              </View>
+
+              <View style={{ flex: 1 }} />
+              <View style={styles.primaryFooterRow}>
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={goRegisterBack}
+                  style={styles.backBtn}
+                >
+                  <Text style={styles.backBtnText}>Back</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  activeOpacity={0.9}
+                  onPress={onNextAdditional}
+                  style={[
+                    styles.nextBtn,
+                    styles.primaryBtnFlexible,
+                    !canNextFromAdditional && styles.nextDisabled,
+                  ]}
+                >
+                  <Text style={styles.nextText}>Next</Text>
+                </TouchableOpacity>
+              </View>
+            </>
+          )}
+
+          {birthDatePickerOpen && Platform.OS === "android" ? (
+            <DateTimePicker
+              value={birthDateDraft}
+              mode="date"
+              display="default"
+              maximumDate={new Date()}
+              onChange={onBirthDatePickerChange}
+            />
+          ) : null}
+
+          <Modal
+            visible={birthDatePickerOpen && Platform.OS === "ios"}
+            transparent
+            animationType="slide"
+            onRequestClose={() => setBirthDatePickerOpen(false)}
+          >
+            <Pressable
+              style={styles.modalOverlay}
+              onPress={() => setBirthDatePickerOpen(false)}
+            >
+              <Pressable style={styles.modalCard}>
+                <Text style={styles.modalTitle}>Select Birth Date</Text>
+                <DateTimePicker
+                  value={birthDateDraft}
+                  mode="date"
+                  display="spinner"
+                  maximumDate={new Date()}
+                  onChange={onBirthDatePickerChange}
+                />
+                <View style={styles.birthDateActionsRow}>
+                  <TouchableOpacity
+                    activeOpacity={0.85}
+                    onPress={() => setBirthDatePickerOpen(false)}
+                    style={styles.birthDateActionGhost}
+                  >
+                    <Text style={styles.birthDateActionGhostText}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    activeOpacity={0.85}
+                    onPress={applyBirthDateFromIosPicker}
+                    style={styles.birthDateActionSolid}
+                  >
+                    <Text style={styles.birthDateActionSolidText}>Done</Text>
+                  </TouchableOpacity>
+                </View>
+              </Pressable>
+            </Pressable>
+          </Modal>
 
           {/* --- Step 2: Enter Mobile --- */}
           {step === 2 && (
@@ -682,21 +1422,264 @@ export default function Register() {
               <Text style={styles.title}>Enter mobile number</Text>
               {attempted && !canNextFromMobile && <Text style={styles.fillIn}>*Fill in</Text>}
 
-              <View style={[styles.inputWrapMobile, attempted && !!mobileError && styles.inputErrorBorder]}>
+              <View
+                style={[
+                  styles.inputWrapMobile,
+                  attempted && !!mobileError && styles.inputErrorBorder,
+                  attempted && !!mobileError && styles.inputWrapWithInlineError,
+                ]}
+              >
                 <View style={styles.prefix}><Text style={styles.prefixText}>+63</Text></View>
-                <TextInput value={mobile} onChangeText={(v) => setMobile(v.replace(/[^\d]/g, "").slice(0,10))} keyboardType="number-pad" placeholder="9XXXXXXXXX" placeholderTextColor="#B3B3B3" maxLength={10} style={styles.inputMobile} />
+                <TextInput
+                  value={mobile}
+                  onChangeText={(v) => setMobile(v.replace(/[^\d]/g, "").slice(0,10))}
+                  keyboardType="number-pad"
+                  placeholder="9XXXXXXXXX"
+                  placeholderTextColor="#B3B3B3"
+                  maxLength={10}
+                  style={[
+                    styles.inputMobile,
+                    attempted && !!mobileError && styles.inputMobileWithInlineError,
+                  ]}
+                />
+                {attempted && !!mobileError ? (
+                  <Text style={styles.errorInline} numberOfLines={1}>
+                    {mobileError}
+                  </Text>
+                ) : null}
               </View>
-              {attempted && !!mobileError && <Text style={styles.error}>{mobileError}</Text>}
 
               <View style={{ flex: 1 }} />
-              <TouchableOpacity activeOpacity={0.9} onPress={onNextMobile} style={[styles.nextBtn, !canNextFromMobile && styles.nextDisabled]}>
-                <Text style={styles.nextText}>Next</Text>
-              </TouchableOpacity>
+              <View style={styles.primaryFooterRow}>
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={goRegisterBack}
+                  style={styles.backBtn}
+                >
+                  <Text style={styles.backBtnText}>Back</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  activeOpacity={0.9}
+                  onPress={onNextMobile}
+                  style={[
+                    styles.nextBtn,
+                    styles.primaryBtnFlexible,
+                    !canNextFromMobile && styles.nextDisabled,
+                  ]}
+                >
+                  <Text style={styles.nextText}>Next</Text>
+                </TouchableOpacity>
+              </View>
             </>
           )}
 
-          {/* --- Step 3: Create MPIN --- */}
+          {/* --- Step 3: Valid ID upload --- */}
           {step === 3 && (
+            <>
+              <Text style={styles.title}>Upload a valid ID</Text>
+              <Text style={styles.subtitle}>
+                Use a clear photo of your government-issued ID. On the next step we’ll match your face to the photo on this ID.
+              </Text>
+              {attempted && !canNextFromIdUpload ? (
+                <Text style={styles.fillIn}>Upload your ID photo</Text>
+              ) : null}
+
+              <View style={styles.rowTopCompact}>
+                <Text style={styles.label}>ID image</Text>
+              </View>
+
+              <View
+                style={[
+                  styles.idUploadCard,
+                  attempted && !idImageBase64 && styles.inputErrorBorder,
+                ]}
+              >
+                {idImageUri ? (
+                  <>
+                    <View style={styles.idPreviewWrap}>
+                      <Image source={{ uri: idImageUri }} style={styles.idPreview} resizeMode="contain" />
+                    </View>
+                    <View style={styles.idChangePhotoRow}>
+                      <TouchableOpacity
+                        activeOpacity={0.85}
+                        onPress={pickIdFromGallery}
+                        style={styles.idChangePhotoHalf}
+                      >
+                        <Ionicons name="images-outline" size={18} color={TEAL} />
+                        <Text style={styles.idChangePhotoHalfText}>Gallery</Text>
+                      </TouchableOpacity>
+                      <View style={styles.idChangePhotoDivider} />
+                      <TouchableOpacity
+                        activeOpacity={0.85}
+                        onPress={takeIdPhoto}
+                        style={styles.idChangePhotoHalf}
+                      >
+                        <Ionicons name="camera-outline" size={18} color={TEAL} />
+                        <Text style={styles.idChangePhotoHalfText}>Camera</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </>
+                ) : (
+                  <View style={styles.idUploadEmpty}>
+                    <View style={styles.idUploadIconCircle}>
+                      <Ionicons name="id-card-outline" size={28} color={TEAL} />
+                    </View>
+                    <Text style={styles.idUploadTitle}>Add your ID photo</Text>
+                    <Text style={styles.idUploadSubtitle}>
+                      PNG or JPEG · full card visible · no glare · use gallery or camera
+                    </Text>
+                    <View style={styles.idSourceRow}>
+                      <TouchableOpacity
+                        activeOpacity={0.85}
+                        onPress={pickIdFromGallery}
+                        style={styles.idSourceBtnOutline}
+                      >
+                        <Ionicons name="images-outline" size={20} color={TEAL} />
+                        <Text style={styles.idSourceBtnOutlineText}>Gallery</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        activeOpacity={0.85}
+                        onPress={takeIdPhoto}
+                        style={styles.idSourceBtnSolid}
+                      >
+                        <Ionicons name="camera-outline" size={20} color="#fff" />
+                        <Text style={styles.idSourceBtnSolidText}>Camera</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                )}
+              </View>
+
+              <View style={[styles.infoBox, styles.idInfoBox]}>
+                <Text style={styles.infoText}>
+                  Tip: lay the ID on a dark surface, use daylight or indoor lighting, and keep text readable.
+                </Text>
+              </View>
+
+              {facialError ? <Text style={styles.error}>{facialError}</Text> : null}
+
+              <View style={{ flex: 1 }} />
+              <View style={styles.primaryFooterRow}>
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={goRegisterBack}
+                  style={styles.backBtn}
+                >
+                  <Text style={styles.backBtnText}>Back</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  activeOpacity={0.9}
+                  onPress={onNextIdUpload}
+                  style={[
+                    styles.nextBtn,
+                    styles.primaryBtnFlexible,
+                    !canNextFromIdUpload && styles.nextDisabled,
+                  ]}
+                >
+                  <Text style={styles.nextText}>Next</Text>
+                </TouchableOpacity>
+              </View>
+            </>
+          )}
+
+          {/* --- Step 4: Facial verification (selfie + CompareFaces) --- */}
+          {step === 4 && (
+            <>
+              <Text style={styles.title}>Verify your face</Text>
+              <Text style={styles.subtitle}>
+                {`We'll take one selfie with your front camera and compare it to the photo on your ID.`}
+              </Text>
+
+              {!camPermission?.granted ? (
+                <>
+                  <View style={styles.cameraPermissionCard}>
+                    <View style={styles.cameraPermissionIconWrap}>
+                      <Ionicons name="camera-outline" size={36} color={TEAL} />
+                    </View>
+                    <Text style={styles.cameraPermissionTitle}>Camera access</Text>
+                    <Text style={styles.cameraPermissionBody}>
+                      Apoyo uses the camera only for this one-time identity check. You can change this anytime in your device settings.
+                    </Text>
+                  </View>
+                  <View style={{ flex: 1 }} />
+                  <View style={styles.primaryFooterRow}>
+                    <TouchableOpacity
+                      activeOpacity={0.85}
+                      onPress={goRegisterBack}
+                      style={styles.backBtn}
+                    >
+                      <Text style={styles.backBtnText}>Back</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      activeOpacity={0.9}
+                      onPress={() => void requestCamPermission()}
+                      style={[styles.nextBtn, styles.primaryBtnFlexible]}
+                    >
+                      <Text style={styles.nextText}>Allow camera access</Text>
+                    </TouchableOpacity>
+                  </View>
+                </>
+              ) : (
+                <>
+                  <View style={styles.rowTopCompact}>
+                    <Text style={styles.label}>Live preview</Text>
+                  </View>
+                  <View style={styles.cameraFrame}>
+                    <CameraView
+                      ref={cameraRef}
+                      facing="front"
+                      style={StyleSheet.absoluteFill}
+                      onCameraReady={() => setCameraReady(true)}
+                    />
+                    {!cameraReady ? (
+                      <View style={styles.cameraLoadingOverlay}>
+                        <ActivityIndicator size="large" color="#fff" />
+                        <Text style={styles.cameraOverlayText}>Starting camera…</Text>
+                      </View>
+                    ) : null}
+                    {facialVerifying ? (
+                      <View style={styles.cameraOverlay}>
+                        <ActivityIndicator size="large" color="#fff" />
+                        <Text style={styles.cameraOverlayText}>Verifying…</Text>
+                      </View>
+                    ) : null}
+                  </View>
+                  <Text style={styles.helper}>
+                    Face the camera, remove hats or sunglasses if possible, then tap capture when centered.
+                  </Text>
+                  {facialError ? <Text style={styles.error}>{facialError}</Text> : null}
+                  <View style={{ flex: 1 }} />
+                  <View style={styles.primaryFooterRow}>
+                    <TouchableOpacity
+                      activeOpacity={0.85}
+                      onPress={goRegisterBack}
+                      disabled={facialVerifying}
+                      style={[styles.backBtn, facialVerifying && styles.backBtnDisabled]}
+                    >
+                      <Text style={styles.backBtnText}>Back</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      activeOpacity={0.9}
+                      onPress={() => void runFacialVerification()}
+                      disabled={facialVerifying || !cameraReady}
+                      style={[
+                        styles.nextBtn,
+                        styles.primaryBtnFlexible,
+                        (facialVerifying || !cameraReady) && styles.nextDisabled,
+                      ]}
+                    >
+                      <Text style={styles.nextText}>
+                        {facialVerifying ? "Verifying…" : "Capture & verify"}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                </>
+              )}
+            </>
+          )}
+
+          {/* --- Step 5: Create MPIN --- */}
+          {step === 5 && (
             <>
               <Text style={styles.title}>Create your MPIN</Text>
               <Text style={styles.subtitle}>Create your MPIN. Enter a 6-digit MPIN below.</Text>
@@ -724,14 +1707,32 @@ export default function Register() {
               <Text style={styles.helper}>You will use this 6-digit PIN to login next time.</Text>
 
               <View style={{ flex: 1 }} />
-              <TouchableOpacity activeOpacity={0.9} onPress={onNextPin} disabled={!canNextFromPin} style={[styles.nextBtn, !canNextFromPin && styles.nextDisabled]}>
-                <Text style={styles.nextText}>Next</Text>
-              </TouchableOpacity>
+              <View style={styles.primaryFooterRow}>
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={goRegisterBack}
+                  style={styles.backBtn}
+                >
+                  <Text style={styles.backBtnText}>Back</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  activeOpacity={0.9}
+                  onPress={onNextPin}
+                  disabled={!canNextFromPin}
+                  style={[
+                    styles.nextBtn,
+                    styles.primaryBtnFlexible,
+                    !canNextFromPin && styles.nextDisabled,
+                  ]}
+                >
+                  <Text style={styles.nextText}>Next</Text>
+                </TouchableOpacity>
+              </View>
             </>
           )}
 
-          {/* --- Step 4: Re-enter MPIN --- */}
-          {step === 4 && (
+          {/* --- Step 6: Re-enter MPIN --- */}
+          {step === 6 && (
             <>
               <Text style={styles.title}>Re-enter your MPIN</Text>
               <Text style={styles.subtitle}>Confirm your 6-digit MPIN below.</Text>
@@ -759,56 +1760,49 @@ export default function Register() {
               {confirmError ? <Text style={styles.error}>{confirmError}</Text> : null}
 
               <View style={{ flex: 1 }} />
-              {confirmError ? (
+              <View style={styles.primaryFooterRow}>
                 <TouchableOpacity
-                  activeOpacity={0.9}
-                  onPress={onRetryPin}
-                  style={styles.nextBtn}
+                  activeOpacity={0.85}
+                  onPress={goRegisterBack}
+                  style={styles.backBtn}
                 >
-                  <Text style={styles.nextText}>Re-enter MPIN</Text>
+                  <Text style={styles.backBtnText}>Back</Text>
                 </TouchableOpacity>
-              ) : null}
+                {confirmError ? (
+                  <TouchableOpacity
+                    activeOpacity={0.9}
+                    onPress={onRetryPin}
+                    style={[styles.nextBtn, styles.primaryBtnFlexible]}
+                  >
+                    <Text style={styles.nextText}>Re-enter MPIN</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <TouchableOpacity
+                    activeOpacity={0.9}
+                    onPress={onConfirmPin}
+                    disabled={confirmPin.length !== 6}
+                    style={[
+                      styles.nextBtn,
+                      styles.primaryBtnFlexible,
+                      confirmPin.length !== 6 && styles.nextDisabled,
+                    ]}
+                  >
+                    <Text style={styles.nextText}>Next</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
             </>
           )}
 
-          {/* --- Step 5: Enable Notifications --- */}
-          {step === 5 && (
-            <>
-              <View style={styles.headerStack}>
-                <Image source={require("../../assets/images/Dasma.png")} style={styles.headerSeal} resizeMode="contain" />
-                <Image source={require("../../assets/images/apoyo2.png")} style={styles.brandLogo} resizeMode="contain" />
-              </View>
-
-              <Text style={styles.titleNotif}>Enable notifications?</Text>
-              <Text style={styles.subtitle}>Don’t miss important messages from{"\n"}government updates and account activity</Text>
-
-              <View style={styles.toggleRow}>
-                <Text style={styles.toggleLabel}>Enable notifications</Text>
-                <Switch value={enabled} onValueChange={setEnabled} trackColor={{ false: "#CFCFCF", true: "rgba(0,142,138,0.35)" }} thumbColor={enabled ? TEAL : "#FFFFFF"} ios_backgroundColor="#CFCFCF" />
-              </View>
-
-              {emailSendError ? <Text style={styles.error}>{emailSendError}</Text> : null}
-
-              <View style={{ flex: 1 }} />
-              <TouchableOpacity
-                activeOpacity={0.9}
-                onPress={onFinish}
-                disabled={!canFinish}
-                style={[styles.nextBtn, !canFinish && styles.nextDisabled]}
-              >
-                <Text style={styles.nextText}>Next</Text>
-              </TouchableOpacity>
-            </>
-          )}
-
-          {/* --- Step 6: Verify Email --- */}
-          {step === 6 && (
+          {/* --- Step 7: Verify Email --- */}
+          {step === 7 && (
             <>
               <Text style={styles.titleLarge}>Email Verification Sent</Text>
               <Text style={styles.subtitle}>Check your email inbox</Text>
               <Text style={styles.desc}>
-                We've sent a verification email to <Text style={styles.bold}>{email || "sample@gmail.com"}</Text>. Open the email and click the confirmation link to verify your address and finish setup.
-                If you don’t see it, please check your spam or junk folder.
+                {`We've sent a verification email to `}
+                <Text style={styles.bold}>{email || "sample@gmail.com"}</Text>
+                {`. Open the email and click the confirmation link to verify your address and finish setup. If you don't see it, please check your spam or junk folder.`}
               </Text>
 
               {emailSendError ? <Text style={styles.error}>{emailSendError}</Text> : null}
@@ -848,11 +1842,22 @@ export default function Register() {
               {emailVerified && !profileSaving && !profileError ? <Text style={styles.subtitle}>Email verified! Setting up your account...</Text> : null}
 
               <View style={{ flex: 1 }} />
+              <View style={styles.primaryFooterRow}>
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={goRegisterBack}
+                  disabled={profileSaving}
+                  style={[styles.backBtn, profileSaving && styles.backBtnDisabled]}
+                >
+                  <Text style={styles.backBtnText}>Back</Text>
+                </TouchableOpacity>
+                <View style={styles.primaryBtnFlexible} />
+              </View>
             </>
           )}
 
-          {/* --- Step 7: Success --- */}
-          {step === 7 && (
+          {/* --- Step 8: Success --- */}
+          {step === 8 && (
             <>
               <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
                 <Text style={styles.titleLarge}>Successfully Registered</Text>
@@ -881,22 +1886,252 @@ const styles = StyleSheet.create({
   progressSeg: { flex: 1, height: 6, borderRadius: 999, backgroundColor: "#D9D9D9" },
   progressActive: { backgroundColor: TEAL },
 
+  rowTopCompact: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 22,
+    marginBottom: 10,
+  },
+
+  idUploadCard: {
+    marginTop: 0,
+    borderWidth: 1,
+    borderColor: BORDER,
+    borderRadius: 12,
+    overflow: "hidden",
+    backgroundColor: "#fff",
+  },
+  idUploadEmpty: {
+    minHeight: 240,
+    paddingVertical: 22,
+    paddingHorizontal: 16,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  idSourceRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 12,
+    marginTop: 18,
+    paddingHorizontal: 4,
+    width: "100%",
+  },
+  idSourceBtnOutline: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    height: 48,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: TEAL,
+    backgroundColor: "#fff",
+  },
+  idSourceBtnOutlineText: {
+    color: TEAL,
+    fontFamily: FONT,
+    fontWeight: "700",
+    fontSize: 15,
+  },
+  idSourceBtnSolid: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    height: 48,
+    borderRadius: 12,
+    backgroundColor: TEAL,
+  },
+  idSourceBtnSolidText: {
+    color: "#fff",
+    fontFamily: FONT,
+    fontWeight: "700",
+    fontSize: 15,
+  },
+  idUploadIconCircle: {
+    width: 56,
+    height: 56,
+    borderRadius: 999,
+    backgroundColor: "rgba(0,142,138,0.12)",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 14,
+  },
+  idUploadTitle: {
+    color: DARK,
+    fontFamily: FONT,
+    fontWeight: "700",
+    fontSize: 16,
+    textAlign: "center",
+  },
+  idUploadSubtitle: {
+    marginTop: 8,
+    color: SUB,
+    fontFamily: FONT,
+    fontWeight: "500",
+    fontSize: 13,
+    textAlign: "center",
+    lineHeight: 18,
+    paddingHorizontal: 12,
+  },
+  idPreviewWrap: {
+    width: "100%",
+    aspectRatio: 16 / 10,
+    backgroundColor: "#F7F7F7",
+    overflow: "hidden",
+    position: "relative",
+  },
+  idPreview: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  idChangePhotoRow: {
+    flexDirection: "row",
+    alignItems: "stretch",
+    borderTopWidth: 1,
+    borderTopColor: BORDER,
+    backgroundColor: "#FAFAFA",
+  },
+  idChangePhotoHalf: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 14,
+  },
+  idChangePhotoHalfText: {
+    color: TEAL,
+    fontFamily: FONT,
+    fontWeight: "700",
+    fontSize: 14,
+  },
+  idChangePhotoDivider: {
+    width: 1,
+    alignSelf: "stretch",
+    backgroundColor: BORDER,
+    marginVertical: 10,
+  },
+  idInfoBox: {
+    marginTop: 14,
+    marginBottom: 0,
+  },
+
+  cameraPermissionCard: {
+    marginTop: 18,
+    paddingVertical: 22,
+    paddingHorizontal: 18,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: BORDER,
+    backgroundColor: "#fff",
+    alignItems: "center",
+  },
+  cameraPermissionIconWrap: {
+    width: 72,
+    height: 72,
+    borderRadius: 999,
+    backgroundColor: "rgba(0,142,138,0.12)",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 14,
+  },
+  cameraPermissionTitle: {
+    fontFamily: FONT,
+    fontWeight: "700",
+    fontSize: 17,
+    color: DARK,
+    marginBottom: 8,
+    textAlign: "center",
+  },
+  cameraPermissionBody: {
+    fontFamily: FONT,
+    fontWeight: "500",
+    fontSize: 14,
+    color: SUB,
+    textAlign: "center",
+    lineHeight: 21,
+    paddingHorizontal: 6,
+  },
+
+  cameraFrame: {
+    marginTop: 10,
+    height: Math.min(340, Math.round(SCREEN_W * 1.05)),
+    borderRadius: 12,
+    overflow: "hidden",
+    backgroundColor: "#1a1a1a",
+    borderWidth: 2,
+    borderColor: "rgba(0,142,138,0.35)",
+  },
+  cameraOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  cameraLoadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.35)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  cameraOverlayText: {
+    color: "#fff",
+    marginTop: 12,
+    fontFamily: FONT,
+    fontWeight: "600",
+    fontSize: 15,
+  },
+
   title: { marginTop: 20, fontSize: 34, color: DARK, fontFamily: FONT, fontWeight: "600", marginBottom: 6 },
+  step0Title: { marginTop: 8, marginBottom: 4 },
+  step0HeaderRow: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    justifyContent: "space-between",
+  },
   titleLarge: { marginTop: 36, fontSize: 34, color: DARK, fontFamily: FONT, fontWeight: "700" },
   titleNotif: { marginTop: 6, fontSize: 26, color: DARK, fontFamily: FONT, fontWeight: "700" },
 
   fillIn: { color: RED, fontFamily: FONT, fontWeight: "500", marginBottom: 10 },
+  fillInInline: { color: RED, fontFamily: FONT, fontWeight: "500", marginBottom: 10, textAlign: "right" },
 
   row: { flexDirection: "row", gap: 12 },
 
   inputWrap: { borderWidth: 1, borderColor: BORDER, borderRadius: 10, height: 52, justifyContent: "center", paddingHorizontal: 12, backgroundColor: "#fff" },
+  inputWrapWithInlineError: { paddingRight: 168 },
   inputWrapAlt: { borderWidth: 1, borderColor: BORDER, borderRadius: 10, height: 54, justifyContent: "center", paddingHorizontal: 14, backgroundColor: "#fff" },
+  inputWrapAltDisabled: {
+    borderWidth: 1,
+    borderColor: BORDER,
+    borderRadius: 10,
+    height: 54,
+    justifyContent: "center",
+    paddingHorizontal: 14,
+    backgroundColor: "#F5F5F5",
+  },
+  inputWrapAltDisabledPreview: {
+    borderWidth: 1,
+    borderColor: BORDER,
+    borderRadius: 10,
+    minHeight: 54,
+    justifyContent: "center",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    backgroundColor: "#F5F5F5",
+  },
   inputWrapMobile: { borderWidth: 1, borderColor: BORDER, borderRadius: 12, height: 54, flexDirection: "row", alignItems: "center", overflow: "hidden", backgroundColor: "#fff" },
   inputErrorBorder: { borderColor: RED },
 
   inputFull: { fontSize: 16, color: DARK, fontFamily: FONT, fontWeight: "500", paddingVertical: 0 },
+  inputFullWithInlineError: { paddingRight: 8 },
   inputAlt: { fontSize: 16, color: DARK, fontFamily: FONT, fontWeight: "600", paddingVertical: 0 },
+  inputAltDisabled: { fontSize: 14, color: SUB, fontFamily: FONT, fontWeight: "500", lineHeight: 19 },
   inputMobile: { flex: 1, fontSize: 16, paddingRight: 14, color: DARK, fontFamily: FONT, fontWeight: "500" },
+  inputMobileWithInlineError: { paddingRight: 6 },
 
   prefix: { width: 70, height: "100%", alignItems: "center", justifyContent: "center" },
   prefixText: { fontSize: 15, color: "#B3B3B3", fontFamily: FONT, fontWeight: "500" },
@@ -911,6 +2146,18 @@ const styles = StyleSheet.create({
   checkText: { color: SUB, fontFamily: FONT, fontWeight: "500", fontSize: 13 },
 
   error: { marginTop: 8, color: RED, fontFamily: FONT, fontWeight: "500" },
+  errorInline: {
+    position: "absolute",
+    right: 12,
+    bottom: 6,
+    maxWidth: 156,
+    color: RED,
+    fontFamily: FONT,
+    fontWeight: "600",
+    fontSize: 14,
+    lineHeight: 15,
+    textAlign: "right",
+  },
 
   termsBox: { marginTop: 18, alignItems: "center" },
   termsText: { color: SUB, fontFamily: FONT, fontWeight: "500", fontSize: 12, textAlign: "center" },
@@ -918,7 +2165,36 @@ const styles = StyleSheet.create({
   termsLinksRow: { flexDirection: "row", alignItems: "center", marginTop: 8, flexWrap: "wrap", justifyContent: "center" },
   link: { color: TEAL, fontFamily: FONT, fontWeight: "600", fontSize: 13 },
 
-  createBtn: { height: 56, borderRadius: 12, backgroundColor: TEAL, alignItems: "center", justifyContent: "center", marginTop: 30 },
+  primaryFooterRow: {
+    flexDirection: "row",
+    alignItems: "stretch",
+    gap: 10,
+  },
+  backBtn: {
+    width: Math.max(76, Math.min(92, Math.round(SCREEN_W * 0.21))),
+    height: 56,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: BORDER,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#fff",
+  },
+  backBtnDisabled: {
+    opacity: 0.45,
+  },
+  backBtnText: {
+    color: DARK,
+    fontFamily: FONT,
+    fontWeight: "600",
+    fontSize: 14,
+  },
+  primaryBtnFlexible: {
+    flex: 1,
+    minWidth: 0,
+  },
+
+  createBtn: { height: 56, borderRadius: 12, backgroundColor: TEAL, alignItems: "center", justifyContent: "center" },
   createBtnText: { color: "#fff", fontSize: 16, fontFamily: FONT, fontWeight: "600" },
 
   divider: { height: 1, backgroundColor: "#E6E6E6", marginTop: 22 },
@@ -928,9 +2204,101 @@ const styles = StyleSheet.create({
 
   modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.35)", justifyContent: "center", paddingHorizontal: 22 },
   modalCard: { backgroundColor: "#fff", borderRadius: 14, padding: 14 },
+  modalList: { maxHeight: 360 },
   modalTitle: { fontFamily: FONT, fontWeight: "600", fontSize: 16, color: DARK, marginBottom: 10 },
   modalItem: { paddingVertical: 12, paddingHorizontal: 10, borderRadius: 10 },
   modalItemText: { fontFamily: FONT, fontWeight: "500", fontSize: 15, color: DARK },
+  birthDateActionsRow: {
+    marginTop: 10,
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: 10,
+  },
+  birthDateActionGhost: {
+    height: 40,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: BORDER,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  birthDateActionGhostText: {
+    fontFamily: FONT,
+    fontWeight: "600",
+    color: SUB,
+    fontSize: 13,
+  },
+  birthDateActionSolid: {
+    height: 40,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    backgroundColor: TEAL,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  birthDateActionSolidText: {
+    fontFamily: FONT,
+    fontWeight: "600",
+    color: "#fff",
+    fontSize: 13,
+  },
+
+  sexModalItem: {
+    paddingVertical: 12,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  sexRadioOuter: {
+    width: 20,
+    height: 20,
+    borderRadius: 999,
+    borderWidth: 1.5,
+    borderColor: BORDER,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  sexRadioOuterActive: {
+    borderColor: TEAL,
+  },
+  sexRadioInner: {
+    width: 10,
+    height: 10,
+    borderRadius: 999,
+    backgroundColor: TEAL,
+  },
+
+  addressFieldWrap: {
+    borderWidth: 1,
+    borderColor: BORDER,
+    borderRadius: 10,
+    minHeight: 52,
+    paddingHorizontal: 12,
+    backgroundColor: "#fff",
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    paddingVertical: 8,
+  },
+  addressFieldInput: {
+    minWidth: 110,
+    flexGrow: 1,
+    fontSize: 16,
+    color: DARK,
+    fontFamily: FONT,
+    fontWeight: "500",
+    paddingVertical: 0,
+  },
+  addressFieldSuffix: {
+    flexShrink: 1,
+    fontSize: 14,
+    color: SUB,
+    fontFamily: FONT,
+    fontWeight: "500",
+  },
 
   // verify email / otp styles
   subtitle: { marginTop: 6, fontSize: 16, color: SUB, fontFamily: FONT, fontWeight: "600" },
