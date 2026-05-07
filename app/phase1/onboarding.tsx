@@ -72,7 +72,9 @@ export default function Onboarding() {
       return;
     }
 
-    console.log("✅ Get Started pressed -> going to /account/verify-email");
+    if (__DEV__) {
+      console.log("Get Started pressed -> /phase1/login");
+    }
     router.push("/phase1/login");
   };
 

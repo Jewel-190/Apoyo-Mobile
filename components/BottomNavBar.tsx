@@ -1,8 +1,10 @@
 import { Ionicons } from "@expo/vector-icons";
+import { useFocusEffect } from "@react-navigation/native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter, usePathname } from "expo-router";
-import React from "react";
+import React, { useCallback, useState } from "react";
 import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import { supabase } from "../lib/supabase";
 
 const TEAL_DARK = "#07807C";
 const ACTIVE_PILL = "#6FB8B5";
@@ -11,8 +13,10 @@ const FONT = "SF Pro Rounded";
 
 const ROUTE_HOME = "/Home/Home";
 const ROUTE_STATUS = "/Status/Status";
-const ROUTE_NOTIF = "/Notification/Notification";
+const ROUTE_NOTIF = "/Notification/Notifications";
 const ROUTE_ACCOUNT = "/Account/Account";
+
+let unreadNotificationCache = false;
 
 export const NAV_BAR_HEIGHT = 64;
 export const IOS_SAFE_EXTRA = Platform.OS === "ios" ? 18 : 0;
@@ -44,6 +48,9 @@ type Props = {
 export default function BottomNavBar({ activeTab, onBeforeNavigate, maskColor = "#FFFFFF" }: Props) {
   const router = useRouter();
   const pathname = usePathname();
+  const [hasUnreadNotification, setHasUnreadNotification] = useState(
+    unreadNotificationCache
+  );
 
   const currentTab =
     activeTab ??
@@ -57,6 +64,35 @@ export default function BottomNavBar({ activeTab, onBeforeNavigate, maskColor = 
     router.push(tab.route as any);
   };
 
+  const loadUnreadNotificationState = useCallback(async () => {
+    try {
+      const { data, error } = await supabase.functions.invoke("notifications", {
+        body: { action: "unread-count" },
+      });
+
+      if (error) {
+        return;
+      }
+
+      const count = Number(data?.unreadCount || 0) || 0;
+      const nextHasUnread = count > 0;
+      unreadNotificationCache = nextHasUnread;
+      setHasUnreadNotification(nextHasUnread);
+    } catch {
+      // Keep the last known unread state to avoid badge flicker while switching pages.
+    }
+  }, []);
+
+  const showNotificationBadge =
+    hasUnreadNotification && currentTab !== "notification";
+
+  useFocusEffect(
+    useCallback(() => {
+      loadUnreadNotificationState();
+      return () => {};
+    }, [loadUnreadNotificationState])
+  );
+
   return (
     <>
       <View pointerEvents="none" style={[styles.bottomMask, { backgroundColor: maskColor }]} />
@@ -68,6 +104,7 @@ export default function BottomNavBar({ activeTab, onBeforeNavigate, maskColor = 
               label={tab.label}
               icon={tab.icon}
               active={currentTab === tab.key}
+              showUnreadBadge={tab.key === "notification" && showNotificationBadge}
               onPress={() => handlePress(tab)}
             />
           ))}
@@ -81,57 +118,67 @@ function TabButton({
   label,
   icon,
   active,
+  showUnreadBadge,
   onPress,
 }: {
   label: string;
   icon: keyof typeof Ionicons.glyphMap;
   active?: boolean;
+  showUnreadBadge?: boolean;
   onPress: () => void;
 }) {
   return (
     <Pressable onPress={onPress} style={styles.tabBtn}>
-      {({ pressed }) =>
-        active ? (
-          <View
-            style={[
-              styles.tabActivePillBig,
-              pressed && styles.tabActivePillPressed,
-            ]}
-          >
-            <LinearGradient
-              colors={["rgba(255,255,255,0.26)", "rgba(255,255,255,0.10)"]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 0, y: 1 }}
-              style={styles.glassFill}
-            />
-            <LinearGradient
-              colors={["rgba(255,255,255,0.42)", "rgba(255,255,255,0.00)"]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 0, y: 1 }}
-              style={styles.glassSheen}
-            />
-            <Ionicons name={icon} size={20} color="#FFFFFF" />
-            <Text style={styles.tabTextInsidePill}>{label}</Text>
-          </View>
-        ) : (
-          <>
-            <Ionicons
-              name={icon}
-              size={22}
-              color={pressed ? "rgba(191,224,222,0.75)" : TAB_INACTIVE}
-            />
-            <Text
+      {({ pressed }) => (
+        <>
+          {showUnreadBadge ? (
+            <View style={styles.tabUnreadBadge}>
+              <Text style={styles.tabUnreadBadgeText}>!</Text>
+            </View>
+          ) : null}
+
+          {active ? (
+            <View
               style={[
-                styles.tabText,
-                styles.tabTextInactive,
-                pressed && { opacity: 0.85 },
+                styles.tabActivePillBig,
+                pressed && styles.tabActivePillPressed,
               ]}
             >
-              {label}
-            </Text>
-          </>
-        )
-      }
+              <LinearGradient
+                colors={["rgba(255,255,255,0.26)", "rgba(255,255,255,0.10)"]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 0, y: 1 }}
+                style={styles.glassFill}
+              />
+              <LinearGradient
+                colors={["rgba(255,255,255,0.42)", "rgba(255,255,255,0.00)"]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 0, y: 1 }}
+                style={styles.glassSheen}
+              />
+              <Ionicons name={icon} size={20} color="#FFFFFF" />
+              <Text style={styles.tabTextInsidePill}>{label}</Text>
+            </View>
+          ) : (
+            <>
+              <Ionicons
+                name={icon}
+                size={22}
+                color={pressed ? "rgba(191,224,222,0.75)" : TAB_INACTIVE}
+              />
+              <Text
+                style={[
+                  styles.tabText,
+                  styles.tabTextInactive,
+                  pressed && { opacity: 0.85 },
+                ]}
+              >
+                {label}
+              </Text>
+            </>
+          )}
+        </>
+      )}
     </Pressable>
   );
 }
@@ -172,6 +219,25 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     width: 76,
     height: 58,
+  },
+  tabUnreadBadge: {
+    position: "absolute",
+    top: 2,
+    left: 14,
+    width: 16,
+    height: 16,
+    borderRadius: 99,
+    backgroundColor: "#E13B3B",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 5,
+  },
+  tabUnreadBadgeText: {
+    color: "#FFFFFF",
+    fontFamily: FONT,
+    fontWeight: "800",
+    fontSize: 11,
+    lineHeight: 12,
   },
   tabActivePillBig: {
     width: 66,

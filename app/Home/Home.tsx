@@ -19,6 +19,7 @@ import {
   View,
 } from "react-native";
 import BottomNavBar, { NAV_TOTAL_HEIGHT } from "../../components/BottomNavBar";
+import { ROUTES } from "../../lib/routes";
 import {
   getHomeRequirements,
   getHomeRequirementTips,
@@ -46,7 +47,6 @@ const FONT = "SF Pro Rounded";
 const CACHE_USER = "apoyo_user_cache";
 
 const ROUTE_REQUEST = "/Home/RequestInfo";
-const ROUTE_APPROVED = "/Home/ApprovedAssistance";
 
 const PROFILE_PNG = require("../../assets/images/ProfileIcon.png");
 const APPROVED_ICON_PNG = require("../../assets/images/Book2.png");
@@ -411,12 +411,23 @@ export default function Assistance() {
       return;
     }
 
-    // Check for existing draft for hospital, treatment, operations, emergency-finance, burial-money, burial-site, or colombarium
+    if (serviceId === "emergency-finance") {
+      const draftId = await checkForDraft(serviceId);
+      if (draftId) {
+        setPendingServiceId(serviceId);
+        setPendingDraftId(draftId);
+        setShowDraftDialog(true);
+        return;
+      }
+      router.push({ pathname: "/Home/Financial/FinancialDetails" } as any);
+      return;
+    }
+
+    // Check for existing draft for hospital, treatment, operations, burial-money, burial-site, or colombarium
     if (
       serviceId === "hospital" ||
       serviceId === "treatment" ||
       serviceId === "operations" ||
-      serviceId === "emergency-finance" ||
       serviceId === "burial-money" ||
       serviceId === "burial-site" ||
       serviceId === "colombarium"
@@ -449,8 +460,13 @@ export default function Assistance() {
   };
 
   const handleDraftDialogNew = () => {
-    // User wants to make another request - open the service details
     setShowDraftDialog(false);
+    if (pendingServiceId === "emergency-finance") {
+      router.push({ pathname: "/Home/Financial/FinancialDetails" } as any);
+      setPendingServiceId(null);
+      setPendingDraftId(null);
+      return;
+    }
     if (pendingServiceId) {
       openDetails(pendingServiceId);
     }
@@ -562,7 +578,7 @@ export default function Assistance() {
           </View>
           <Pressable
             style={styles.approvedBtn}
-            onPress={() => router.push(ROUTE_APPROVED as any)}
+            onPress={() => router.push(ROUTES.status as any)}
           >
             <Image
               source={APPROVED_ICON_PNG}
@@ -912,16 +928,17 @@ export default function Assistance() {
             {/* content spacer -- Apply button moved to footer */}
             <View style={{ height: 22 }} />
           </ScrollView>
-          {/* Fixed footer with Apply button */}
-          <View style={{ padding: 16, backgroundColor: "#FFFFFF" }}>
+          {/* Fixed footer with Apply button (matches RequestInfo / detail screens) */}
+          <View style={styles.detailsModalFooter}>
             <Pressable
-              style={({ pressed }) => [
-                styles.applyBtn,
-                pressed && { opacity: 0.92, transform: [{ scale: 0.99 }] },
-              ]}
+              style={({ pressed }) => [styles.applyBtn, pressed && { opacity: 0.92 }]}
               onPress={() => {
                 if (!openDetailsId) return;
                 setOpenDetailsId(null);
+                if (openDetailsId === "emergency-finance") {
+                  router.push({ pathname: "/Home/Financial/FinancialDetails" } as any);
+                  return;
+                }
                 goRequestInfo(openDetailsId);
               }}
             >
@@ -1463,11 +1480,20 @@ const styles = StyleSheet.create({
     marginLeft: 14,
     marginRight: 14,
   },
+  detailsModalFooter: {
+    paddingHorizontal: 20,
+    paddingTop: 10,
+    paddingBottom: 14,
+    borderTopWidth: 1,
+    borderTopColor: "#E9EDED",
+    backgroundColor: "#FFFFFF",
+  },
   applyBtn: {
-    marginTop: 14,
-    height: 52,
-    borderRadius: 26,
+    height: 50,
+    borderRadius: 25,
     backgroundColor: TEAL,
+    borderWidth: 1,
+    borderColor: "#0A7F7C",
     alignItems: "center",
     justifyContent: "center",
     shadowColor: "#000",
@@ -1478,7 +1504,7 @@ const styles = StyleSheet.create({
   },
   applyBtnText: {
     fontFamily: FONT,
-    fontWeight: "800",
+    fontWeight: "600",
     color: "#FFFFFF",
     fontSize: 14,
   },

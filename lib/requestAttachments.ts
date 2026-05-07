@@ -123,7 +123,7 @@ export async function listRequestAttachments(
   if (error) throw error;
 
   const paths: Record<string, string> = {};
-  for (const row of (data || []) as Array<Pick<RequestAttachmentRow, "file_type" | "path">>) {
+  for (const row of (data || []) as Pick<RequestAttachmentRow, "file_type" | "path">[]) {
     if (row.path) {
       const uiFileType = fromDbFileType(requestTable, row.file_type);
       paths[uiFileType] = row.path;

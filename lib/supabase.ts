@@ -1,12 +1,33 @@
-import { createClient } from '@supabase/supabase-js';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import Constants from 'expo-constants';
+import { createClient } from "@supabase/supabase-js";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import Constants from "expo-constants";
 
-const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl || process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://yrlkynetbegvwmqaiuvr.supabase.co';
-const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey || process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || 'sb_publishable_opaD6jDXjj2pUFRv38MXuQ_V9_n0qd0';
+/**
+ * The project URL and anon key are sourced (in priority order) from:
+ *   1. `app.json` -> `expo.extra.supabaseUrl` / `supabaseAnonKey`
+ *   2. `EXPO_PUBLIC_SUPABASE_URL` / `EXPO_PUBLIC_SUPABASE_ANON_KEY` env vars
+ *
+ * Keeping the values in `app.json` means a single config edit + EAS build
+ * picks them up; the env-var path is mainly for local development.
+ */
+type SupabaseExtras = {
+  supabaseUrl?: string;
+  supabaseAnonKey?: string;
+};
+
+const extras = (Constants.expoConfig?.extra ?? {}) as SupabaseExtras;
+
+const supabaseUrl =
+  extras.supabaseUrl || process.env.EXPO_PUBLIC_SUPABASE_URL || "";
+const supabaseAnonKey =
+  extras.supabaseAnonKey || process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || "";
 
 if (!supabaseUrl || !supabaseAnonKey) {
-  throw new Error('Missing Supabase environment variables');
+  throw new Error(
+    "Supabase configuration missing. Set `expo.extra.supabaseUrl` and " +
+      "`expo.extra.supabaseAnonKey` in app.json (or EXPO_PUBLIC_SUPABASE_URL " +
+      "/ EXPO_PUBLIC_SUPABASE_ANON_KEY environment variables)."
+  );
 }
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {

@@ -41,6 +41,8 @@ const TEXT_MUTED = "#7B7B7B";
 const BADGE_PENDING = "#E8C6FF";
 const BADGE_PROGRESS = "#B9E3FF";
 const BADGE_ACTION = "#FFD59E";
+const BADGE_FOR_APPROVAL = "#C8EDE9";
+const BADGE_SCHEDULED = "#D8E6FA";
 const BADGE_APPROVED = "#C8F1C8";
 const BADGE_DRAFT = "#D4D4D4";
 const BADGE_TEXT_DEFAULT = "#2B2B2B";
@@ -69,17 +71,22 @@ type ServiceStatus =
   | "In Progress"
   | "Action Required"
   | "Resubmitted"
+  | "For Approval"
+  | "Scheduled"
   | "Approved"
   | "Draft";
 
 function normalizeStatus(raw?: string): ServiceStatus {
   if (!raw) return "Pending";
-  const s = raw.toString().trim().toLowerCase();
+  const s = raw.toString().trim().toLowerCase().replace(/_/g, " ");
   if (s === "submitted" || s === "pending") return "Pending";
   if (s === "resubmitted") return "Resubmitted";
-  if (s === "in progress" || s === "in_progress" || s === "inprogress" || s === "processing") return "In Progress";
-  if (s === "action required" || s === "action_required" || s === "action") return "Action Required";
+  if (s === "in progress" || s === "inprogress" || s === "processing") return "In Progress";
+  if (s === "action required" || s === "action") return "Action Required";
+  if (s === "for approval") return "For Approval";
+  if (s === "scheduled") return "Scheduled";
   if (s === "approved" || s === "accepted") return "Approved";
+  if (s === "draft") return "Draft";
   return "Pending";
 }
 
@@ -115,6 +122,7 @@ type RequestDetailsRow = {
   submitted_at: string | null;
   additional_info: string | null;
   coverage?: string | null;
+  financial_request_type?: string | null;
 };
 
 const COVERAGE_TABLES = new Set<RequestTableName>([
@@ -216,13 +224,12 @@ function fromDbFileType(
 }
 
 function normalizeRawStatus(raw?: string | null): string {
-  const s = (raw || "").toString().trim().toLowerCase();
+  const s = (raw || "").toString().trim().toLowerCase().replace(/_/g, " ");
   if (!s) return "pending";
   if (s === "submitted") return "pending";
   if (s === "resubmitted") return "resubmitted";
-  if (s === "in_progress" || s === "inprogress" || s === "processing")
-    return "in progress";
-  if (s === "action_required") return "action required";
+  if (s === "inprogress" || s === "processing") return "in progress";
+  if (s === "action required") return "action required";
   return s;
 }
 
@@ -271,6 +278,12 @@ function statusDescription(raw?: string | null): string {
   if (s === "resubmitted") {
     return "Your files are being rechecked by the admin, please wait.";
   }
+  if (s === "for approval") {
+    return "Your request is queued for final approval.";
+  }
+  if (s === "scheduled") {
+    return "Your assistance has been scheduled. Watch for updates from the office.";
+  }
   if (s === "approved") {
     return "Your application has been approved.";
   }
@@ -296,6 +309,10 @@ function badgeThemeForStatus(status: ServiceStatus): {
       return { bg: BADGE_ACTION, text: BADGE_TEXT_DEFAULT };
     case "Resubmitted":
       return { bg: BADGE_PROGRESS, text: BADGE_TEXT_DEFAULT };
+    case "For Approval":
+      return { bg: BADGE_FOR_APPROVAL, text: "#0D5C58" };
+    case "Scheduled":
+      return { bg: BADGE_SCHEDULED, text: "#2F4F7A" };
     case "Approved":
       return { bg: BADGE_APPROVED, text: BADGE_TEXT_DEFAULT };
     case "Draft":
@@ -652,6 +669,31 @@ export default function StatusDetails() {
     return id.startsWith("draft_") ? id.replace("draft_", "") : id;
   }, [app?.id]);
 
+  useEffect(() => {
+    if (!realRequestId) return;
+
+    let active = true;
+
+    (async () => {
+      try {
+        await supabase.functions.invoke("notifications", {
+          body: {
+            action: "mark-read",
+            requestId: realRequestId,
+          },
+        });
+      } catch (e) {
+        if (active) {
+          console.log("Status details notification read sync failed:", e);
+        }
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [realRequestId]);
+
   const requestCode = useMemo(() => {
     if (requestRow?.request_code) return requestRow.request_code;
     if (app?.requestCode) return app.requestCode;
@@ -673,6 +715,9 @@ export default function StatusDetails() {
     (requestRow?.additional_info || "").toString().trim() ||
     "No additional information submitted.";
   const coverageText = (requestRow?.coverage || "").toString().trim();
+  const financialRequestTypeText = (requestRow?.financial_request_type || "")
+    .toString()
+    .trim();
 
   const normalizedStatus = useMemo(
     () => normalizeRawStatus(latestAuditStatus || requestRow?.status || app?.status),
@@ -782,9 +827,13 @@ export default function StatusDetails() {
         setIsDbSyncing(true);
         const baseSelectColumns =
           "id,status,request_code,created_at,updated_at,submitted_at,additional_info";
-        const requestSelectColumns = COVERAGE_TABLES.has(requestTable)
+        const withCoverage = COVERAGE_TABLES.has(requestTable)
           ? `${baseSelectColumns},coverage`
           : baseSelectColumns;
+        const requestSelectColumns =
+          requestTable === "financial_requests"
+            ? `${withCoverage},financial_request_type`
+            : withCoverage;
 
         const { data, error } = await supabase
           .from(requestTable)
@@ -1062,6 +1111,12 @@ export default function StatusDetails() {
                 label={typeLabel(app?.category)}
                 value={typeOfAssistance}
               />
+              {requestTable === "financial_requests" ? (
+                <InfoRow
+                  label="Financial Request Type:"
+                  value={financialRequestTypeText || "—"}
+                />
+              ) : null}
               {coverageText ? (
                 <InfoRow label="Coverage:" value={coverageText} />
               ) : null}

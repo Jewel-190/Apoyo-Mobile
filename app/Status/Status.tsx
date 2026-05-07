@@ -37,6 +37,10 @@ const BADGE_PENDING = "#E8C6FF";
 const BADGE_PROGRESS = "#B9E3FF";
 const BADGE_ACTION = "#FFD59E";
 const BADGE_RESUBMITTED = "#FFE082";
+/** Request milestone before final approval (matches DB `for approval`). */
+const BADGE_FOR_APPROVAL = "#C8EDE9";
+/** Matches DB `scheduled` (e.g. payout / service date set). */
+const BADGE_SCHEDULED = "#D8E6FA";
 const BADGE_APPROVED = "#C8F1C8";
 const BADGE_DRAFT = "#D4D4D4";
 
@@ -53,9 +57,27 @@ const ICON_BURIAL = require("../../assets/images/Burial.png");
 const ICON_CREMATION = require("../../assets/images/Cremation.png");
 const ICON_COLOMBARIUM = require("../../assets/images/Colombarium.png");
 
-type FilterKey = "all" | "pending" | "progress" | "action" | "resubmitted" | "approved" | "draft";
+type FilterKey =
+  | "all"
+  | "pending"
+  | "progress"
+  | "action"
+  | "resubmitted"
+  | "forApproval"
+  | "scheduled"
+  /** Final DB `approved`; no chip — only listed under All. */
+  | "approvedFinal"
+  | "draft";
 type Category = "medical" | "financial" | "burial";
-type ServiceStatus = "Pending" | "In Progress" | "Action Required" | "Resubmitted" | "Approved" | "Draft";
+type ServiceStatus =
+  | "Pending"
+  | "In Progress"
+  | "Action Required"
+  | "Resubmitted"
+  | "For Approval"
+  | "Scheduled"
+  | "Approved"
+  | "Draft";
 
 type ApplicationItem = {
   id: string;
@@ -74,6 +96,8 @@ const REQUEST_STATUSES = [
   "in progress",
   "action required",
   "resubmitted",
+  "for approval",
+  "scheduled",
   "approved",
   // keep legacy compatibility
   "submitted",
@@ -82,15 +106,15 @@ const REQUEST_STATUSES = [
 // Normalize raw DB/cached status values to `ServiceStatus`
 function normalizeStatus(raw?: string): ServiceStatus {
   if (!raw) return "Pending";
-  const s = raw.toString().trim().toLowerCase();
+  const s = raw.toString().trim().toLowerCase().replace(/_/g, " ");
   if (s === "submitted" || s === "pending") return "Pending";
   if (s === "resubmitted") return "Resubmitted";
-  if (s === "in progress" || s === "in_progress" || s === "inprogress" || s === "processing") return "In Progress";
-  if (s === "action required" || s === "action_required" || s === "action") return "Action Required";
+  if (s === "in progress" || s === "inprogress" || s === "processing") return "In Progress";
+  if (s === "action required" || s === "action") return "Action Required";
+  if (s === "for approval") return "For Approval";
+  if (s === "scheduled") return "Scheduled";
   if (s === "approved" || s === "accepted") return "Approved";
   if (s === "draft") return "Draft";
-  // fallback: if it already matches one of our labels
-  if (s === "pending" ) return "Pending";
   return "Pending";
 }
 
@@ -104,6 +128,10 @@ function badgeColor(status: ServiceStatus) {
       return BADGE_ACTION;
     case "Resubmitted":
       return BADGE_RESUBMITTED;
+    case "For Approval":
+      return BADGE_FOR_APPROVAL;
+    case "Scheduled":
+      return BADGE_SCHEDULED;
     case "Approved":
       return BADGE_APPROVED;
     case "Draft":
@@ -111,6 +139,12 @@ function badgeColor(status: ServiceStatus) {
     default:
       return "#EEE";
   }
+}
+
+function badgeLabelColor(status: ServiceStatus): string {
+  if (status === "For Approval") return "#0D5C58";
+  if (status === "Scheduled") return "#2F4F7A";
+  return "#333";
 }
 
 function statusToFilter(status: ServiceStatus): Exclude<FilterKey, "all"> {
@@ -123,8 +157,12 @@ function statusToFilter(status: ServiceStatus): Exclude<FilterKey, "all"> {
       return "action";
     case "Resubmitted":
       return "resubmitted";
+    case "For Approval":
+      return "forApproval";
+    case "Scheduled":
+      return "scheduled";
     case "Approved":
-      return "approved";
+      return "approvedFinal";
     case "Draft":
       return "draft";
   }
@@ -601,10 +639,16 @@ export default function Status() {
             onPress={() => setActiveFilter("resubmitted")}
           />
           <Chip
-            active={activeFilter === "approved"}
-            label="Approved"
+            active={activeFilter === "forApproval"}
+            label="For approval"
             icon="checkmark-circle-outline"
-            onPress={() => setActiveFilter("approved")}
+            onPress={() => setActiveFilter("forApproval")}
+          />
+          <Chip
+            active={activeFilter === "scheduled"}
+            label="Scheduled"
+            icon="calendar-outline"
+            onPress={() => setActiveFilter("scheduled")}
           />
           <Chip
             active={activeFilter === "draft"}
@@ -727,8 +771,12 @@ export default function Status() {
                         return;
                       }
 
-                      // For submitted applications, go to status details
-                      if (a.status === "Approved") {
+                      // Post-verification monitoring (for approval → scheduled → approved)
+                      if (
+                        a.status === "For Approval" ||
+                        a.status === "Scheduled" ||
+                        a.status === "Approved"
+                      ) {
                         router.push({
                           pathname: "/Home/ApprovedAssistance",
                           params: {
@@ -744,7 +792,7 @@ export default function Status() {
                         return;
                       }
 
-                      // For non-draft/non-approved applications, go to status details
+                      // Other submitted applications → timeline
                       router.push({
                         pathname: ROUTE_TIMELINE,
                         params: {
@@ -771,7 +819,11 @@ export default function Status() {
                           { backgroundColor: badgeColor(a.status) },
                         ]}
                       >
-                        <Text style={styles.badgeText}>{a.status}</Text>
+                        <Text
+                          style={[styles.badgeText, { color: badgeLabelColor(a.status) }]}
+                        >
+                          {a.status}
+                        </Text>
                       </View>
                     </View>
 

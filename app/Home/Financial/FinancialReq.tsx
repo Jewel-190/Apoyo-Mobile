@@ -278,10 +278,18 @@ const removeTargetLabels: Record<string, string> = {
 
 export default function FinancialReq() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ serviceId?: string; requestId?: string }>();
+  const params = useLocalSearchParams<{
+    serviceId?: string;
+    requestId?: string;
+    financialRequestType?: string;
+  }>();
   // This screen is strictly for financial_requests; keep service_id canonical.
   const serviceId = "financial";
+  const routeServiceId = (params?.serviceId || "emergency-finance").toString();
+  const paramFinancialType = (params?.financialRequestType || "").toString().trim();
   const existingRequestId = params?.requestId;
+
+  const [financialRequestType, setFinancialRequestType] = useState(paramFinancialType);
 
   // Loading & network state
   const [isLoading, setIsLoading] = useState(true);
@@ -418,6 +426,19 @@ export default function FinancialReq() {
         } catch (e) {
           console.log("Failed to load user profile:", e);
         }
+
+        if (!paramFinancialType) {
+          try {
+            const infoRaw = await AsyncStorage.getItem(`apoyo_requestinfo_${routeServiceId}`);
+            if (infoRaw) {
+              const parsed = JSON.parse(infoRaw) as { financialRequestType?: string };
+              const fromStore = (parsed?.financialRequestType || "").toString().trim();
+              if (fromStore) setFinancialRequestType(fromStore);
+            }
+          } catch {
+            /* ignore bad JSON */
+          }
+        }
       }
 
       // Only load a draft when an explicit requestId param is provided
@@ -434,6 +455,9 @@ export default function FinancialReq() {
         if (existingRequest && !error) {
           setRequestId(existingRequest.id);
           setAdditionalInfo(existingRequest.additional_info || "");
+          const rowType = (existingRequest as { financial_request_type?: string | null })
+            .financial_request_type;
+          if (rowType) setFinancialRequestType(rowType);
 
           const paths = await listRequestAttachments(REQUEST_TABLE, existingRequest.id);
           if (paths.letter) {
@@ -474,6 +498,7 @@ export default function FinancialReq() {
         user_id: userId,
         status: "draft",
         service_id: serviceId,
+        financial_request_type: financialRequestType || null,
       })
       .select("id")
       .single();
@@ -853,6 +878,37 @@ export default function FinancialReq() {
             <Ionicons name="cloud-upload-outline" size={14} color="#B7C2C2" style={{ marginTop: 1 }} />
           )}
           <Text style={styles.sectionNote}>{isSaving ? "Saving..." : "Your files are auto-saved"}</Text>
+        </View>
+
+        <Text style={styles.reqLabel}>
+          Type of Financial Assistance<Text style={styles.reqStar}> *</Text>
+        </Text>
+
+        <View
+          style={[
+            styles.coverageCard,
+            {
+              borderColor: financialRequestType ? "#CDEBEB" : "#F1D1D1",
+              backgroundColor: financialRequestType ? "#F2FCFC" : "#FFF5F5",
+            },
+          ]}
+        >
+          <Text
+            style={[
+              styles.coverageTitle,
+              { color: financialRequestType ? TEAL : DANGER },
+            ]}
+          >
+            Selected Request Type
+          </Text>
+          <Text
+            style={[
+              styles.coverageValue,
+              { color: financialRequestType ? TEAL : DANGER },
+            ]}
+          >
+            {financialRequestType || "No selection. Please choose in Financial Details."}
+          </Text>
         </View>
 
         {requiredStepOrder.map((stepKey) => {
@@ -1246,6 +1302,24 @@ const styles = StyleSheet.create({
     fontWeight: "400",
     fontSize: 10.8,
     color: "#B7C2C2",
+  },
+  coverageCard: {
+    marginTop: 10,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderWidth: 1,
+  },
+  coverageTitle: {
+    fontFamily: FONT,
+    fontWeight: "700",
+    fontSize: 11.5,
+  },
+  coverageValue: {
+    marginTop: 3,
+    fontFamily: FONT,
+    fontWeight: "600",
+    fontSize: 12,
   },
 
   reqLabel: {

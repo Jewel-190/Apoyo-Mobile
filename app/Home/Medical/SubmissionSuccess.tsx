@@ -1,4 +1,4 @@
-// app/Medical/SubmissionSuccess.tsx
+// app/Home/Medical/SubmissionSuccess.tsx
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import React, { useEffect, useMemo, useState } from "react";
@@ -17,10 +17,6 @@ import { supabase } from "../../../lib/supabase";
 
 /* ===== FONT RULE ===== */
 const FONT_REGULAR = Platform.select({
-  ios: "SF Pro Rounded",
-  android: "System",
-})!;
-const FONT_MEDIUM = Platform.select({
   ios: "SF Pro Rounded",
   android: "System",
 })!;
