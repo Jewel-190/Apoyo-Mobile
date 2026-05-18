@@ -108,6 +108,7 @@ create index if not exists user_notification_is_read_idx
   on public.user_notification (is_read, created_at desc);
 
 -- Updated-at trigger.
+drop trigger if exists trg_notifications_updated_at on public.notifications;
 drop trigger if exists trg_notifications_updated_at on public.user_notification;
 drop trigger if exists trg_user_notification_updated_at on public.user_notification;
 

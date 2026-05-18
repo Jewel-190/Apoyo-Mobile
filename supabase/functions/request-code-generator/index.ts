@@ -22,6 +22,7 @@ const SERVICE_ALIASES: Record<string, SupportedService> = {
   hospitalizationreq: "hospitalizationreq",
   hospitalization: "hospitalizationreq",
   hosp: "hospitalizationreq",
+  hospital: "hospitalizationreq",
   hospitalization_requests: "hospitalizationreq",
 
   treatmentreq: "treatmentreq",
@@ -32,21 +33,25 @@ const SERVICE_ALIASES: Record<string, SupportedService> = {
   medicalreq: "medicalreq",
   medical: "medicalreq",
   med: "medicalreq",
+  operations: "medicalreq",
   medical_requests: "medicalreq",
 
   financialreq: "financialreq",
   financial: "financialreq",
   fin: "financialreq",
+  "emergency-finance": "financialreq",
   financial_requests: "financialreq",
 
   monetaryreq: "monetaryreq",
   monetary: "monetaryreq",
   mon: "monetaryreq",
+  "burial-money": "monetaryreq",
   monetary_requests: "monetaryreq",
 
   burialreq: "burialreq",
   burial: "burialreq",
   bur: "burialreq",
+  "burial-site": "burialreq",
   burial_requests: "burialreq",
 
   cremationreq: "cremationreq",
@@ -66,9 +71,10 @@ type RequestCodePayload = {
   timestamp?: string;
 };
 
-function normalizeService(input: string): SupportedService | "" {
+function normalizeService(input: string): string {
   const key = (input || "").trim().toLowerCase();
-  return SERVICE_ALIASES[key] ?? "";
+  if (!key) return "";
+  return SERVICE_ALIASES[key] ?? key;
 }
 
 function parseTimestamp(value: unknown): Date {
@@ -111,14 +117,7 @@ Deno.serve(async (request: Request) => {
 
   const normalized = normalizeService(payload.serviceType || "");
   if (!normalized) {
-    return jsonResponse(
-      {
-        ok: false,
-        error: "Unsupported service type",
-        supported: SUPPORTED_SERVICES,
-      },
-      400
-    );
+    return jsonResponse({ ok: false, error: "serviceType is required" }, 400);
   }
 
   const ts = parseTimestamp(payload.timestamp);

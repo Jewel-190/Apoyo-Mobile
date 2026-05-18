@@ -13,7 +13,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { supabase } from "../../lib/supabase";
+import { supabase } from "@/AppCore/SupabaseClient";
 
 const { width: SCREEN_W } = Dimensions.get("window");
 

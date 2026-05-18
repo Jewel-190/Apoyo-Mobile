@@ -8,7 +8,6 @@ import {
   Image,
   Linking,
   Modal,
-  Platform,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -17,19 +16,26 @@ import {
   Text,
   View,
 } from "react-native";
+import { useAssistanceCatalog } from "@/AppCore/UseAssistanceCatalog";
+import { RequirementTipsDropdown } from "@/AppCore/RequirementTipsDropdown";
 import {
   getHomeRequirementLabelForAttachment,
-  getHomeRequirementTipsForAttachment,
-  RequirementTipItem,
-} from "../../lib/serviceRequirements";
-import { inferAttachmentName, RequestTableName } from "../../lib/requestAttachments";
-import { supabase } from "../../lib/supabase";
+  getHomeRequirementTips,
+  resolveAttachmentSlotKey,
+  type RequirementTipItem,
+} from "@/AppCore/ServiceRequirementFieldTypes";
+import { resolveServiceId } from "@/AppCore/CatalogLookupRuntime";
+import { inferAttachmentName } from "@/AppCore/AssistanceRequestAttachments";
+import { ASSISTANCE_REQUESTS_TABLE } from "@/AppCore/AssistanceRequestSql";
+import { supabase } from "@/AppCore/SupabaseClient";
+import { statusBadgeTheme } from "@/AppCore/RequestStatusPresentation";
+import { COLORS, FONT_FAMILY_ROUNDED } from "@/AppCore/Theme";
 
-const FONT = Platform.select({ ios: "SF Pro Rounded", android: "System" })!;
-const BG = "#FFFFFF";
-const TEXT_DARK = "#2B2B2B";
-const TEXT_MUTED = "#6E7E7E";
-const TEAL = "#0B8F8B";
+const FONT = FONT_FAMILY_ROUNDED;
+const BG = COLORS.white;
+const TEXT_DARK = COLORS.textDark;
+const TEXT_MUTED = COLORS.textMuted;
+const TEAL = COLORS.teal;
 const ORANGE = "#E45454";
 const ORANGE_SOFT = "#FFEDEE";
 const REQUEST_DOCS_BUCKET = "request-documents";
@@ -55,7 +61,9 @@ type ActionItem = {
   status: string;
   requiresUpdate: boolean;
   fileType: string;
+  slotKey: string | null;
   tips: RequirementTipItem[];
+  sampleDocumentImage?: string;
   label: string;
   path: string;
   reasonForAction: string;
@@ -67,19 +75,6 @@ type ActionItem = {
 function firstParam(v?: string | string[]) {
   if (Array.isArray(v)) return v[0] || "";
   return (v || "").toString();
-}
-
-function isRequestTableName(v: string): v is RequestTableName {
-  return [
-    "hospitalization_requests",
-    "treatment_requests",
-    "medical_requests",
-    "financial_requests",
-    "monetary_requests",
-    "burial_requests",
-    "cremation_requests",
-    "columbarium_requests",
-  ].includes(v);
 }
 
 function humanizeFileType(fileType: string) {
@@ -107,6 +102,8 @@ function sanitizeFileName(name: string) {
 }
 
 export default function ActionRequiredDetails() {
+  const { bundle } = useAssistanceCatalog();
+  const catalogReady = !!bundle?.runtime;
   const router = useRouter();
   const params = useLocalSearchParams<{
     id?: string | string[];
@@ -117,10 +114,6 @@ export default function ActionRequiredDetails() {
   }>();
 
   const requestId = firstParam(params?.id).trim();
-  const requestTableRaw = firstParam(params?.requestTable).trim();
-  const requestTable = isRequestTableName(requestTableRaw)
-    ? requestTableRaw
-    : null;
   const requestService = firstParam(params?.service).trim();
   const requestTitle = firstParam(params?.title).trim() || "Application";
 
@@ -131,14 +124,19 @@ export default function ActionRequiredDetails() {
   const [previewUri, setPreviewUri] = useState<string | null>(null);
   const [previewName, setPreviewName] = useState("");
   const [loadingPreview, setLoadingPreview] = useState(false);
-  const [openTipsByItem, setOpenTipsByItem] = useState<Record<string, boolean>>({});
-  const [openTipId, setOpenTipId] = useState<string | null>(null);
   const [samplePreviewOpen, setSamplePreviewOpen] = useState(false);
-  const [samplePreviewImage, setSamplePreviewImage] = useState<any>(null);
-  const [samplePreviewTitle, setSamplePreviewTitle] = useState("Sample Document");
+  const [samplePreviewUri, setSamplePreviewUri] = useState("");
+  const [samplePreviewTitle, setSamplePreviewTitle] = useState("Sample document");
+
+  const resolvedServiceId = useMemo(() => {
+    const sid = resolveServiceId(requestService);
+    if (sid) return sid;
+    const raw = requestService.trim();
+    return raw || null;
+  }, [requestService]);
 
   useEffect(() => {
-    if (!requestId || !requestTable) {
+    if (!requestId) {
       setIsLoading(false);
       return;
     }
@@ -147,17 +145,32 @@ export default function ActionRequiredDetails() {
 
     (async () => {
       try {
+        let serviceId = resolvedServiceId;
+        if (!serviceId) {
+          const { data: reqRow } = await supabase
+            .from("assistance_requests")
+            .select("service_id")
+            .eq("id", requestId)
+            .maybeSingle();
+          serviceId =
+            resolveServiceId(reqRow?.service_id ?? "") ??
+            (reqRow?.service_id ? String(reqRow.service_id) : null);
+        }
+
         const { data, error } = await supabase
           .from("request_attachments")
           .select("uid,file_type,path,status,reason_for_action,additional_reason")
-          .eq("request_table", requestTable)
-          .eq("request_uid", requestId)
+          .eq("assistance_request_id", requestId)
+          .eq("request_table", ASSISTANCE_REQUESTS_TABLE)
           .in("status", ["action_required", "resubmitted"])
           .order("created", { ascending: true });
 
         if (error) throw error;
 
         const rows = (data || []) as ActionAttachmentRow[];
+        const details = serviceId
+          ? bundle?.detailsByServiceId?.[serviceId]
+          : undefined;
 
         const next: ActionItem[] = await Promise.all(
           rows.map(async (row) => {
@@ -168,14 +181,25 @@ export default function ActionRequiredDetails() {
               ? await createSignedUrl(row.path, 3600)
               : null;
 
-            const sharedLabel = getHomeRequirementLabelForAttachment({
-              requestTable,
-              serviceId: requestService || null,
+            const slotKey = resolveAttachmentSlotKey({
+              serviceId,
               dbFileType: row.file_type,
             });
-            const tips = getHomeRequirementTipsForAttachment({
-              requestTable,
-              serviceId: requestService || null,
+
+            const tips =
+              slotKey && serviceId
+                ? getHomeRequirementTips({
+                    serviceId,
+                    requirementId: slotKey,
+                  })
+                : [];
+
+            const reqMeta = slotKey
+              ? details?.requirements?.find((r) => r.id === slotKey)
+              : undefined;
+
+            const sharedLabel = getHomeRequirementLabelForAttachment({
+              serviceId,
               dbFileType: row.file_type,
             });
 
@@ -184,7 +208,9 @@ export default function ActionRequiredDetails() {
               status: row.status,
               requiresUpdate,
               fileType: row.file_type,
+              slotKey,
               tips,
+              sampleDocumentImage: reqMeta?.sampleDocumentImage?.trim() || undefined,
               label: sharedLabel || humanizeFileType(row.file_type),
               path: row.path,
               reasonForAction:
@@ -219,7 +245,7 @@ export default function ActionRequiredDetails() {
     return () => {
       active = false;
     };
-  }, [requestId, requestService, requestTable]);
+  }, [requestId, requestService, resolvedServiceId, catalogReady, bundle]);
 
   const updatableItems = useMemo(
     () => items.filter((item) => item.requiresUpdate),
@@ -267,11 +293,10 @@ export default function ActionRequiredDetails() {
     }
   };
 
-  const toggleItemTips = (itemUid: string) => {
-    setOpenTipsByItem((prev) => ({
-      ...prev,
-      [itemUid]: !prev[itemUid],
-    }));
+  const openSamplePreview = (uri: string, title: string) => {
+    setSamplePreviewUri(uri);
+    setSamplePreviewTitle(title || "Sample document");
+    setSamplePreviewOpen(true);
   };
 
   const openExistingPreview = async (item: ActionItem) => {
@@ -328,7 +353,7 @@ export default function ActionRequiredDetails() {
   };
 
   const submitUpdates = async () => {
-    if (!requestId || !requestTable) return;
+    if (!requestId) return;
     if (!updatableItems.length) {
       Alert.alert("No pending updates", "There are no files that need updating.");
       return;
@@ -381,7 +406,7 @@ export default function ActionRequiredDetails() {
       }
 
       const { error: updateRequestError } = await supabase
-        .from(requestTable)
+        .from("assistance_requests")
         .update({
           status: "resubmitted",
           submitted_at: new Date().toISOString(),
@@ -463,17 +488,38 @@ export default function ActionRequiredDetails() {
                     /\.(png|jpe?g|gif|webp|bmp|heic|heif)$/i.test(item.newFile?.name || "");
                   const isPendingUpdate = item.requiresUpdate && !item.newFile;
                   const isResubmitted = !item.requiresUpdate;
-                  const hasTips = item.requiresUpdate && item.tips.length > 0;
-                  const itemTipsOpen = !!openTipsByItem[item.uid];
+                  const hasTipsPanel =
+                    item.requiresUpdate &&
+                    (item.tips.length > 0 || !!item.sampleDocumentImage?.trim());
+                  const resubmittedTheme = statusBadgeTheme("Resubmitted");
 
                   return (
                     <View key={item.uid} style={styles.itemBlock}>
                       <View style={styles.fieldLabelRow}>
                         <Text style={styles.fieldLabel}>{item.label}</Text>
                         {isResubmitted ? (
-                          <View style={styles.readyBadge}>
-                            <Ionicons name="checkmark-done" size={14} color="#2F9E44" />
-                            <Text style={styles.readyBadgeText}>Resubmitted</Text>
+                          <View
+                            style={[
+                              styles.statusPill,
+                              {
+                                borderColor: resubmittedTheme.bg,
+                                backgroundColor: resubmittedTheme.bg,
+                              },
+                            ]}
+                          >
+                            <Ionicons
+                              name="refresh-circle"
+                              size={14}
+                              color={resubmittedTheme.text}
+                            />
+                            <Text
+                              style={[
+                                styles.statusPillText,
+                                { color: resubmittedTheme.text },
+                              ]}
+                            >
+                              Resubmitted
+                            </Text>
                           </View>
                         ) : isPendingUpdate ? (
                           <View style={styles.pendingBadge}>
@@ -542,85 +588,13 @@ export default function ActionRequiredDetails() {
                         </Pressable>
                       </Pressable>
 
-                      {hasTips ? (
-                        <View style={styles.tipsWrap}>
-                          <Pressable
-                            onPress={() => toggleItemTips(item.uid)}
-                            style={({ pressed }) => [
-                              styles.tipsHeader,
-                              pressed && { opacity: 0.9 },
-                            ]}
-                          >
-                            <Text style={styles.tipsHeaderText}>Tips on Getting Requirements</Text>
-                            <Ionicons
-                              name={itemTipsOpen ? "chevron-up" : "chevron-down"}
-                              size={16}
-                              color="#8A9A9A"
-                            />
-                          </Pressable>
-
-                          {itemTipsOpen ? (
-                            <View style={styles.tipsBody}>
-                              {item.tips.map((tip) => {
-                                const tipScopedId = `${item.uid}-${tip.id}`;
-                                const tipExpanded = openTipId === tipScopedId;
-
-                                return (
-                                  <View key={tipScopedId} style={styles.tipCard}>
-                                    <Pressable
-                                      onPress={() =>
-                                        setOpenTipId((prev) =>
-                                          prev === tipScopedId ? null : tipScopedId
-                                        )
-                                      }
-                                      style={({ pressed }) => [
-                                        styles.tipHead,
-                                        pressed && { opacity: 0.9 },
-                                      ]}
-                                    >
-                                      <Text style={styles.tipTitle}>{tip.title}</Text>
-                                      <Ionicons
-                                        name={tipExpanded ? "chevron-up" : "chevron-down"}
-                                        size={16}
-                                        color="#9AA6A6"
-                                      />
-                                    </Pressable>
-
-                                    {tipExpanded ? (
-                                      <>
-                                        {tip.details ? (
-                                          <Text style={styles.tipText}>{tip.details}</Text>
-                                        ) : null}
-
-                                        {tip.image ? (
-                                          <Pressable
-                                            onPress={() => {
-                                              setSamplePreviewImage(tip.image);
-                                              setSamplePreviewTitle(
-                                                tip.title || "Sample Document"
-                                              );
-                                              setSamplePreviewOpen(true);
-                                            }}
-                                            style={({ pressed }) => [
-                                              styles.tipSampleWrap,
-                                              pressed && { opacity: 0.92 },
-                                            ]}
-                                          >
-                                            <Image
-                                              source={tip.image}
-                                              style={styles.tipSampleImage}
-                                              resizeMode="contain"
-                                            />
-                                          </Pressable>
-                                        ) : null}
-                                      </>
-                                    ) : null}
-                                  </View>
-                                );
-                              })}
-                            </View>
-                          ) : null}
-                        </View>
+                      {hasTipsPanel ? (
+                        <RequirementTipsDropdown
+                          tips={item.tips}
+                          sampleDocumentImage={item.sampleDocumentImage}
+                          sampleDocumentTitle="Sample document"
+                          onOpenSample={openSamplePreview}
+                        />
                       ) : null}
                     </View>
                   );
@@ -696,9 +670,9 @@ export default function ActionRequiredDetails() {
           </View>
 
           <Pressable style={styles.previewContent} onPress={() => {}}>
-            {samplePreviewImage ? (
+            {samplePreviewUri ? (
               <Image
-                source={samplePreviewImage}
+                source={{ uri: samplePreviewUri }}
                 style={styles.previewImage}
                 resizeMode="contain"
               />
@@ -874,6 +848,20 @@ const styles = StyleSheet.create({
     fontSize: 10,
     color: "#E45454",
   },
+  statusPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingVertical: 2,
+    paddingHorizontal: 8,
+  },
+  statusPillText: {
+    fontFamily: FONT,
+    fontWeight: "700",
+    fontSize: 10,
+  },
   readyBadge: {
     flexDirection: "row",
     alignItems: "center",
@@ -961,77 +949,6 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     fontSize: 10,
     color: TEAL,
-  },
-
-  tipsWrap: {
-    marginTop: 8,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: "#E5EFEF",
-    backgroundColor: "#F8FBFB",
-    overflow: "hidden",
-  },
-  tipsHeader: {
-    paddingVertical: 9,
-    paddingHorizontal: 10,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    backgroundColor: "#F2F8F8",
-  },
-  tipsHeaderText: {
-    fontFamily: FONT,
-    fontWeight: "700",
-    fontSize: 11,
-    color: TEAL,
-  },
-  tipsBody: {
-    padding: 10,
-    gap: 8,
-  },
-  tipCard: {
-    borderRadius: 9,
-    borderWidth: 1,
-    borderColor: "#E1E8E8",
-    backgroundColor: "#FFFFFF",
-    overflow: "hidden",
-  },
-  tipHead: {
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  tipTitle: {
-    flex: 1,
-    marginRight: 8,
-    fontFamily: FONT,
-    fontWeight: "700",
-    fontSize: 10.8,
-    color: TEXT_DARK,
-  },
-  tipText: {
-    paddingHorizontal: 10,
-    paddingBottom: 8,
-    fontFamily: FONT,
-    fontWeight: "400",
-    fontSize: 10.5,
-    lineHeight: 15,
-    color: TEXT_MUTED,
-  },
-  tipSampleWrap: {
-    borderTopWidth: 1,
-    borderTopColor: "#ECF1F1",
-    paddingTop: 8,
-    paddingHorizontal: 10,
-    paddingBottom: 10,
-  },
-  tipSampleImage: {
-    width: "100%",
-    height: 130,
-    borderRadius: 8,
-    backgroundColor: "#F4F7F7",
   },
 
   bottomBar: {

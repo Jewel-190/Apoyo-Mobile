@@ -14,11 +14,13 @@ import {
   Text,
   View,
 } from "react-native";
-import {
-  formatCaseStudyDateTimeDisplay,
-  formatDateLong,
-} from "../../lib/caseStudySchedule";
-import { supabase } from "../../lib/supabase";
+import { formatDateLong } from "@/AppCore/CaseStudySchedule";
+import { ASSISTANCE_REQUESTS_TABLE } from "@/AppCore/AssistanceRequestSql";
+import { buildPreflightChoiceLines } from "@/AppCore/PreflightSelections";
+import { statusBadgeThemeFromRaw } from "@/AppCore/RequestStatusPresentation";
+import { resolveServiceId } from "@/AppCore/CatalogLookupRuntime";
+import { useAssistanceCatalog } from "@/AppCore/UseAssistanceCatalog";
+import { supabase } from "@/AppCore/SupabaseClient";
 
 const FONT = "SF Pro Rounded";
 const TEXT_DARK = "#2B2B2B";
@@ -26,16 +28,11 @@ const MUTED = "#7B7B7B";
 const BORDER = "#E9EDED";
 const TEAL = "#0B8F8B";
 
-type Category = "medical" | "financial" | "burial";
-type RequestTableName =
-  | "hospitalization_requests"
-  | "treatment_requests"
-  | "medical_requests"
-  | "financial_requests"
-  | "monetary_requests"
-  | "burial_requests"
-  | "cremation_requests"
-  | "columbarium_requests";
+const INTERVIEW_VISIT_INSTRUCTION =
+  "Please visit City Hall during regular office hours to complete your case study interview.";
+
+const OFFICE_HOURS_DAYS = "Monday through Friday";
+const OFFICE_HOURS_TIME = "8:00 AM to 5:00 PM";
 
 type MonitoringPhase = "forApproval" | "scheduled" | "approved";
 
@@ -48,9 +45,8 @@ type RequestDetailsRow = {
   updated_at: string | null;
   submitted_at: string | null;
   additional_info: string | null;
-  case_study_date?: string | null;
-  coverage?: string | null;
   financial_request_type?: string | null;
+  payload?: unknown;
 };
 
 type ProfileRow = {
@@ -71,10 +67,8 @@ type AuditStatusLogRow = {
   changed_at: string;
 };
 
-const COVERAGE_TABLES = new Set<RequestTableName>([
-  "burial_requests",
-  "cremation_requests",
-]);
+const ASSISTANCE_REQUEST_ROW_SELECT =
+  "id,status,request_code,user_id,created_at,updated_at,submitted_at,additional_info,financial_request_type,payload";
 
 function firstParam(v?: string | string[]) {
   if (Array.isArray(v)) return (v[0] || "").toString();
@@ -111,52 +105,6 @@ function monitoringPhaseFromRaw(raw?: string | null): MonitoringPhase {
   return "forApproval";
 }
 
-function tableForService(
-  service?: string,
-  title?: string,
-  category?: Category
-): RequestTableName | null {
-  const s = (service || "").toLowerCase();
-  const t = (title || "").toLowerCase();
-
-  if (s === "hospitalization" || s === "hospital")
-    return "hospitalization_requests";
-  if (s === "treatment") return "treatment_requests";
-  if (s === "medical") return "medical_requests";
-  if (s === "financial") return "financial_requests";
-  if (s === "monetary") return "monetary_requests";
-  if (s === "burial-site" || s === "burial") return "burial_requests";
-  if (s === "cremation") return "cremation_requests";
-  if (s === "columbarium" || s === "colombarium")
-    return "columbarium_requests";
-
-  if (t.includes("hospitalization")) return "hospitalization_requests";
-  if (t.includes("treatment")) return "treatment_requests";
-  if (t.includes("monetary")) return "monetary_requests";
-  if (t.includes("financial")) return "financial_requests";
-  if (t.includes("cremation")) return "cremation_requests";
-  if (t.includes("columbarium") || t.includes("colombarium"))
-    return "columbarium_requests";
-  if (t.includes("burial")) return "burial_requests";
-
-  if (category === "medical") return "medical_requests";
-  if (category === "financial") return "financial_requests";
-  if (category === "burial") return "burial_requests";
-
-  return null;
-}
-
-function selectColumnsForTable(table: RequestTableName): string {
-  const base =
-    "id,status,request_code,user_id,created_at,updated_at,submitted_at,additional_info,case_study_date";
-  const withCoverage = COVERAGE_TABLES.has(table)
-    ? `${base},coverage`
-    : base;
-  return table === "financial_requests"
-    ? `${withCoverage},financial_request_type`
-    : withCoverage;
-}
-
 function formatDateTime(raw?: string | null) {
   if (!raw) return "—";
   const t = new Date(raw).getTime();
@@ -185,16 +133,26 @@ function buildDisplayName(p: ProfileRow | null): string {
   return parts.length ? parts.join(" ") : "—";
 }
 
-function statusBadgeColors(displayLabel: string): { bg: string; fg: string } {
-  const key = displayLabel.trim().toLowerCase();
-  if (key === "for approval") return { bg: "#C8EDE9", fg: "#0D5C58" };
-  if (key === "scheduled") return { bg: "#D8E6FA", fg: "#2F4F7A" };
-  if (key === "approved") return { bg: "#C8F1C8", fg: "#1F5D1F" };
-  return { bg: "#E8E8E8", fg: TEXT_DARK };
+
+function ApplicationNumberHighlight({ applicationId }: { applicationId: string }) {
+  const code = (applicationId || "").trim() || "—";
+  return (
+    <View style={styles.applicationNumberCard}>
+      <View style={styles.applicationNumberHeader}>
+        <Ionicons name="document-text-outline" size={20} color={TEAL} />
+        <Text style={styles.applicationNumberLabel}>Application number</Text>
+      </View>
+      <Text style={styles.applicationNumberValue} selectable>
+        {code}
+      </Text>
+      <Text style={styles.applicationNumberHint}>
+        Bring this number when you visit City Hall.
+      </Text>
+    </View>
+  );
 }
 
-function InterviewStepsCard({ applicationId }: { applicationId: string }) {
-  const code = (applicationId || "").trim() || "—";
+function InterviewStepsCard() {
   return (
     <View style={styles.stepsCard}>
       <View style={styles.stepsHeader}>
@@ -216,8 +174,7 @@ function InterviewStepsCard({ applicationId }: { applicationId: string }) {
         <Ionicons name="checkmark-circle" size={18} color="#06C1EC" />
         <Text style={styles.stepText}>
           <Text style={styles.stepBold}>Step 2: </Text>
-          Present your Application Number:{" "}
-          <Text style={styles.stepMono}>{code}</Text>
+          Present your application number shown above at the counter.
         </Text>
       </View>
       <View style={styles.stepRow}>
@@ -227,14 +184,12 @@ function InterviewStepsCard({ applicationId }: { applicationId: string }) {
           Bring one (1) original valid ID for verification.
         </Text>
       </View>
-      <Text style={styles.officeHours}>
-        Office hours: Monday – Friday, 8:00 AM to 5:00 PM.
-      </Text>
     </View>
   );
 }
 
 export default function ApprovedAssistance() {
+  useAssistanceCatalog();
   const router = useRouter();
   const params = useLocalSearchParams<{
     id?: string | string[];
@@ -252,16 +207,6 @@ export default function ApprovedAssistance() {
   }, [params?.id]);
   const requestTitle = firstParam(params?.title).trim() || "Assistance request";
   const requestService = firstParam(params?.service).trim();
-  const categoryRaw = firstParam(params?.category).toLowerCase();
-  const category =
-    categoryRaw === "medical" || categoryRaw === "financial" || categoryRaw === "burial"
-      ? (categoryRaw as Category)
-      : undefined;
-
-  const requestTable = useMemo(
-    () => tableForService(requestService, requestTitle, category),
-    [requestService, requestTitle, category]
-  );
 
   useEffect(() => {
     if (!requestId) return;
@@ -306,7 +251,7 @@ export default function ApprovedAssistance() {
   const loadRequestDetails = useCallback(async (opts?: { refresh?: boolean }) => {
     const refresh = opts?.refresh === true;
 
-    if (!requestId || !requestTable) {
+    if (!requestId) {
       setIsLoading(false);
       setIsRefreshing(false);
       setLoadError("No request context was provided.");
@@ -321,10 +266,9 @@ export default function ApprovedAssistance() {
     setLoadError(null);
 
     try {
-      const cols = selectColumnsForTable(requestTable);
       const { data, error } = await supabase
-        .from(requestTable)
-        .select(cols)
+        .from("assistance_requests")
+        .select(ASSISTANCE_REQUEST_ROW_SELECT)
         .eq("id", requestId)
         .maybeSingle();
 
@@ -352,7 +296,6 @@ export default function ApprovedAssistance() {
       const { data: auditData } = await supabase
         .from("audit_logs")
         .select("new_status,old_status,changed_at")
-        .eq("request_table", requestTable)
         .eq("request_id", requestId)
         .order("changed_at", { ascending: false })
         .limit(40);
@@ -372,8 +315,8 @@ export default function ApprovedAssistance() {
       const { data: attachmentData } = await supabase
         .from("request_attachments")
         .select("status")
-        .eq("request_table", requestTable)
-        .eq("request_uid", requestId);
+        .eq("assistance_request_id", requestId)
+        .eq("request_table", ASSISTANCE_REQUESTS_TABLE);
 
       const rowsAtt = (attachmentData || []) as { status: string | null }[];
       const stats = {
@@ -400,7 +343,7 @@ export default function ApprovedAssistance() {
       setIsLoading(false);
       setIsRefreshing(false);
     }
-  }, [requestId, requestTable]);
+  }, [requestId]);
 
   const onRefresh = useCallback(() => {
     void loadRequestDetails({ refresh: true });
@@ -425,15 +368,16 @@ export default function ApprovedAssistance() {
     "Pending assignment";
 
   const submittedAt = requestRow?.submitted_at || requestRow?.created_at;
-  const scheduledIso = (requestRow?.case_study_date || "").toString().trim();
-  const scheduledDisplay = formatCaseStudyDateTimeDisplay(
-    scheduledIso || null
-  );
 
-  const coverageText = (requestRow?.coverage || "").toString().trim();
-  const financialType = (requestRow?.financial_request_type || "")
-    .toString()
-    .trim();
+  const preflightChoicesText = useMemo(() => {
+    const sid = resolveServiceId(requestService);
+    if (!sid) return "";
+    const lines = buildPreflightChoiceLines(sid, {
+      payload: requestRow?.payload,
+      financialRequestType: requestRow?.financial_request_type ?? null,
+    });
+    return lines.map((l) => `${l.label}: ${l.value}`).join("\n");
+  }, [requestRow?.financial_request_type, requestRow?.payload, requestService]);
 
   const topTitle =
     phase === "approved"
@@ -460,17 +404,17 @@ export default function ApprovedAssistance() {
     phase === "approved"
       ? "Congratulations!"
       : phase === "scheduled"
-        ? "Your case study is scheduled"
+        ? "Your case study interview is scheduled"
         : "Almost there";
 
   const subhead =
     phase === "approved"
       ? "Your assistance request has been fully approved."
       : phase === "scheduled"
-        ? "Review the date and time below and follow the steps when you arrive."
+        ? "Visit City Hall during office hours and follow the steps below when you arrive."
         : "Your documents are verified. Please wait while staff completes final review.";
 
-  const badgeColors = statusBadgeColors(displayStatus);
+  const badgeColors = statusBadgeThemeFromRaw(displayStatus);
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -535,8 +479,8 @@ export default function ApprovedAssistance() {
             <View style={[styles.callout, styles.calloutSky]}>
               <Ionicons name="calendar-outline" size={22} color="#2F4F7A" />
               <Text style={styles.calloutText}>
-                Attend your case study interview on time. If you cannot make it, contact
-                the office as soon as possible using the details on file.
+                Please come during the office hours shown below. If you are unable to
+                visit, contact the assistance office as soon as possible.
               </Text>
             </View>
           ) : null}
@@ -554,20 +498,25 @@ export default function ApprovedAssistance() {
           {phase === "scheduled" ? (
             <View style={styles.scheduleHighlight}>
               <Text style={styles.scheduleLabel}>Interview date and time</Text>
-              <Text style={styles.scheduleValue}>
-                {scheduledIso ? scheduledDisplay : "—"}
-              </Text>
-              {!scheduledIso ? (
-                <Text style={styles.scheduleHint}>
-                  If this is blank, pull to refresh after the office confirms your slot.
-                </Text>
-              ) : null}
+              <Text style={styles.scheduleValue}>{INTERVIEW_VISIT_INSTRUCTION}</Text>
+              <View style={styles.officeHoursEmphasis}>
+                <View style={styles.officeHoursIconWrap}>
+                  <Ionicons name="time-outline" size={22} color={TEAL} />
+                </View>
+                <View style={styles.officeHoursTextCol}>
+                  <Text style={styles.officeHoursEmphasisLabel}>Office hours</Text>
+                  <Text style={styles.officeHoursDays}>{OFFICE_HOURS_DAYS}</Text>
+                  <Text style={styles.officeHoursTime}>{OFFICE_HOURS_TIME}</Text>
+                </View>
+              </View>
             </View>
           ) : null}
 
           {phase === "scheduled" ? (
-            <InterviewStepsCard applicationId={displayRequestCode} />
+            <ApplicationNumberHighlight applicationId={displayRequestCode} />
           ) : null}
+
+          {phase === "scheduled" ? <InterviewStepsCard /> : null}
 
           {/* Request summary */}
           <View style={styles.card}>
@@ -576,7 +525,10 @@ export default function ApprovedAssistance() {
               <Text
                 style={[
                   styles.statusBadge,
-                  { backgroundColor: badgeColors.bg, color: badgeColors.fg },
+                  {
+                    backgroundColor: badgeColors.bg,
+                    color: badgeColors.text,
+                  },
                 ]}
               >
                 {displayStatus}
@@ -629,17 +581,10 @@ export default function ApprovedAssistance() {
             <InfoRow label="Email" value={profileRow?.email?.trim() || "—"} />
           </View>
 
-          {financialType ? (
+          {preflightChoicesText ? (
             <View style={styles.card}>
-              <Text style={styles.sectionTitle}>Financial details</Text>
-              <Text style={styles.additionalInfoText}>{financialType}</Text>
-            </View>
-          ) : null}
-
-          {coverageText ? (
-            <View style={styles.card}>
-              <Text style={styles.sectionTitle}>Coverage</Text>
-              <Text style={styles.additionalInfoText}>{coverageText}</Text>
+              <Text style={styles.sectionTitle}>Application choices</Text>
+              <Text style={styles.additionalInfoText}>{preflightChoicesText}</Text>
             </View>
           ) : null}
 
@@ -826,16 +771,94 @@ const styles = StyleSheet.create({
   },
   scheduleValue: {
     fontFamily: FONT,
-    fontSize: 18,
-    fontWeight: "700",
+    fontSize: 14,
+    fontWeight: "600",
     color: TEXT_DARK,
+    lineHeight: 20,
   },
-  scheduleHint: {
-    marginTop: 8,
+  officeHoursEmphasis: {
+    marginTop: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 14,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: "#9AD4D2",
+    backgroundColor: "#FFFFFF",
+  },
+  officeHoursIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: "#E8F6F5",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  officeHoursTextCol: {
+    flex: 1,
+    gap: 2,
+  },
+  officeHoursEmphasisLabel: {
     fontFamily: FONT,
     fontSize: 11,
+    fontWeight: "700",
+    color: TEAL,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  officeHoursDays: {
+    fontFamily: FONT,
+    fontSize: 17,
+    fontWeight: "800",
+    color: TEXT_DARK,
+    lineHeight: 22,
+  },
+  officeHoursTime: {
+    fontFamily: FONT,
+    fontSize: 20,
+    fontWeight: "800",
+    color: TEAL,
+    lineHeight: 24,
+  },
+
+  applicationNumberCard: {
+    borderRadius: 14,
+    padding: 16,
+    borderWidth: 2,
+    borderColor: TEAL,
+    backgroundColor: "#F2FBFA",
+    gap: 8,
+  },
+  applicationNumberHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  applicationNumberLabel: {
+    fontFamily: FONT,
+    fontSize: 12,
+    fontWeight: "700",
+    color: TEAL,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  applicationNumberValue: {
+    fontFamily: Platform.select({ ios: "Menlo", android: "monospace" }) ?? "monospace",
+    fontSize: 22,
+    fontWeight: "800",
+    color: TEXT_DARK,
+    letterSpacing: 0.5,
+    textAlign: "center",
+    paddingVertical: 6,
+  },
+  applicationNumberHint: {
+    fontFamily: FONT,
+    fontSize: 11.5,
+    fontWeight: "500",
     color: MUTED,
-    lineHeight: 15,
+    textAlign: "center",
+    lineHeight: 16,
   },
 
   stepsCard: {
@@ -881,21 +904,6 @@ const styles = StyleSheet.create({
   stepBold: {
     fontWeight: "700",
     color: TEXT_DARK,
-  },
-  stepMono: {
-    fontFamily: Platform.select({ ios: "Menlo", android: "monospace" }) ?? "monospace",
-    fontWeight: "700",
-    color: TEAL,
-  },
-  officeHours: {
-    fontFamily: FONT,
-    fontSize: 11,
-    fontWeight: "600",
-    color: MUTED,
-    backgroundColor: "#FFFFFFAA",
-    padding: 10,
-    borderRadius: 10,
-    overflow: "hidden",
   },
 
   card: {

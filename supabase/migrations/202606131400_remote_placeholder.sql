@@ -1,0 +1,2 @@
+-- Remote-only migration placeholder (ApoyoAdmin: registered_voters barangay constraint).
+-- Intentionally no-op.

@@ -296,6 +296,9 @@ create policy "Users can update own notifications"
   using ("user" = auth.uid())
   with check ("user" = auth.uid());
 
+-- Remote may already define this RPC with a different OUT row type; replace requires drop first.
+drop function if exists public.get_latest_notifications_for_user(uuid, integer);
+
 create or replace function public.get_latest_notifications_for_user(
   p_user_id uuid,
   p_limit integer default 50

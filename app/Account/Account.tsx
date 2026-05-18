@@ -18,7 +18,7 @@ import {
   View,
 } from "react-native";
 import BottomNavBar, { NAV_TOTAL_HEIGHT } from "../../components/BottomNavBar";
-import { supabase } from "../../lib/supabase";
+import { supabase } from "@/AppCore/SupabaseClient";
 
 const TEAL = "#0B8F8B";
 const TEXT_DARK = "#2B2B2B";

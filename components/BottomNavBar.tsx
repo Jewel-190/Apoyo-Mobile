@@ -2,9 +2,10 @@ import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect } from "@react-navigation/native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter, usePathname } from "expo-router";
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useRef, useState } from "react";
 import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
-import { supabase } from "../lib/supabase";
+import { supabase } from "@/AppCore/SupabaseClient";
+import { useSingleFlight } from "@/AppCore/UseInteractionGuard";
 
 const TEAL_DARK = "#07807C";
 const ACTIVE_PILL = "#6FB8B5";
@@ -23,6 +24,20 @@ export const IOS_SAFE_EXTRA = Platform.OS === "ios" ? 18 : 0;
 export const NAV_TOTAL_HEIGHT = NAV_BAR_HEIGHT + IOS_SAFE_EXTRA;
 
 export type TabKey = "home" | "status" | "notification" | "account";
+
+function normalizePath(path: string): string {
+  return path.replace(/\/+$/, "").trim().toLowerCase() || "/";
+}
+
+/** True when the user is already on this tab's root screen. */
+function isTabRouteActive(pathname: string, route: string): boolean {
+  const current = normalizePath(pathname);
+  const target = normalizePath(route);
+  if (current === target) return true;
+  const leaf = target.split("/").filter(Boolean).pop();
+  if (!leaf) return false;
+  return current.endsWith(`/${leaf}`) || current === `/${leaf}`;
+}
 
 const TABS: {
   key: TabKey;
@@ -48,21 +63,36 @@ type Props = {
 export default function BottomNavBar({ activeTab, onBeforeNavigate, maskColor = "#FFFFFF" }: Props) {
   const router = useRouter();
   const pathname = usePathname();
+  const lastNavAtRef = useRef(0);
+  const { inFlight: tabNavBusy, run: runTabNav } = useSingleFlight();
   const [hasUnreadNotification, setHasUnreadNotification] = useState(
     unreadNotificationCache
   );
 
   const currentTab =
     activeTab ??
-    TABS.find((t) => pathname.startsWith(t.route))?.key ??
+    TABS.find((t) => isTabRouteActive(pathname, t.route))?.key ??
     "home";
 
-  const handlePress = (tab: typeof TABS[number]) => {
-    if (onBeforeNavigate && !onBeforeNavigate(tab.key, tab.route)) {
-      return; // Navigation prevented by callback
-    }
-    router.push(tab.route as any);
-  };
+  const handlePress = useCallback(
+    (tab: (typeof TABS)[number]) => {
+      if (tabNavBusy) return;
+      if (isTabRouteActive(pathname, tab.route)) return;
+
+      const now = Date.now();
+      if (now - lastNavAtRef.current < 400) return;
+      lastNavAtRef.current = now;
+
+      void runTabNav(async () => {
+        if (onBeforeNavigate && !onBeforeNavigate(tab.key, tab.route)) {
+          return;
+        }
+        if (isTabRouteActive(pathname, tab.route)) return;
+        router.replace(tab.route as never);
+      });
+    },
+    [onBeforeNavigate, pathname, router, runTabNav, tabNavBusy]
+  );
 
   const loadUnreadNotificationState = useCallback(async () => {
     try {
@@ -104,6 +134,7 @@ export default function BottomNavBar({ activeTab, onBeforeNavigate, maskColor = 
               label={tab.label}
               icon={tab.icon}
               active={currentTab === tab.key}
+              disabled={tabNavBusy}
               showUnreadBadge={tab.key === "notification" && showNotificationBadge}
               onPress={() => handlePress(tab)}
             />
@@ -118,17 +149,23 @@ function TabButton({
   label,
   icon,
   active,
+  disabled,
   showUnreadBadge,
   onPress,
 }: {
   label: string;
   icon: keyof typeof Ionicons.glyphMap;
   active?: boolean;
+  disabled?: boolean;
   showUnreadBadge?: boolean;
   onPress: () => void;
 }) {
   return (
-    <Pressable onPress={onPress} style={styles.tabBtn}>
+    <Pressable
+      onPress={onPress}
+      disabled={disabled}
+      style={[styles.tabBtn, disabled && styles.tabBtnDisabled]}
+    >
       {({ pressed }) => (
         <>
           {showUnreadBadge ? (
@@ -219,6 +256,9 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     width: 76,
     height: 58,
+  },
+  tabBtnDisabled: {
+    opacity: 0.65,
   },
   tabUnreadBadge: {
     position: "absolute",

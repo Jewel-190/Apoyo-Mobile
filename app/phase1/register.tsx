@@ -24,7 +24,19 @@ import DateTimePicker, {
 import * as ImagePicker from "expo-image-picker";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { Ionicons } from "@expo/vector-icons";
-import { supabase } from "../../lib/supabase";
+import { fetchBarangays, type BarangayOption } from "@/AppCore/Barangays";
+import { validateRegistrationEmailFormat } from "@/AppCore/EmailValidation";
+import {
+  formatRegisteredVoterId,
+  isValidRegisteredVoterId,
+  REGISTERED_VOTER_ID_MAX_LENGTH,
+  REGISTERED_VOTER_ID_PLACEHOLDER,
+} from "@/AppCore/RegisteredVoterId";
+import {
+  REGISTRATION_VOTER_REGISTRY_MISMATCH_MESSAGE,
+  verifyRegisteredVoterForRegistration,
+} from "@/AppCore/RegisteredVoterVerification";
+import { supabase } from "@/AppCore/SupabaseClient";
 
 // Imports & constants: React, navigation, storage, RN components and shared constants
 const { width: SCREEN_W } = Dimensions.get("window");
@@ -34,6 +46,7 @@ const BORDER = "#CFCFCF";
 const SUB = "#8B8B8B";
 const DARK = "#2B2B2B";
 const RED = "#E23B3B";
+const LIGHT_RED = "#E88787";
 
 const FONT = Platform.select({ ios: "SF Pro Rounded", android: "System" })!;
 const SUFFIX_OPTIONS = ["", "Jr.", "Sr.", "II", "III", "IV"];
@@ -41,84 +54,6 @@ const SEX_OPTIONS = [
   { label: "Male", value: "M" as const },
   { label: "Female", value: "F" as const },
 ];
-const BARANGAY_OPTIONS = [
-  "Burol Main",
-  "Burol I",
-  "Burol II",
-  "Burol III",
-  "Datu Esmael (Bago-a-Ingud)",
-  "Emmanuel Bergado I",
-  "Emmanuel Bergado II",
-  "Fatima I",
-  "Fatima II",
-  "Fatima III",
-  "H-2 (Santa Veronica)",
-  "Langkaan I",
-  "Langkaan II",
-  "Luzviminda I",
-  "Luzviminda II",
-  "Paliparan I",
-  "Paliparan II",
-  "Paliparan III",
-  "Sabang",
-  "Salawag",
-  "Saint Peter I",
-  "Saint Peter II",
-  "Salitran I",
-  "Salitran II",
-  "Salitran III",
-  "Salitran IV",
-  "Sampaloc I",
-  "Sampaloc II",
-  "Sampaloc III",
-  "Sampaloc IV",
-  "Sampaloc V",
-  "San Agustin I",
-  "San Agustin II",
-  "San Agustin III",
-  "San Andres I",
-  "San Andres II",
-  "San Antonio De Padua I",
-  "San Antonio De Padua II",
-  "San Dionisio",
-  "San Esteban",
-  "San Francisco I",
-  "San Francisco II",
-  "San Isidro Labrador I",
-  "San Isidro Labrador II",
-  "San Jose",
-  "San Juan",
-  "San Lorenzo Ruiz I",
-  "San Lorenzo Ruiz II",
-  "San Luis I",
-  "San Luis II",
-  "San Manuel I",
-  "San Manuel II",
-  "San Mateo",
-  "San Miguel I",
-  "San Miguel II",
-  "San Nicolas I",
-  "San Nicolas II",
-  "San Roque",
-  "San Simon",
-  "Santa Cristina I",
-  "Santa Cristina II",
-  "Santa Cruz I",
-  "Santa Cruz II",
-  "Santa Fe",
-  "Santa Lucia",
-  "Santa Maria",
-  "Santo Cristo",
-  "Santo Nino I",
-  "Santo Nino II",
-  "Victoria Reyes",
-  "Zone I",
-  "Zone I-B",
-  "Zone II",
-  "Zone III",
-  "Zone IV",
-];
-
 // sanitizeName: clean input to letters/spaces and title-case each word
 function sanitizeName(raw: string) {
   const cleaned = raw.replace(/[^a-zA-Z\s'-]/g, "");
@@ -151,6 +86,21 @@ function normalizeMobile(raw: string) {
     return `+63 ${part1} ${part2} ${part3}`;
   }
   return "";
+}
+
+/** Earliest selectable birth year (platform default is ~1970 if minimumDate is omitted). */
+const BIRTH_DATE_MIN = new Date(1900, 0, 1);
+
+function birthDateMax(): Date {
+  const today = new Date();
+  return new Date(today.getFullYear(), today.getMonth(), today.getDate());
+}
+
+function clampBirthDate(date: Date): Date {
+  const max = birthDateMax();
+  if (date.getTime() < BIRTH_DATE_MIN.getTime()) return new Date(BIRTH_DATE_MIN);
+  if (date.getTime() > max.getTime()) return max;
+  return date;
 }
 
 function formatBirthDateValue(date: Date) {
@@ -188,9 +138,8 @@ function isValidBirthDate(value: string) {
   const candidate = parseBirthDateValue(value);
   if (!candidate) return false;
 
-  const today = new Date();
-  const todayDateOnly = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-  return candidate <= todayDateOnly;
+  const max = birthDateMax();
+  return candidate >= BIRTH_DATE_MIN && candidate <= max;
 }
 
 /* ---------- Supabase helpers (prep only) ---------- */
@@ -307,20 +256,22 @@ async function insertUserProfile(payload: {
   address?: string | null;
   birth_date?: string | null;
   sex?: string | null;
+  registered_voter_id: string;
 }) {
   try {
     const { data, error } = await supabase.rpc("finalize_registration_profile", {
       p_attempt_token: payload.attempt_token,
       p_first_name: payload.first_name,
-      p_middle_name: payload.middle_name ?? null,
+      p_middle_name: payload.middle_name ?? "",
       p_last_name: payload.last_name,
-      p_suffix: payload.suffix ?? null,
+      p_suffix: payload.suffix ?? "",
       p_contact_number: payload.contact_number,
       p_email: payload.email,
-      p_voter_id_number: payload.voter_id_number ?? null,
-      p_address: payload.address ?? null,
-      p_birth_date: payload.birth_date ?? null,
-      p_sex: payload.sex ?? null,
+      p_voter_id_number: payload.voter_id_number ?? "",
+      p_address: payload.address ?? "",
+      p_birth_date: payload.birth_date ?? "",
+      p_sex: payload.sex ?? "",
+      p_registered_voter_id: payload.registered_voter_id,
     });
 
     return { data, error };
@@ -350,6 +301,23 @@ function mapFinalizeRegistrationError(raw: unknown): string {
   if (lower.includes("unauthorized")) {
     return "Unable to verify your session. Please try again.";
   }
+  if (lower.includes("registered voter verification is required")) {
+    return "Please complete voter verification on the first step before continuing.";
+  }
+  if (
+    lower.includes("do not match the registered voter") ||
+    lower.includes("voter id number does not match") ||
+    lower.includes("already linked to this voter") ||
+    lower.includes("registration_voter_registry_mismatch")
+  ) {
+    return REGISTRATION_VOTER_REGISTRY_MISMATCH_MESSAGE;
+  }
+  if (lower.includes("voter id number must use the full format")) {
+    return "Voter's ID Number must use the full format 0000-00000-0000000000000-0.";
+  }
+  if (lower.includes("invalid registered voter reference")) {
+    return "Voter verification expired. Please go back to the first step and try again.";
+  }
   if (__DEV__ && msg) {
     return msg;
   }
@@ -358,9 +326,11 @@ function mapFinalizeRegistrationError(raw: unknown): string {
 
 async function checkEmailExists(email: string) {
   try {
-    const { data, error } = await supabase.from("users").select("id").eq("email", email).limit(1);
+    const { data, error } = await supabase.rpc("is_registration_email_available", {
+      p_email: email.trim().toLowerCase(),
+    });
     if (error) return { exists: false, error };
-    return { exists: (data?.length ?? 0) > 0, error: null };
+    return { exists: data === false, error: null };
   } catch (err) {
     return { exists: false, error: err };
   }
@@ -379,8 +349,10 @@ export default function Register() {
   const [middleName, setMiddleName] = useState("");
   const [noMiddle, setNoMiddle] = useState(false);
   const [lastName, setLastName] = useState("");
-  const [barangay, setBarangay] = useState("");
+  const [selectedBarangay, setSelectedBarangay] = useState<BarangayOption | null>(null);
   const [barangayOpen, setBarangayOpen] = useState(false);
+  const [barangayOptions, setBarangayOptions] = useState<BarangayOption[]>([]);
+  const [barangaysError, setBarangaysError] = useState("");
   const [email, setEmail] = useState("");
   const [voterIdNumber, setVoterIdNumber] = useState("");
   const [birthDate, setBirthDate] = useState("");
@@ -393,6 +365,36 @@ export default function Register() {
   const [mobile, setMobile] = useState("");
   const [mpin, setMpin] = useState("");
   const [registrationAttemptToken, setRegistrationAttemptToken] = useState("");
+  /** Carousel 3: contact (mobile + email), then verify after MPIN. */
+  const [step2Phase, setStep2Phase] = useState<"contact" | "verify">("contact");
+
+  const loadBarangays = useCallback(async () => {
+    setBarangaysError("");
+    try {
+      const rows = await fetchBarangays();
+      setBarangayOptions(rows);
+      setSelectedBarangay((prev) => {
+        if (!prev) return prev;
+        return rows.find((r) => r.id === prev.id) ?? null;
+      });
+    } catch (err) {
+      const message =
+        err && typeof err === "object" && "message" in err && typeof err.message === "string"
+          ? err.message
+          : "Unable to load barangays. Check your connection and try again.";
+      setBarangaysError(message);
+      setBarangayOptions([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadBarangays();
+  }, [loadBarangays]);
+
+  useEffect(() => {
+    setVoterRegistryError("");
+    setVerifiedRegisteredVoterId(null);
+  }, [firstName, middleName, lastName, suffix, noMiddle, birthDate, sex, selectedBarangay]);
 
   const [idImageUri, setIdImageUri] = useState<string | null>(null);
   const [idImageBase64, setIdImageBase64] = useState<string | null>(null);
@@ -403,6 +405,8 @@ export default function Register() {
   const cameraRef = useRef<React.ComponentRef<typeof CameraView> | null>(null);
 
   const [emailExistsError, setEmailExistsError] = useState("");
+  const [voterRegistryError, setVoterRegistryError] = useState("");
+  const [verifiedRegisteredVoterId, setVerifiedRegisteredVoterId] = useState<string | null>(null);
 
   // UI state: flags for validation, suffix modal and invalid input tracking
   const [attempted, setAttempted] = useState(false);
@@ -412,15 +416,15 @@ export default function Register() {
   const emailError = useMemo(() => {
     const t = email.trim();
     if (!t) return "";
-    if (!t.includes("@")) return "Email must contain @";
-    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(t)) return "Enter a valid email";
-    return "";
+    return validateRegistrationEmailFormat(t);
   }, [email]);
 
   const voterIdError = useMemo(() => {
     const t = voterIdNumber.trim();
     if (!t) return "";
-    if (!/^\d+$/.test(t)) return "Voter's ID Number must contain numbers only";
+    if (!isValidRegisteredVoterId(t)) {
+      return `Use the full format ${REGISTERED_VOTER_ID_PLACEHOLDER}`;
+    }
     return "";
   }, [voterIdNumber]);
 
@@ -437,36 +441,47 @@ export default function Register() {
     return "";
   }, [sex]);
 
-  const canCreate = useMemo(() => {
+  const canNextFromStart = useMemo(() => {
     if (!firstName.trim()) return false;
     if (!lastName.trim()) return false;
     if (!birthDate.trim()) return false;
     if (birthDateError) return false;
     if (!sex) return false;
     if (sexError) return false;
-    if (!email.trim()) return false;
-    if (emailError) return false;
     if (!noMiddle && !middleName.trim()) return false;
+    if (!selectedBarangay) return false;
+    if (!voterIdNumber.trim()) return false;
+    if (voterIdError) return false;
     return true;
-  }, [firstName, lastName, birthDate, birthDateError, sex, sexError, email, emailError, noMiddle, middleName]);
+  }, [
+    firstName,
+    lastName,
+    birthDate,
+    birthDateError,
+    sex,
+    sexError,
+    noMiddle,
+    middleName,
+    selectedBarangay,
+    voterIdNumber,
+    voterIdError,
+  ]);
 
   const composedAddress = useMemo(() => {
     const housePart = houseUnit.trim().replace(/\s+/g, " ");
     const streetPart = streetLine.trim().replace(/\s+/g, " ");
     const cityPart = "Dasmariñas, Cavite";
 
-    if (!housePart || !streetPart || !barangay) return "";
-    return `${housePart}, ${streetPart}, ${barangay}, ${cityPart}`;
-  }, [houseUnit, streetLine, barangay]);
+    const barangayName = selectedBarangay?.name ?? "";
+    if (!housePart || !streetPart || !barangayName) return "";
+    return `${housePart}, ${streetPart}, ${barangayName}, ${cityPart}`;
+  }, [houseUnit, streetLine, selectedBarangay]);
 
   const canNextFromAdditional = useMemo(() => {
-    if (!voterIdNumber.trim()) return false;
-    if (voterIdError) return false;
-    if (!barangay.trim()) return false;
     if (!houseUnit.trim()) return false;
     if (!streetLine.trim()) return false;
     return true;
-  }, [voterIdNumber, voterIdError, barangay, houseUnit, streetLine]);
+  }, [houseUnit, streetLine]);
 
   const toggleNoMiddle = () => {
     setNoMiddle((v) => {
@@ -478,7 +493,7 @@ export default function Register() {
 
   const openBirthDatePicker = () => {
     const parsed = parseBirthDateValue(birthDate);
-    setBirthDateDraft(parsed || new Date(2000, 0, 1));
+    setBirthDateDraft(clampBirthDate(parsed || new Date(2000, 0, 1)));
     setBirthDatePickerOpen(true);
   };
 
@@ -489,46 +504,46 @@ export default function Register() {
     if (Platform.OS === "android") {
       setBirthDatePickerOpen(false);
       if (event.type === "set" && selectedDate) {
-        setBirthDate(formatBirthDateValue(selectedDate));
+        setBirthDate(formatBirthDateValue(clampBirthDate(selectedDate)));
       }
       return;
     }
 
     if (selectedDate) {
-      setBirthDateDraft(selectedDate);
+      setBirthDateDraft(clampBirthDate(selectedDate));
     }
   };
 
   const applyBirthDateFromIosPicker = () => {
-    setBirthDate(formatBirthDateValue(birthDateDraft));
+    setBirthDate(formatBirthDateValue(clampBirthDate(birthDateDraft)));
     setBirthDatePickerOpen(false);
   };
 
-  // onCreate: validate names/barangay/email, store full name and email, then advance
-  const onCreate = async () => {
+  const onNextFromStart = async () => {
     setAttempted(true);
-    if (!canCreate) return;
+    setVoterRegistryError("");
+    if (!canNextFromStart || !selectedBarangay || (sex !== "M" && sex !== "F")) return;
 
-    setEmailExistsError("");
-    const existsCheck = await checkEmailExists(email.trim());
-    if (existsCheck.error) {
-      setEmailExistsError("Unable to verify email. Try again.");
-      return;
-    }
-    if (existsCheck.exists) {
-      setEmailExistsError("Email is already registered.");
-      return;
-    }
+    const formattedVoterId = formatRegisteredVoterId(voterIdNumber.trim());
+    setVoterIdNumber(formattedVoterId);
 
-    const attemptRes = await supabase.rpc("begin_registration_attempt", {
-      p_email: email.trim().toLowerCase(),
+    const verification = await verifyRegisteredVoterForRegistration({
+      firstName: firstName.trim(),
+      middleName: noMiddle ? "" : middleName.trim(),
+      lastName: lastName.trim(),
+      suffix: suffix.trim(),
+      birthDate: birthDate.trim(),
+      sex,
+      barangayId: selectedBarangay.id,
+      voterIdNumber: formattedVoterId,
     });
-    if (attemptRes.error || !attemptRes.data) {
-      setEmailExistsError("Unable to start registration. Please try again.");
+
+    if (!verification.matched || !verification.registeredVoterId) {
+      setVoterRegistryError(verification.message ?? REGISTRATION_VOTER_REGISTRY_MISMATCH_MESSAGE);
       return;
     }
 
-    setRegistrationAttemptToken(String(attemptRes.data));
+    setVerifiedRegisteredVoterId(verification.registeredVoterId);
 
     const fullName = [firstName, noMiddle ? "" : middleName, lastName, suffix]
       .filter(Boolean)
@@ -537,21 +552,25 @@ export default function Register() {
       .trim();
 
     await AsyncStorage.setItem("REG_FULLNAME", fullName);
-    await AsyncStorage.setItem("REG_EMAIL", email.trim());
-
-    setEmailSendError("");
     setAttempted(false);
     setStep(1);
   };
 
   const onNextAdditional = () => {
     setAttempted(true);
+    if (!verifiedRegisteredVoterId) {
+      setVoterRegistryError("Please verify your voter registration on the first step before continuing.");
+      setStep(0);
+      return;
+    }
     if (!canNextFromAdditional) return;
+
     setAttempted(false);
+    setStep2Phase("contact");
     setStep(2);
   };
 
-  // Verify Email: manage resend cooldown and verification check (step 5)
+  // Verify Email: manage resend cooldown and verification check (carousel 3 — verify phase)
   const [emailSeconds, setEmailSeconds] = useState(180);
   const emailTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [emailVerified, setEmailVerified] = useState(false);
@@ -566,27 +585,29 @@ export default function Register() {
   /** Step-7 poll effect only depends on [step], so `profileSaving` in that closure is stale; use this for single-flight finalize. */
   const profileFinalizeInFlightRef = useRef(false);
 
+  const isEmailVerifyStep = step === 2 && step2Phase === "verify";
+
   useEffect(() => {
-    if (step !== 7) return;
+    if (!isEmailVerifyStep) return;
     if (didAttemptInitialVerificationEmail) return;
 
     setDidAttemptInitialVerificationEmail(true);
     void onFinish();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step, didAttemptInitialVerificationEmail]);
+  }, [isEmailVerifyStep, didAttemptInitialVerificationEmail]);
 
   useEffect(() => {
-    if (step !== 7) return;
+    if (!isEmailVerifyStep) return;
     setEmailSeconds(180);
     emailTimerRef.current = setInterval(() => setEmailSeconds((p) => (p <= 1 ? 0 : p - 1)), 1000);
     return () => {
       if (emailTimerRef.current) clearInterval(emailTimerRef.current);
       emailTimerRef.current = null;
     };
-  }, [step]);
+  }, [isEmailVerifyStep]);
 
   useEffect(() => {
-    if (step !== 7) return;
+    if (!isEmailVerifyStep) return;
 
     profileFinalizeInFlightRef.current = false;
     let active = true;
@@ -624,7 +645,7 @@ export default function Register() {
       active = false;
       clearInterval(intervalId);
     };
-  }, [step]);
+  }, [isEmailVerifyStep]);
 
   const emailCanResend = emailSeconds <= 0;
   const canAdvanceEmail = emailVerified;
@@ -642,12 +663,20 @@ export default function Register() {
         setStep(0);
         break;
       case 2:
-        setAttempted(false);
-        setStep(1);
+        if (step2Phase === "verify") {
+          setStep2Phase("contact");
+          setConfirmPin("");
+          setConfirmError("");
+          setStep(6);
+        } else {
+          setAttempted(false);
+          setStep(1);
+        }
         break;
       case 3:
         setAttempted(false);
         setFacialError("");
+        setStep2Phase("contact");
         setStep(2);
         break;
       case 4:
@@ -665,13 +694,10 @@ export default function Register() {
         setConfirmError("");
         setStep(5);
         break;
-      case 7:
-        if (!profileSaving) setStep(6);
-        break;
       default:
         break;
     }
-  }, [step, profileSaving]);
+  }, [step, step2Phase, profileSaving]);
 
   // Success screen: show for 2 seconds then navigate to login
   useEffect(() => {
@@ -693,7 +719,11 @@ export default function Register() {
     return "";
   }, [mobile]);
 
-  const canNextFromMobile = useMemo(() => mobile.trim().length === 10 && !mobileError, [mobile, mobileError]);
+  const canNextFromContact = useMemo(() => {
+    if (!mobile.trim() || mobileError) return false;
+    if (!email.trim() || emailError) return false;
+    return true;
+  }, [mobile, mobileError, email, emailError]);
 
   const idImagePickerOptions: ImagePicker.ImagePickerOptions = {
     mediaTypes: ["images"],
@@ -813,12 +843,38 @@ export default function Register() {
     }
   };
 
-  const onNextMobile = async () => {
+  const onNextContact = async () => {
     setAttempted(true);
-    if (!canNextFromMobile) return;
+    if (!canNextFromContact) return;
+
+    setEmailExistsError("");
+
+    const existsCheck = await checkEmailExists(email.trim());
+    if (existsCheck.error) {
+      setEmailExistsError("Unable to verify email. Try again.");
+      return;
+    }
+    if (existsCheck.exists) {
+      setEmailExistsError("This email is already registered. Try logging in instead.");
+      return;
+    }
+
+    const attemptRes = await supabase.rpc("begin_registration_attempt", {
+      p_email: email.trim().toLowerCase(),
+    });
+    if (attemptRes.error || !attemptRes.data) {
+      setEmailExistsError("Unable to start registration. Please try again.");
+      return;
+    }
+
+    setRegistrationAttemptToken(String(attemptRes.data));
+
     const normalized = normalizeMobile(mobile.trim());
     if (!normalized) return;
     await AsyncStorage.setItem("REG_MOBILE", normalized);
+    await AsyncStorage.setItem("REG_EMAIL", email.trim());
+
+    setEmailSendError("");
     setAttempted(false);
     setFacialError("");
     setStep(3);
@@ -852,7 +908,9 @@ export default function Register() {
 
     setConfirmError("");
     setEmailSendError("");
-    setStep(7);
+    setDidAttemptInitialVerificationEmail(false);
+    setStep2Phase("verify");
+    setStep(2);
   };
 
   const onRetryPin = () => {
@@ -930,7 +988,16 @@ export default function Register() {
       return false;
     }
 
-    if (!voterIdNumber.trim() || !/^\d+$/.test(voterIdNumber.trim())) {
+    if (!verifiedRegisteredVoterId) {
+      setProfileError("Voter verification expired. Please restart registration from the first step.");
+      setProfileSaving(false);
+      return false;
+    }
+
+    const formattedVoterId = voterIdNumber.trim()
+      ? formatRegisteredVoterId(voterIdNumber.trim())
+      : "";
+    if (formattedVoterId && !isValidRegisteredVoterId(formattedVoterId)) {
       setProfileError("Invalid Voter's ID Number.");
       setProfileSaving(false);
       return false;
@@ -964,10 +1031,11 @@ export default function Register() {
       suffix: suffix || null,
       contact_number: fullMobile,
       email: profileEmail,
-      voter_id_number: voterIdNumber.trim(),
+      voter_id_number: formattedVoterId,
       address: composedAddress,
       birth_date: birthDate.trim(),
       sex,
+      registered_voter_id: verifiedRegisteredVoterId,
     });
 
     if (profileRes.error) {
@@ -1003,6 +1071,9 @@ export default function Register() {
   const otpFontSize = Math.max(20, Math.min(28, Math.floor(boxSize * 0.52)));
   const dotSize = Math.max(20, Math.min(28, Math.floor(boxSize * 0.55)));
 
+  const progressStep =
+    step === 2 && step2Phase === "verify" ? 7 : step;
+
   return (
     <SafeAreaView style={styles.safe}>
       <KeyboardAvoidingView
@@ -1016,8 +1087,8 @@ export default function Register() {
                 key={i}
                 style={[
                   styles.progressSeg,
-                  i <= step && styles.progressActive,
-                  i < 8 && { marginRight: 10 },
+                  i <= progressStep && styles.progressActive,
+                  i < 8 && { marginRight: 4 },
                 ]}
               />
             ))}
@@ -1025,17 +1096,18 @@ export default function Register() {
 
           {/* --- Step 0: Register details --- */}
           {step === 0 && (
-            <>
-              <View style={styles.step0HeaderRow}>
-                <Text style={[styles.title, styles.step0Title]}>Let’s Get Started!</Text>
-                {attempted && !canCreate ? (
-                  <Text style={styles.fillInInline}>Fill in the Fields</Text>
-                ) : null}
-              </View>
-             
+            <ScrollView
+              style={styles.step0Scroll}
+              contentContainerStyle={styles.step0ScrollContent}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
+              {attempted && !canNextFromStart ? (
+                <Text style={styles.fillIn}>Fill in the Fields</Text>
+              ) : null}
 
               <View style={styles.row}>
-                <View style={[styles.inputWrap, { flex: 1 }, attempted && !firstName.trim() && styles.inputErrorBorder]}>
+                <View style={[styles.inputWrap, styles.step0InputWrap, { flex: 1 }, attempted && !firstName.trim() && styles.inputErrorBorder]}>
                   <TextInput
                     value={firstName}
                     onChangeText={(raw) => {
@@ -1050,13 +1122,13 @@ export default function Register() {
                   />
                 </View>
 
-                <TouchableOpacity activeOpacity={0.85} onPress={() => setSuffixOpen(true)} style={[styles.inputWrap, { width: 86 }]}>
+                <TouchableOpacity activeOpacity={0.85} onPress={() => setSuffixOpen(true)} style={[styles.inputWrap, styles.step0InputWrap, { width: 86 }]}>
                   <Text style={[styles.dropdownText, !suffix && styles.dropdownPlaceholder]}>{suffix ? suffix : "Suffix"}</Text>
                 </TouchableOpacity>
               </View>
 
-              <View style={{ marginTop: 14 }}>
-                <View style={[styles.inputWrap, !noMiddle && attempted && !middleName.trim() && styles.inputErrorBorder]}>
+              <View style={styles.step0Gap}>
+                <View style={[styles.inputWrap, styles.step0InputWrap, !noMiddle && attempted && !middleName.trim() && styles.inputErrorBorder]}>
                   <TextInput
                     value={middleName}
                     onChangeText={(raw) => {
@@ -1072,14 +1144,14 @@ export default function Register() {
                   />
                 </View>
 
-                <TouchableOpacity activeOpacity={0.85} onPress={toggleNoMiddle} style={styles.checkRow}>
+                <TouchableOpacity activeOpacity={0.85} onPress={toggleNoMiddle} style={[styles.checkRow, styles.step0CheckRow]}>
                   <View style={[styles.checkbox, noMiddle && styles.checkboxChecked]}>{noMiddle ? <View style={styles.checkboxInner} /> : null}</View>
                   <Text style={styles.checkText}>I have no middle name</Text>
                 </TouchableOpacity>
               </View>
 
-              <View style={{ marginTop: 14 }}>
-                <View style={[styles.inputWrap, attempted && !lastName.trim() && styles.inputErrorBorder]}>
+              <View style={styles.step0Gap}>
+                <View style={[styles.inputWrap, styles.step0InputWrap, attempted && !lastName.trim() && styles.inputErrorBorder]}>
                   <TextInput
                     value={lastName}
                     onChangeText={(raw) => {
@@ -1095,12 +1167,13 @@ export default function Register() {
                 </View>
               </View>
 
-              <View style={{ marginTop: 14 }}>
+              <View style={styles.step0Gap}>
                 <TouchableOpacity
                   activeOpacity={0.85}
                   onPress={openBirthDatePicker}
                   style={[
                     styles.inputWrap,
+                    styles.step0InputWrap,
                     attempted && (!birthDate.trim() || !!birthDateError) && styles.inputErrorBorder,
                     attempted && !!birthDateError && styles.inputWrapWithInlineError,
                   ]}
@@ -1116,12 +1189,13 @@ export default function Register() {
                 </TouchableOpacity>
               </View>
 
-              <View style={{ marginTop: 14 }}>
+              <View style={styles.step0Gap}>
                 <TouchableOpacity
                   activeOpacity={0.85}
                   onPress={() => setSexOpen(true)}
                   style={[
                     styles.inputWrap,
+                    styles.step0InputWrap,
                     attempted && !sex && styles.inputErrorBorder,
                     attempted && !sex && styles.inputWrapWithInlineError,
                   ]}
@@ -1137,45 +1211,58 @@ export default function Register() {
                 </TouchableOpacity>
               </View>
 
-              <View style={{ marginTop: 14 }}>
+              <View style={styles.step0Gap}>
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={() => setBarangayOpen(true)}
+                  style={[styles.inputWrap, styles.step0InputWrap, attempted && !selectedBarangay && styles.inputErrorBorder]}
+                >
+                  <Text
+                    style={[
+                      styles.dropdownText,
+                      !selectedBarangay && styles.dropdownPlaceholder,
+                    ]}
+                  >
+                    {selectedBarangay?.name || "Barangay"}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.step0Gap}>
                 <View
                   style={[
                     styles.inputWrap,
-                    attempted && (!email.trim() || !!emailError || !!emailExistsError) && styles.inputErrorBorder,
-                    attempted && (!!emailError || !!emailExistsError) && styles.inputWrapWithInlineError,
+                    styles.step0InputWrap,
+                    attempted && (!voterIdNumber.trim() || !!voterIdError) && styles.inputErrorBorder,
                   ]}
                 >
                   <TextInput
-                    value={email}
-                    onChangeText={(value) => {
-                      setEmail(value);
-                      if (emailExistsError) setEmailExistsError("");
-                    }}
-                    placeholder="Email Address"
+                    value={voterIdNumber}
+                    onChangeText={(value) => setVoterIdNumber(formatRegisteredVoterId(value))}
+                    placeholder={`Voter's ID Number (${REGISTERED_VOTER_ID_PLACEHOLDER})`}
                     placeholderTextColor="#B3B3B3"
-                    keyboardType="email-address"
-                    autoCapitalize="none"
-                    style={[
-                      styles.inputFull,
-                      attempted && (!!emailError || !!emailExistsError) && styles.inputFullWithInlineError,
-                    ]}
+                    autoCapitalize="characters"
+                    autoCorrect={false}
+                    maxLength={REGISTERED_VOTER_ID_MAX_LENGTH}
+                    style={styles.inputFull}
                   />
-                  {attempted && !!emailError ? (
-                    <Text style={styles.errorInline} numberOfLines={1}>
-                      {emailError}
-                    </Text>
-                  ) : null}
-                  {!emailError && !!emailExistsError ? (
-                    <Text style={styles.errorInline} numberOfLines={1}>
-                      {emailExistsError}
-                    </Text>
-                  ) : null}
                 </View>
+                {attempted && !voterIdNumber.trim() ? (
+                  <Text style={styles.error}>Required</Text>
+                ) : attempted && !!voterIdError ? (
+                  <Text style={styles.error}>{voterIdError}</Text>
+                ) : null}
               </View>
 
-              <View style={styles.termsBox}>
-                <Text style={styles.termsText}>
-                  By tapping <Text style={styles.termsBold}>Create account</Text>, you agree with the
+              <View style={[styles.termsBox, styles.step0TermsBox]}>
+                <Text style={[styles.termsText, styles.voterReminderText]}>
+                  You must be a registered voter of Dasmariñas City to create an account. Your details must match your voter registration record.
+                </Text>
+                {voterRegistryError ? (
+                  <Text style={[styles.error, { marginTop: 10, textAlign: "center" }]}>{voterRegistryError}</Text>
+                ) : null}
+                <Text style={[styles.termsText, styles.step0TermsFollowUp]}>
+                  By tapping <Text style={styles.termsBold}>Next</Text>, you agree with the
                 </Text>
                 <View style={styles.termsLinksRow}>
                   <TouchableOpacity activeOpacity={0.8} onPress={() => {}}>
@@ -1188,14 +1275,13 @@ export default function Register() {
                 </View>
               </View>
 
-              <TouchableOpacity activeOpacity={0.9} onPress={onCreate} style={[styles.createBtn, { marginTop: 30 }]}>
-                <Text style={styles.createBtnText}>Create Account</Text>
+              <TouchableOpacity activeOpacity={0.9} onPress={onNextFromStart} style={[styles.createBtn, styles.step0CreateBtn]}>
+                <Text style={styles.createBtnText}>Next</Text>
               </TouchableOpacity>
 
-              <View style={{ flex: 1 }} />
-              <View style={styles.divider} />
-              <Text style={styles.bottomText}>Already have an Apoyo account?</Text>
-              <TouchableOpacity activeOpacity={0.85} onPress={() => router.push("/phase1/login")} style={styles.loginOutlineBtn}>
+              <View style={[styles.divider, styles.step0Divider]} />
+              <Text style={[styles.bottomText, styles.step0BottomText]}>Already have an Apoyo account?</Text>
+              <TouchableOpacity activeOpacity={0.85} onPress={() => router.push("/phase1/login")} style={[styles.loginOutlineBtn, styles.step0LoginBtn]}>
                 <Text style={styles.loginOutlineText}>Login here</Text>
               </TouchableOpacity>
 
@@ -1238,7 +1324,39 @@ export default function Register() {
                   </Pressable>
                 </Pressable>
               </Modal>
-            </>
+
+              <Modal visible={barangayOpen} transparent animationType="fade" onRequestClose={() => setBarangayOpen(false)}>
+                <Pressable style={styles.modalOverlay} onPress={() => setBarangayOpen(false)}>
+                  <Pressable style={styles.modalCard}>
+                    <Text style={styles.modalTitle}>Select Barangay</Text>
+                    {barangaysError ? (
+                      <View style={styles.modalMessage}>
+                        <Text style={styles.error}>{barangaysError}</Text>
+                        <TouchableOpacity activeOpacity={0.85} onPress={() => void loadBarangays()}>
+                          <Text style={styles.link}>Retry</Text>
+                        </TouchableOpacity>
+                      </View>
+                    ) : (
+                      <ScrollView style={styles.modalList}>
+                        {barangayOptions.map((opt) => (
+                          <TouchableOpacity
+                            key={opt.id}
+                            activeOpacity={0.85}
+                            style={styles.modalItem}
+                            onPress={() => {
+                              setSelectedBarangay(opt);
+                              setBarangayOpen(false);
+                            }}
+                          >
+                            <Text style={styles.modalItemText}>{opt.name}</Text>
+                          </TouchableOpacity>
+                        ))}
+                      </ScrollView>
+                    )}
+                  </Pressable>
+                </Pressable>
+              </Modal>
+            </ScrollView>
           )}
 
           {/* --- Step 1: Additional Information --- */}
@@ -1246,68 +1364,6 @@ export default function Register() {
             <>
               <Text style={styles.title}>Additional Information</Text>
               {attempted && !canNextFromAdditional && <Text style={styles.fillIn}>Fill in the Fields</Text>}
-
-              <View style={{ marginTop: 14 }}>
-                <View
-                  style={[
-                    styles.inputWrap,
-                    attempted && (!voterIdNumber.trim() || !!voterIdError) && styles.inputErrorBorder,
-                    attempted && !!voterIdError && styles.inputWrapWithInlineError,
-                  ]}
-                >
-                  <TextInput
-                    value={voterIdNumber}
-                    onChangeText={(value) => setVoterIdNumber(value.replace(/[^\d]/g, ""))}
-                    placeholder="Voter's ID Number"
-                    placeholderTextColor="#B3B3B3"
-                    keyboardType="number-pad"
-                    style={[
-                      styles.inputFull,
-                      attempted && !!voterIdError && styles.inputFullWithInlineError,
-                    ]}
-                  />
-                  {attempted && !!voterIdError ? (
-                    <Text style={styles.errorInline} numberOfLines={1}>
-                      {voterIdError}
-                    </Text>
-                  ) : null}
-                </View>
-              </View>
-
-              <View style={{ marginTop: 14 }}>
-                <TouchableOpacity
-                  activeOpacity={0.85}
-                  onPress={() => setBarangayOpen(true)}
-                  style={[styles.inputWrap, attempted && !barangay && styles.inputErrorBorder]}
-                >
-                  <Text style={[styles.dropdownText, !barangay && styles.dropdownPlaceholder]}>
-                    {barangay || "Barangay"}
-                  </Text>
-                </TouchableOpacity>
-              </View>
-
-              <Modal visible={barangayOpen} transparent animationType="fade" onRequestClose={() => setBarangayOpen(false)}>
-                <Pressable style={styles.modalOverlay} onPress={() => setBarangayOpen(false)}>
-                  <Pressable style={styles.modalCard}>
-                    <Text style={styles.modalTitle}>Select Barangay</Text>
-                    <ScrollView style={styles.modalList}>
-                      {BARANGAY_OPTIONS.map((opt) => (
-                        <TouchableOpacity
-                          key={opt}
-                          activeOpacity={0.85}
-                          style={styles.modalItem}
-                          onPress={() => {
-                            setBarangay(opt);
-                            setBarangayOpen(false);
-                          }}
-                        >
-                          <Text style={styles.modalItemText}>{opt}</Text>
-                        </TouchableOpacity>
-                      ))}
-                    </ScrollView>
-                  </Pressable>
-                </Pressable>
-              </Modal>
 
               <View style={{ marginTop: 14 }}>
                 <View style={[styles.inputWrapAlt, attempted && !houseUnit.trim() && styles.inputErrorBorder]}>
@@ -1372,7 +1428,8 @@ export default function Register() {
               value={birthDateDraft}
               mode="date"
               display="default"
-              maximumDate={new Date()}
+              minimumDate={BIRTH_DATE_MIN}
+              maximumDate={birthDateMax()}
               onChange={onBirthDatePickerChange}
             />
           ) : null}
@@ -1393,7 +1450,8 @@ export default function Register() {
                   value={birthDateDraft}
                   mode="date"
                   display="spinner"
-                  maximumDate={new Date()}
+                  minimumDate={BIRTH_DATE_MIN}
+                  maximumDate={birthDateMax()}
                   onChange={onBirthDatePickerChange}
                 />
                 <View style={styles.birthDateActionsRow}>
@@ -1416,11 +1474,11 @@ export default function Register() {
             </Pressable>
           </Modal>
 
-          {/* --- Step 2: Enter Mobile --- */}
-          {step === 2 && (
+          {/* --- Step 2: Mobile + email (contact), then email verification (verify) --- */}
+          {step === 2 && step2Phase === "contact" && (
             <>
-              <Text style={styles.title}>Enter mobile number</Text>
-              {attempted && !canNextFromMobile && <Text style={styles.fillIn}>*Fill in</Text>}
+              <Text style={styles.title}>Contact details</Text>
+              {attempted && !canNextFromContact && <Text style={styles.fillIn}>*Fill in</Text>}
 
               <View
                 style={[
@@ -1449,6 +1507,42 @@ export default function Register() {
                 ) : null}
               </View>
 
+              <View style={{ marginTop: 14 }}>
+                <View
+                  style={[
+                    styles.inputWrap,
+                    attempted && (!email.trim() || !!emailError || !!emailExistsError) && styles.inputErrorBorder,
+                    attempted && (!!emailError || !!emailExistsError) && styles.inputWrapWithInlineError,
+                  ]}
+                >
+                  <TextInput
+                    value={email}
+                    onChangeText={(value) => {
+                      setEmail(value);
+                      if (emailExistsError) setEmailExistsError("");
+                    }}
+                    placeholder="Email Address"
+                    placeholderTextColor="#B3B3B3"
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                    style={[
+                      styles.inputFull,
+                      attempted && (!!emailError || !!emailExistsError) && styles.inputFullWithInlineError,
+                    ]}
+                  />
+                  {attempted && !!emailError ? (
+                    <Text style={styles.errorInline} numberOfLines={1}>
+                      {emailError}
+                    </Text>
+                  ) : null}
+                  {!emailError && !!emailExistsError ? (
+                    <Text style={styles.errorInline} numberOfLines={1}>
+                      {emailExistsError}
+                    </Text>
+                  ) : null}
+                </View>
+              </View>
+
               <View style={{ flex: 1 }} />
               <View style={styles.primaryFooterRow}>
                 <TouchableOpacity
@@ -1460,15 +1554,76 @@ export default function Register() {
                 </TouchableOpacity>
                 <TouchableOpacity
                   activeOpacity={0.9}
-                  onPress={onNextMobile}
+                  onPress={onNextContact}
                   style={[
                     styles.nextBtn,
                     styles.primaryBtnFlexible,
-                    !canNextFromMobile && styles.nextDisabled,
+                    !canNextFromContact && styles.nextDisabled,
                   ]}
                 >
                   <Text style={styles.nextText}>Next</Text>
                 </TouchableOpacity>
+              </View>
+            </>
+          )}
+
+          {step === 2 && step2Phase === "verify" && (
+            <>
+              <Text style={styles.titleLarge}>Email Verification Sent</Text>
+              <Text style={styles.subtitle}>Check your email inbox</Text>
+              <Text style={styles.desc}>
+                {`We've sent a verification email to `}
+                <Text style={styles.bold}>{email || "sample@gmail.com"}</Text>
+                {`. Open the email and click the confirmation link to verify your address and finish setup. If you don't see it, please check your spam or junk folder.`}
+              </Text>
+
+              {emailSendError ? <Text style={styles.error}>{emailSendError}</Text> : null}
+              {emailChecking && !emailVerified ? <Text style={styles.subtitle}>Checking verification...</Text> : null}
+              {emailVerifyError ? <Text style={styles.error}>{emailVerifyError}</Text> : null}
+
+              <View style={styles.rowTop}>
+                <Text style={styles.label}>Didn’t receive the email?</Text>
+              </View>
+
+              <TouchableOpacity
+                activeOpacity={0.85}
+                onPress={async () => {
+                  if (!emailCanResend) return;
+                  const resend = await sendVerificationEmail(email.trim(), mpin || pin);
+                  if (resend.error) {
+                    setEmailSendError("We could not send a verification email. Try again.");
+                    return;
+                  }
+                  setEmailSendError("");
+                  setEmailSeconds(180);
+                }}
+                disabled={!emailCanResend}
+                style={{ marginTop: 14 }}
+              >
+                <Text style={[styles.resend, !emailCanResend && styles.resendDisabled]}>{emailTimerLabel}</Text>
+              </TouchableOpacity>
+
+              <View style={styles.infoBox}>
+                <Text style={styles.infoText}>
+                  Kindly wait for at least <Text style={styles.infoBold}>3 minutes</Text> for the <Text style={styles.infoBold}>Verification email</Text> to arrive. Sometimes, there may be delays in receiving it. Thank you for your patience!
+                </Text>
+              </View>
+
+              {profileSaving ? <Text style={styles.subtitle}>Saving your info...</Text> : null}
+              {profileError ? <Text style={styles.error}>{profileError}</Text> : null}
+              {emailVerified && !profileSaving && !profileError ? <Text style={styles.subtitle}>Email verified! Setting up your account...</Text> : null}
+
+              <View style={{ flex: 1 }} />
+              <View style={styles.primaryFooterRow}>
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={goRegisterBack}
+                  disabled={profileSaving}
+                  style={[styles.backBtn, profileSaving && styles.backBtnDisabled]}
+                >
+                  <Text style={styles.backBtnText}>Back</Text>
+                </TouchableOpacity>
+                <View style={styles.primaryBtnFlexible} />
               </View>
             </>
           )}
@@ -1794,68 +1949,6 @@ export default function Register() {
             </>
           )}
 
-          {/* --- Step 7: Verify Email --- */}
-          {step === 7 && (
-            <>
-              <Text style={styles.titleLarge}>Email Verification Sent</Text>
-              <Text style={styles.subtitle}>Check your email inbox</Text>
-              <Text style={styles.desc}>
-                {`We've sent a verification email to `}
-                <Text style={styles.bold}>{email || "sample@gmail.com"}</Text>
-                {`. Open the email and click the confirmation link to verify your address and finish setup. If you don't see it, please check your spam or junk folder.`}
-              </Text>
-
-              {emailSendError ? <Text style={styles.error}>{emailSendError}</Text> : null}
-              {emailChecking && !emailVerified ? <Text style={styles.subtitle}>Checking verification...</Text> : null}
-              {emailVerifyError ? <Text style={styles.error}>{emailVerifyError}</Text> : null}
-
-              <View style={styles.rowTop}>
-                <Text style={styles.label}>Didn’t receive the email?</Text>
-              </View>
-
-              <TouchableOpacity
-                activeOpacity={0.85}
-                onPress={async () => {
-                  if (!emailCanResend) return;
-                  const resend = await sendVerificationEmail(email.trim(), mpin || pin);
-                  if (resend.error) {
-                    setEmailSendError("We could not send a verification email. Try again.");
-                    return;
-                  }
-                  setEmailSendError("");
-                  setEmailSeconds(180);
-                }}
-                disabled={!emailCanResend}
-                style={{ marginTop: 14 }}
-              >
-                <Text style={[styles.resend, !emailCanResend && styles.resendDisabled]}>{emailTimerLabel}</Text>
-              </TouchableOpacity>
-
-              <View style={styles.infoBox}>
-                <Text style={styles.infoText}>
-                  Kindly wait for at least <Text style={styles.infoBold}>3 minutes</Text> for the <Text style={styles.infoBold}>Verification email</Text> to arrive. Sometimes, there may be delays in receiving it. Thank you for your patience!
-                </Text>
-              </View>
-
-              {profileSaving ? <Text style={styles.subtitle}>Saving your info...</Text> : null}
-              {profileError ? <Text style={styles.error}>{profileError}</Text> : null}
-              {emailVerified && !profileSaving && !profileError ? <Text style={styles.subtitle}>Email verified! Setting up your account...</Text> : null}
-
-              <View style={{ flex: 1 }} />
-              <View style={styles.primaryFooterRow}>
-                <TouchableOpacity
-                  activeOpacity={0.85}
-                  onPress={goRegisterBack}
-                  disabled={profileSaving}
-                  style={[styles.backBtn, profileSaving && styles.backBtnDisabled]}
-                >
-                  <Text style={styles.backBtnText}>Back</Text>
-                </TouchableOpacity>
-                <View style={styles.primaryBtnFlexible} />
-              </View>
-            </>
-          )}
-
           {/* --- Step 8: Success --- */}
           {step === 8 && (
             <>
@@ -1880,9 +1973,9 @@ export default function Register() {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: "#fff" },
-  container: { flex: 1, paddingHorizontal: 22, paddingTop: 10, paddingBottom: 10 },
+  container: { flex: 1, paddingHorizontal: 22, paddingTop: 10, paddingBottom: 16 },
 
-  progressRow: { flexDirection: "row", gap: 1, marginTop: 10, marginBottom: 26 },
+  progressRow: { flexDirection: "row", gap: 1, marginTop: 10, marginBottom: 10 },
   progressSeg: { flex: 1, height: 6, borderRadius: 999, backgroundColor: "#D9D9D9" },
   progressActive: { backgroundColor: TEAL },
 
@@ -2087,7 +2180,19 @@ const styles = StyleSheet.create({
   },
 
   title: { marginTop: 20, fontSize: 34, color: DARK, fontFamily: FONT, fontWeight: "600", marginBottom: 6 },
-  step0Title: { marginTop: 8, marginBottom: 4 },
+  step0Scroll: { flex: 1 },
+  step0ScrollContent: { paddingBottom: 8 },
+  step0Gap: { marginTop: 10 },
+  step0InputWrap: { height: 48 },
+  step0CheckRow: { marginTop: 6 },
+  step0Title: { marginTop: 4, marginBottom: 10, fontSize: 30, lineHeight: 34 },
+  step0TermsBox: { marginTop: 12 },
+  voterReminderText: { color: LIGHT_RED },
+  step0TermsFollowUp: { marginTop: 8 },
+  step0CreateBtn: { marginTop: 14, height: 50 },
+  step0Divider: { marginTop: 14 },
+  step0BottomText: { marginTop: 12, marginBottom: 8 },
+  step0LoginBtn: { height: 50, marginBottom: 4 },
   step0HeaderRow: {
     flexDirection: "row",
     alignItems: "flex-end",
@@ -2144,6 +2249,14 @@ const styles = StyleSheet.create({
   checkboxChecked: { borderColor: TEAL },
   checkboxInner: { width: 12, height: 12, borderRadius: 2, backgroundColor: TEAL },
   checkText: { color: SUB, fontFamily: FONT, fontWeight: "500", fontSize: 13 },
+  fieldOptionalTip: {
+    marginTop: 6,
+    fontSize: 12,
+    color: SUB,
+    fontFamily: FONT,
+    fontWeight: "500",
+    lineHeight: 17,
+  },
 
   error: { marginTop: 8, color: RED, fontFamily: FONT, fontWeight: "500" },
   errorInline: {
@@ -2159,10 +2272,10 @@ const styles = StyleSheet.create({
     textAlign: "right",
   },
 
-  termsBox: { marginTop: 18, alignItems: "center" },
-  termsText: { color: SUB, fontFamily: FONT, fontWeight: "500", fontSize: 12, textAlign: "center" },
+  termsBox: { marginTop: 10, alignItems: "center" },
+  termsText: { color: SUB, fontFamily: FONT, fontWeight: "500", fontSize: 13, textAlign: "center" },
   termsBold: { color: SUB, fontFamily: FONT, fontWeight: "600" },
-  termsLinksRow: { flexDirection: "row", alignItems: "center", marginTop: 8, flexWrap: "wrap", justifyContent: "center" },
+  termsLinksRow: { flexDirection: "row", alignItems: "center", marginTop: 2.5, flexWrap: "wrap", justifyContent: "center" },
   link: { color: TEAL, fontFamily: FONT, fontWeight: "600", fontSize: 13 },
 
   primaryFooterRow: {
@@ -2205,6 +2318,7 @@ const styles = StyleSheet.create({
   modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.35)", justifyContent: "center", paddingHorizontal: 22 },
   modalCard: { backgroundColor: "#fff", borderRadius: 14, padding: 14 },
   modalList: { maxHeight: 360 },
+  modalMessage: { alignItems: "center", paddingVertical: 20, gap: 12 },
   modalTitle: { fontFamily: FONT, fontWeight: "600", fontSize: 16, color: DARK, marginBottom: 10 },
   modalItem: { paddingVertical: 12, paddingHorizontal: 10, borderRadius: 10 },
   modalItemText: { fontFamily: FONT, fontWeight: "500", fontSize: 15, color: DARK },

@@ -21,31 +21,49 @@ import {
   Text,
   View,
 } from "react-native";
+import { inferAttachmentName } from "@/AppCore/AssistanceRequestAttachments";
+import type { ApplicationItem } from "@/AppCore/AssistanceStatusApplicationsCache";
+import { STORAGE_KEYS } from "@/AppCore/ClientStorageKeys";
+import { fromDbFileType } from "@/AppCore/AttachmentSlotDbMapping";
 import {
-  inferAttachmentName,
-  RequestTableName,
-} from "../../lib/requestAttachments";
-import { supabase } from "../../lib/supabase";
+  categoryAssistanceTitle,
+  resolveApplicationCategorySlug,
+  statusCardHeaderGradientForSlug,
+  typeOfAssistanceLabel,
+} from "@/AppCore/CategoryCatalogUi";
+import {
+  getCatalogLookupRuntime,
+  resolveServiceId,
+} from "@/AppCore/CatalogLookupRuntime";
+import { fileIconName } from "@/AppCore/FileKindIcons";
+import { useAssistanceCatalog } from "@/AppCore/UseAssistanceCatalog";
+import { buildPreflightChoiceLines } from "@/AppCore/PreflightSelections";
+import {
+  requirementSlotsGroupedForService,
+  resolveCatalogServiceIdForStatusHints,
+  type StatusScreenRequirementDef,
+} from "@/AppCore/StatusCatalogBridge";
+import { enrichStatusApplicationItem } from "@/AppCore/ServiceCatalogDisplay";
+import type { Category, ServiceStatus } from "@/AppCore/AppUiDomainTypes";
+import {
+  ATTACHMENT_STATUS_ACCENT,
+  headerStatusForDetails,
+  normalizeServiceStatus,
+  statusBadgeTheme,
+  statusTimelineDotTheme,
+} from "@/AppCore/RequestStatusPresentation";
+import { ASSISTANCE_REQUESTS_TABLE } from "@/AppCore/AssistanceRequestSql";
+import { supabase } from "@/AppCore/SupabaseClient";
+import { COLORS, FONT_FAMILY_ROUNDED } from "@/AppCore/Theme";
 
-const FONT = Platform.select({ ios: "SF Pro Rounded", android: "System" })!;
-
-/* ========= STORAGE ========= */
-const STORAGE_KEY_STATUS_LIST = "apoyo_status_applications_v1";
+const FONT = FONT_FAMILY_ROUNDED;
 
 /* ========= THEME ========= */
-const BG = "#FFFFFF";
-const TEXT_DARK = "#2B2B2B";
-const TEXT_MUTED = "#7B7B7B";
+const BG = COLORS.white;
+const TEXT_DARK = COLORS.textDark;
+const TEXT_MUTED = COLORS.textMuted;
+const TEAL = COLORS.teal;
 
-/* badge */
-const BADGE_PENDING = "#E8C6FF";
-const BADGE_PROGRESS = "#B9E3FF";
-const BADGE_ACTION = "#FFD59E";
-const BADGE_FOR_APPROVAL = "#C8EDE9";
-const BADGE_SCHEDULED = "#D8E6FA";
-const BADGE_APPROVED = "#C8F1C8";
-const BADGE_DRAFT = "#D4D4D4";
-const BADGE_TEXT_DEFAULT = "#2B2B2B";
 const REQUEST_DOCS_BUCKET = "request-documents";
 
 /* timeline */
@@ -64,44 +82,6 @@ const NODE_X = LINE_X - NODE_SIZE / 2;
 const EVENT_LEFT = LINE_X + 12;
 const TIMELINE_Y_OFFSET = 18;
 
-/* ========= TYPES ========= */
-type Category = "medical" | "financial" | "burial";
-type ServiceStatus =
-  | "Pending"
-  | "In Progress"
-  | "Action Required"
-  | "Resubmitted"
-  | "For Approval"
-  | "Scheduled"
-  | "Approved"
-  | "Draft";
-
-function normalizeStatus(raw?: string): ServiceStatus {
-  if (!raw) return "Pending";
-  const s = raw.toString().trim().toLowerCase().replace(/_/g, " ");
-  if (s === "submitted" || s === "pending") return "Pending";
-  if (s === "resubmitted") return "Resubmitted";
-  if (s === "in progress" || s === "inprogress" || s === "processing") return "In Progress";
-  if (s === "action required" || s === "action") return "Action Required";
-  if (s === "for approval") return "For Approval";
-  if (s === "scheduled") return "Scheduled";
-  if (s === "approved" || s === "accepted") return "Approved";
-  if (s === "draft") return "Draft";
-  return "Pending";
-}
-
-type ApplicationItem = {
-  id: string;
-  title: string;
-  description: string;
-  status: ServiceStatus;
-  category: Category;
-  createdAt?: number;
-  applicationId?: string;
-  requestCode?: string;
-  service?: string;
-};
-
 /* ========= DOC TYPES ========= */
 type StoredDoc = {
   fileType: string;
@@ -115,113 +95,24 @@ type StoredDoc = {
 
 type RequestDetailsRow = {
   id: string;
+  service_id: string | null;
   status: string | null;
   request_code: string | null;
   created_at: string | null;
   updated_at: string | null;
   submitted_at: string | null;
   additional_info: string | null;
-  coverage?: string | null;
   financial_request_type?: string | null;
+  payload?: unknown;
 };
-
-const COVERAGE_TABLES = new Set<RequestTableName>([
-  "burial_requests",
-  "cremation_requests",
-]);
 
 type AuditStatusLogRow = {
   action: string;
   old_status: string | null;
   new_status: string | null;
   changed_by: string | null;
-  changed_by_role: string | null;
   changed_at: string;
 };
-
-type ReqDef = { key: string; label: string; optional?: boolean };
-
-const FILE_TYPE_MAP: Record<RequestTableName, Record<string, string>> = {
-  hospitalization_requests: {
-    abstract: "abstract_file",
-    bill: "bill_file",
-    letter: "letter_file",
-    voterId: "voter_id_file",
-    birthCert: "birth_cert_file",
-    barangay: "barangay_endorsement_file",
-    indigency: "indigency_cert_file",
-    attachment: "attachment_file",
-  },
-  treatment_requests: {
-    medCert: "med_cert_file",
-    rx: "rx_file",
-    lab: "lab_file",
-    letter: "letter_file",
-    voterId: "voter_id_file",
-    birthCert: "birth_cert_file",
-    barangay: "barangay_endorsement_file",
-    indigency: "indigency_cert_file",
-    attachment: "attachment_file",
-  },
-  medical_requests: {
-    medCert: "med_cert_file",
-    prescription: "prescription_file",
-    quotation: "quotation_file",
-    letter: "letter_file",
-    voterId: "voter_id_file",
-    birthCert: "birth_cert_file",
-    barangay: "barangay_endorsement_file",
-    indigency: "indigency_cert_file",
-    attachment: "attachment_file",
-  },
-  financial_requests: {
-    letter: "letter_file",
-    voterId: "voter_id_file",
-    validId: "valid_id_file",
-    barangay: "barangay_endorsement_file",
-    indigency: "indigency_cert_file",
-    attachment: "attachment_file",
-  },
-  monetary_requests: {
-    letter: "letter_file",
-    voterId: "voters_id_or_cert_file",
-    birthCert: "valid_id_or_birth_cert_file",
-    barangay: "barangay_endorsement_file",
-    indigency: "indigency_cert_file",
-    attachment: "additional_attachment_file",
-  },
-  burial_requests: {
-    deathCert: "death_cert_file",
-    validId: "valid_id_file",
-    barangay: "barangay_endorsement_file",
-    indigency: "indigency_cert_file",
-    attachment: "attachment_file",
-  },
-  cremation_requests: {
-    deathCert: "death_cert_file",
-    validId: "valid_id_file",
-    barangay: "barangay_endorsement_file",
-    indigency: "indigency_cert_file",
-    attachment: "attachment_file",
-  },
-  columbarium_requests: {
-    deathCert: "death_cert_file",
-    validId: "valid_id_file",
-    cremationCert: "cremation_cert_file",
-    barangay: "barangay_endorsement_file",
-    indigency: "indigency_cert_file",
-    attachment: "attachment_file",
-  },
-};
-
-function fromDbFileType(
-  requestTable: RequestTableName,
-  dbFileType: string
-): string {
-  const map = FILE_TYPE_MAP[requestTable] || {};
-  const pair = Object.entries(map).find(([, value]) => value === dbFileType);
-  return pair?.[0] || dbFileType;
-}
 
 function normalizeRawStatus(raw?: string | null): string {
   const s = (raw || "").toString().trim().toLowerCase().replace(/_/g, " ");
@@ -249,19 +140,25 @@ function attachmentStatusIcon(statusRaw?: string | null): {
 } | null {
   const s = normalizeAttachmentStatus(statusRaw);
   if (s === "approved") {
-    return { name: "checkmark-circle", color: GREEN };
+    return { name: "checkmark-circle", color: ATTACHMENT_STATUS_ACCENT.approved };
   }
   if (s === "action required") {
-    return { name: "alert-circle", color: "#F0A13A" };
+    return {
+      name: "alert-circle",
+      color: ATTACHMENT_STATUS_ACCENT.actionRequired,
+    };
   }
   if (s === "resubmitted") {
-    return { name: "refresh-circle", color: "#E3B500" };
+    return {
+      name: "refresh-circle",
+      color: ATTACHMENT_STATUS_ACCENT.resubmitted,
+    };
   }
   return null;
 }
 
 function statusLabel(raw?: string | null): ServiceStatus {
-  return normalizeStatus(raw || "");
+  return normalizeServiceStatus(raw || "");
 }
 
 function statusDescription(raw?: string | null): string {
@@ -294,32 +191,6 @@ function statusDescription(raw?: string | null): string {
     return "This request has been deleted.";
   }
   return "Status updated.";
-}
-
-function badgeThemeForStatus(status: ServiceStatus): {
-  bg: string;
-  text: string;
-} {
-  switch (status) {
-    case "Pending":
-      return { bg: BADGE_PENDING, text: "#4A2E5B" };
-    case "In Progress":
-      return { bg: BADGE_PROGRESS, text: BADGE_TEXT_DEFAULT };
-    case "Action Required":
-      return { bg: BADGE_ACTION, text: BADGE_TEXT_DEFAULT };
-    case "Resubmitted":
-      return { bg: BADGE_PROGRESS, text: BADGE_TEXT_DEFAULT };
-    case "For Approval":
-      return { bg: BADGE_FOR_APPROVAL, text: "#0D5C58" };
-    case "Scheduled":
-      return { bg: BADGE_SCHEDULED, text: "#2F4F7A" };
-    case "Approved":
-      return { bg: BADGE_APPROVED, text: BADGE_TEXT_DEFAULT };
-    case "Draft":
-      return { bg: BADGE_DRAFT, text: BADGE_TEXT_DEFAULT };
-    default:
-      return { bg: BADGE_PENDING, text: "#4A2E5B" };
-  }
 }
 
 function isImagePath(path?: string) {
@@ -360,78 +231,6 @@ function formatTime(d?: number) {
   }
 }
 
-function topBarGradient(category?: Category): [string, string] {
-  switch (category) {
-    case "medical":
-      return ["#12B4D8", "#2AC8EE"];
-    case "financial":
-      return ["#F6D34D", "#F2B600"];
-    case "burial":
-      return ["#FF2DF7", "#7B61FF"];
-    default:
-      return ["#12B4D8", "#2AC8EE"];
-  }
-}
-
-function assistanceTitle(category?: Category) {
-  switch (category) {
-    case "financial":
-      return "Financial Assistance";
-    case "burial":
-      return "Burial Assistance";
-    case "medical":
-    default:
-      return "Medical Assistance";
-  }
-}
-
-function typeLabel(category?: Category) {
-  switch (category) {
-    case "financial":
-      return "Type Of Financial Assistance:";
-    case "burial":
-      return "Type Of Burial Assistance:";
-    case "medical":
-    default:
-      return "Type Of Medical Assistance:";
-  }
-}
-
-function tableForService(
-  service?: string,
-  title?: string,
-  category?: Category
-): RequestTableName | null {
-  const s = (service || "").toLowerCase();
-  const t = (title || "").toLowerCase();
-
-  if (s === "hospitalization" || s === "hospital")
-    return "hospitalization_requests";
-  if (s === "treatment") return "treatment_requests";
-  if (s === "medical") return "medical_requests";
-  if (s === "financial") return "financial_requests";
-  if (s === "monetary") return "monetary_requests";
-  if (s === "burial-site" || s === "burial") return "burial_requests";
-  if (s === "cremation") return "cremation_requests";
-  if (s === "columbarium" || s === "colombarium")
-    return "columbarium_requests";
-
-  if (t.includes("hospitalization")) return "hospitalization_requests";
-  if (t.includes("treatment")) return "treatment_requests";
-  if (t.includes("monetary")) return "monetary_requests";
-  if (t.includes("financial")) return "financial_requests";
-  if (t.includes("cremation")) return "cremation_requests";
-  if (t.includes("columbarium") || t.includes("colombarium"))
-    return "columbarium_requests";
-  if (t.includes("burial")) return "burial_requests";
-
-  if (category === "medical") return "medical_requests";
-  if (category === "financial") return "financial_requests";
-  if (category === "burial") return "burial_requests";
-
-  return null;
-}
-
 /* ========= helpers for docs ========= */
 function pickFileName(d: StoredDoc) {
   return inferAttachmentName(d.path, d.fileType);
@@ -449,86 +248,9 @@ function formatBytes(bytes?: number) {
   return `${mb.toFixed(2)} MB`;
 }
 
-function requirementsFor(table?: RequestTableName | null): ReqDef[] {
-  if (!table) return [];
-
-  const byTable: Record<RequestTableName, ReqDef[]> = {
-    hospitalization_requests: [
-      { key: "abstract", label: "Medical Abstract" },
-      { key: "bill", label: "Partial Hospital Bill" },
-      { key: "letter", label: "Letter of Request" },
-      { key: "voterId", label: "Voter's ID / Certificate" },
-      { key: "birthCert", label: "Valid ID / Birth Certificate" },
-      { key: "barangay", label: "Barangay Endorsement" },
-      { key: "indigency", label: "Certificate of Indigency" },
-      { key: "attachment", label: "Attachments (optional)", optional: true },
-    ],
-    treatment_requests: [
-      { key: "medCert", label: "Medical Certificate" },
-      { key: "rx", label: "Doctor's Prescription" },
-      { key: "lab", label: "Laboratory Request" },
-      { key: "letter", label: "Letter of Request" },
-      { key: "voterId", label: "Voter's ID / Certificate" },
-      { key: "birthCert", label: "Valid ID / Birth Certificate" },
-      { key: "barangay", label: "Barangay Endorsement" },
-      { key: "indigency", label: "Certificate of Indigency" },
-      { key: "attachment", label: "Attachments (optional)", optional: true },
-    ],
-    medical_requests: [
-      { key: "medCert", label: "Medical Certificate" },
-      { key: "prescription", label: "Doctor's Prescription" },
-      { key: "quotation", label: "Quotation of Expenses" },
-      { key: "letter", label: "Letter of Request" },
-      { key: "voterId", label: "Voter's ID / Certificate" },
-      { key: "birthCert", label: "Valid ID / Birth Certificate" },
-      { key: "barangay", label: "Barangay Endorsement" },
-      { key: "indigency", label: "Certificate of Indigency" },
-      { key: "attachment", label: "Attachments (optional)", optional: true },
-    ],
-    financial_requests: [
-      { key: "letter", label: "Letter of Request" },
-      { key: "voterId", label: "Voter's ID / Certificate" },
-      { key: "validId", label: "Valid ID" },
-      { key: "barangay", label: "Barangay Endorsement" },
-      { key: "indigency", label: "Certificate of Indigency" },
-      { key: "attachment", label: "Attachments (optional)", optional: true },
-    ],
-    monetary_requests: [
-      { key: "letter", label: "Letter of Request" },
-      { key: "voterId", label: "Voter's ID / Certificate" },
-      { key: "birthCert", label: "Valid ID / Birth Certificate" },
-      { key: "barangay", label: "Barangay Endorsement" },
-      { key: "indigency", label: "Certificate of Indigency" },
-      { key: "attachment", label: "Attachments (optional)", optional: true },
-    ],
-    burial_requests: [
-      { key: "deathCert", label: "Death Certificate" },
-      { key: "validId", label: "Valid ID of Deceased" },
-      { key: "barangay", label: "Barangay Endorsement of the Deceased" },
-      { key: "indigency", label: "Indigency Certificate of the Deceased" },
-      { key: "attachment", label: "Attachments (optional)", optional: true },
-    ],
-    cremation_requests: [
-      { key: "deathCert", label: "Death Certificate" },
-      { key: "validId", label: "Valid ID of Deceased" },
-      { key: "barangay", label: "Barangay Endorsement of the Deceased" },
-      { key: "indigency", label: "Indigency Certificate of the Deceased" },
-      { key: "attachment", label: "Attachments (optional)", optional: true },
-    ],
-    columbarium_requests: [
-      { key: "deathCert", label: "Death Certificate" },
-      { key: "validId", label: "Valid ID of Deceased" },
-      { key: "cremationCert", label: "Certificate of Cremation" },
-      { key: "barangay", label: "Barangay Endorsement of the Deceased" },
-      { key: "indigency", label: "Indigency Certificate of the Deceased" },
-      { key: "attachment", label: "Attachments (optional)", optional: true },
-    ],
-  };
-
-  return byTable[table] || [];
-}
-
 export default function StatusDetails() {
+  const { bundle } = useAssistanceCatalog();
+  const catalogReady = !!bundle?.runtime;
   const router = useRouter();
   const params = useLocalSearchParams<{
     id?: string;
@@ -559,7 +281,7 @@ export default function StatusDetails() {
   useEffect(() => {
     (async () => {
       try {
-        const raw = await AsyncStorage.getItem(STORAGE_KEY_STATUS_LIST);
+        const raw = await AsyncStorage.getItem(STORAGE_KEYS.statusApplicationsV1);
         if (raw) {
           const list = JSON.parse(raw);
           if (Array.isArray(list)) {
@@ -567,12 +289,18 @@ export default function StatusDetails() {
               (x: any) => String(x?.id) === String(params?.id)
             );
             if (found) {
-              setApp({
+              const base: ApplicationItem = {
                 id: String(found?.id),
                 title: String(found?.title ?? ""),
                 description: String(found?.description ?? ""),
-                status: normalizeStatus(found?.status as string) ?? "Pending",
-                category: (found?.category as Category) ?? "medical",
+                status: normalizeServiceStatus(found?.status as string),
+                category: (found?.category as Category) ?? "uncategorized",
+                categorySlug:
+                  typeof found?.categorySlug === "string"
+                    ? found.categorySlug
+                    : typeof found?.category === "string"
+                      ? found.category
+                      : undefined,
                 createdAt:
                   typeof found?.createdAt === "number"
                     ? found.createdAt
@@ -591,7 +319,8 @@ export default function StatusDetails() {
                   typeof found?.service === "string"
                     ? found.service
                     : undefined,
-              });
+              };
+              setApp(enrichStatusApplicationItem(base));
               return;
             }
           }
@@ -599,10 +328,10 @@ export default function StatusDetails() {
       } catch {}
 
       const fallbackCategory =
-        (params?.category as Category) ?? ("medical" as Category);
+        (params?.category as Category) ?? ("uncategorized" as Category);
       const fallbackCreatedAt = Number(params?.createdAt) || Date.now();
       const fallbackStatus =
-        normalizeStatus((params?.status as string) ?? "") ?? "Pending";
+        normalizeServiceStatus((params?.status as string) ?? "");
       const fallbackTitle = String(params?.title ?? "—");
 
       setApp({
@@ -639,31 +368,63 @@ export default function StatusDetails() {
   }, [auditHistory]);
 
   const badgeText = useMemo(
-    () => normalizeStatus(latestAuditStatus || requestRow?.status || app?.status),
-    [latestAuditStatus, requestRow?.status, app?.status]
+    () =>
+      headerStatusForDetails({
+        routedStatus: app?.status,
+        dbStatus: requestRow?.status,
+      }),
+    [app?.status, requestRow?.status]
   );
   const createdAt = app?.createdAt ?? Date.now();
   const badgeTheme = useMemo(
-    () => badgeThemeForStatus(badgeText as ServiceStatus),
+    () => statusBadgeTheme(badgeText as ServiceStatus),
     [badgeText]
   );
 
+  const categorySlug = useMemo(
+    () => (app ? resolveApplicationCategorySlug(app) : ""),
+    [app]
+  );
+
   const infoHeaderTitle = useMemo(
-    () => `${assistanceTitle(app?.category)} Information`,
-    [app?.category]
+    () => `${categoryAssistanceTitle(categorySlug)} Information`,
+    [categorySlug]
   );
 
   const typeOfAssistance = useMemo(() => {
-    const t = (app?.title || "").toLowerCase();
-    if (t.includes("treatment")) return "Treatment & Procedures";
-    if (t.includes("operations")) return "Medical Operations";
+    const rt = getCatalogLookupRuntime();
+    const sid = resolveServiceId(app?.service ?? "");
+    if (sid && rt?.byServiceId[sid]?.displayName) {
+      return rt.byServiceId[sid].displayName;
+    }
     return app?.title || "—";
-  }, [app?.title]);
+  }, [app?.service, app?.title]);
 
-  const requestTable = useMemo(
-    () => tableForService(app?.service, app?.title, app?.category),
-    [app?.service, app?.title, app?.category]
-  );
+  const catalogServiceId = useMemo(() => {
+    const fromRow = (requestRow?.service_id || "").trim();
+    if (fromRow && getCatalogLookupRuntime()?.byServiceId[fromRow]) {
+      return fromRow;
+    }
+    const fromApp = resolveServiceId(app?.service ?? "");
+    if (fromApp) return fromApp;
+    return resolveCatalogServiceIdForStatusHints({
+      service: app?.service,
+      title: app?.title,
+      category: app?.categorySlug ?? app?.category,
+    });
+  }, [
+    app?.service,
+    app?.title,
+    app?.category,
+    app?.categorySlug,
+    requestRow?.service_id,
+    catalogReady,
+  ]);
+
+  useEffect(() => {
+    if (!catalogReady) return;
+    setApp((prev) => (prev ? enrichStatusApplicationItem(prev) : prev));
+  }, [catalogReady, bundle?.services?.length]);
   const realRequestId = useMemo(() => {
     const id = (app?.id || "").toString();
     return id.startsWith("draft_") ? id.replace("draft_", "") : id;
@@ -714,11 +475,17 @@ export default function StatusDetails() {
   const additionalInfoText =
     (requestRow?.additional_info || "").toString().trim() ||
     "No additional information submitted.";
-  const coverageText = (requestRow?.coverage || "").toString().trim();
-  const financialRequestTypeText = (requestRow?.financial_request_type || "")
-    .toString()
-    .trim();
-
+  const preflightChoiceLines = useMemo(() => {
+    if (!catalogServiceId) return [];
+    return buildPreflightChoiceLines(catalogServiceId, {
+      payload: requestRow?.payload,
+      financialRequestType: requestRow?.financial_request_type ?? null,
+    });
+  }, [
+    catalogServiceId,
+    requestRow?.financial_request_type,
+    requestRow?.payload,
+  ]);
   const normalizedStatus = useMemo(
     () => normalizeRawStatus(latestAuditStatus || requestRow?.status || app?.status),
     [latestAuditStatus, requestRow?.status, app?.status]
@@ -814,7 +581,7 @@ export default function StatusDetails() {
   );
 
   useEffect(() => {
-    if (!app?.id || !requestTable) return;
+    if (!app?.id) return;
 
     const realId = app.id.startsWith("draft_")
       ? app.id.replace("draft_", "")
@@ -825,18 +592,11 @@ export default function StatusDetails() {
     (async () => {
       try {
         setIsDbSyncing(true);
-        const baseSelectColumns =
-          "id,status,request_code,created_at,updated_at,submitted_at,additional_info";
-        const withCoverage = COVERAGE_TABLES.has(requestTable)
-          ? `${baseSelectColumns},coverage`
-          : baseSelectColumns;
         const requestSelectColumns =
-          requestTable === "financial_requests"
-            ? `${withCoverage},financial_request_type`
-            : withCoverage;
+          "id,service_id,status,request_code,created_at,updated_at,submitted_at,additional_info,financial_request_type,payload";
 
         const { data, error } = await supabase
-          .from(requestTable)
+          .from("assistance_requests")
           .select(requestSelectColumns)
           .eq("id", realId)
           .maybeSingle();
@@ -850,9 +610,15 @@ export default function StatusDetails() {
           if (row) {
             setApp((prev) => {
               if (!prev) return prev;
-              return {
+              const next: ApplicationItem = {
                 ...prev,
-                status: normalizeStatus(row.status || prev.status),
+                status: isRefreshing
+                  ? normalizeServiceStatus(row.status || prev.status)
+                  : prev.status,
+                service:
+                  typeof row.service_id === "string" && row.service_id.trim()
+                    ? row.service_id.trim()
+                    : prev.service,
                 requestCode:
                   typeof row.request_code === "string" && row.request_code.trim()
                     ? row.request_code.trim()
@@ -862,14 +628,14 @@ export default function StatusDetails() {
                   toMillis(row.submitted_at) ||
                   prev.createdAt,
               };
+              return enrichStatusApplicationItem(next);
             });
           }
         }
 
         const { data: auditData, error: auditError } = await supabase
           .from("audit_logs")
-          .select("action,old_status,new_status,changed_by,changed_by_role,changed_at")
-          .eq("request_table", requestTable)
+          .select("action,old_status,new_status,changed_by,changed_at")
           .eq("request_id", realId)
           .order("changed_at", { ascending: true });
 
@@ -886,8 +652,8 @@ export default function StatusDetails() {
           .select(
             "file_type,path,status,created,updated,reason_for_action,additional_reason"
           )
-          .eq("request_table", requestTable)
-          .eq("request_uid", realId)
+          .eq("assistance_request_id", realId)
+          .eq("request_table", ASSISTANCE_REQUESTS_TABLE)
           .order("created", { ascending: true });
 
         if (attachmentsError) throw attachmentsError;
@@ -903,11 +669,16 @@ export default function StatusDetails() {
             additional_reason: string | null;
           }>;
 
+          const slotMap: Record<string, string> = catalogServiceId
+            ? getCatalogLookupRuntime()?.byServiceId[catalogServiceId]
+                ?.attachmentSlotMap ?? {}
+            : {};
+
           setUploadedDocs(
             rows
               .filter((r) => typeof r.path === "string" && r.path.trim().length > 0)
               .map((r) => ({
-                fileType: fromDbFileType(requestTable, r.file_type),
+                fileType: fromDbFileType(slotMap, r.file_type),
                 path: r.path,
                 status: r.status,
                 created: r.created,
@@ -929,30 +700,16 @@ export default function StatusDetails() {
     return () => {
       active = false;
     };
-  }, [app?.id, requestTable, refreshTick]);
-
-  useEffect(() => {
-    if (app?.id && !requestTable) {
-      setIsInitialLoading(false);
-    }
-  }, [app?.id, requestTable]);
+  }, [app?.id, catalogServiceId, refreshTick]);
 
   const headerStroke = useMemo<[string, string]>(
-    () => topBarGradient(app?.category),
-    [app?.category]
+    () => statusCardHeaderGradientForSlug(categorySlug),
+    [categorySlug]
   );
 
-  const reqDefs = useMemo(() => {
-    return requirementsFor(requestTable);
-  }, [requestTable]);
-
-  const requiredReqDefs = useMemo(
-    () => reqDefs.filter((r) => !r.optional),
-    [reqDefs]
-  );
-  const optionalReqDef = useMemo(
-    () => reqDefs.find((r) => r.optional),
-    [reqDefs]
+  const requirementGroups = useMemo(
+    () => requirementSlotsGroupedForService(catalogServiceId),
+    [catalogServiceId, catalogReady]
   );
 
   const docByReqKey = useMemo(() => {
@@ -1061,7 +818,7 @@ export default function StatusDetails() {
 
       {isInitialLoading ? (
         <View style={styles.initialLoadingWrap}>
-          <ActivityIndicator size="large" color="#0B8F8B" />
+          <ActivityIndicator size="large" color={TEAL} />
           <View style={styles.initialSkeletonCard} />
           <View style={styles.initialSkeletonLine} />
           <View style={styles.initialSkeletonPanel} />
@@ -1074,8 +831,8 @@ export default function StatusDetails() {
           <RefreshControl
             refreshing={isRefreshing}
             onRefresh={onRefresh}
-            tintColor="#0B8F8B"
-            colors={["#0B8F8B"]}
+            tintColor={TEAL}
+            colors={[TEAL]}
             progressBackgroundColor="#FFFFFF"
           />
         }
@@ -1100,26 +857,37 @@ export default function StatusDetails() {
               <Text style={styles.requestCodeValue}>{displayRequestCode}</Text>
               {isDbSyncing ? (
                 <View style={styles.codeSyncRow}>
-                  <ActivityIndicator size="small" color="#0B8F8B" />
+                  <ActivityIndicator size="small" color={TEAL} />
                   <Text style={styles.codeSyncText}>Syncing latest details...</Text>
                 </View>
               ) : null}
             </View>
 
+            {preflightChoiceLines.length > 0 ? (
+              <View style={styles.choiceCardWrap}>
+                <View style={styles.choiceCard}>
+                  <Text style={styles.choiceCardTitle}>Your selections</Text>
+                  {preflightChoiceLines.map((line, idx) => (
+                    <View
+                      key={`choice-${idx}-${line.label}`}
+                      style={[
+                        styles.choiceRow,
+                        idx > 0 ? styles.choiceRowBorder : null,
+                      ]}
+                    >
+                      <Text style={styles.choiceLabel}>{line.label}</Text>
+                      <Text style={styles.choiceValue}>{line.value}</Text>
+                    </View>
+                  ))}
+                </View>
+              </View>
+            ) : null}
+
             <View style={styles.infoRows}>
               <InfoRow
-                label={typeLabel(app?.category)}
+                label={typeOfAssistanceLabel(categorySlug)}
                 value={typeOfAssistance}
               />
-              {requestTable === "financial_requests" ? (
-                <InfoRow
-                  label="Financial Request Type:"
-                  value={financialRequestTypeText || "—"}
-                />
-              ) : null}
-              {coverageText ? (
-                <InfoRow label="Coverage:" value={coverageText} />
-              ) : null}
               <InfoRow
                 label="Date of Application:"
                 value={`${formatDate(createdAt)} • ${formatTime(createdAt)}`}
@@ -1137,20 +905,31 @@ export default function StatusDetails() {
                   {(() => {
                     const isCurrent = index === currentStepIndex;
                     const isCompleted = index > currentStepIndex;
-                    const showAlert = isCurrent;
+                    const stepTheme = statusTimelineDotTheme(
+                      step.title as ServiceStatus
+                    );
 
                     return (
                       <View
                         style={[
                           styles.progressDot,
                           isCompleted && styles.progressDotActive,
-                          showAlert && styles.progressDotCurrent,
+                          isCurrent && {
+                            borderColor: stepTheme.bg,
+                            borderWidth: 6,
+                            backgroundColor: "#FFFFFF",
+                          },
                         ]}
                       >
                         {isCompleted ? (
                           <Ionicons name="checkmark" size={12} color="#FFFFFF" />
-                        ) : showAlert ? (
-                          <Ionicons name="alert" size={11} color="#FFFFFF" />
+                        ) : isCurrent &&
+                          step.statusRaw === "action required" ? (
+                          <Ionicons
+                            name="alert"
+                            size={11}
+                            color={stepTheme.bg}
+                          />
                         ) : null}
                       </View>
                     );
@@ -1177,7 +956,7 @@ export default function StatusDetails() {
                   {isActionRequired &&
                   index === currentStepIndex &&
                   step.statusRaw === "action required" &&
-                  requestTable &&
+                  catalogServiceId &&
                   realRequestId ? (
                     <Pressable
                       onPress={() =>
@@ -1185,9 +964,9 @@ export default function StatusDetails() {
                           pathname: "/Status/ActionRequiredDetails",
                           params: {
                             id: realRequestId,
-                            requestTable,
+                            requestTable: ASSISTANCE_REQUESTS_TABLE,
                             title: app?.title || "",
-                            service: app?.service || "",
+                            service: catalogServiceId || app?.service || "",
                             requestCode: requestCode || "",
                           },
                         } as any)
@@ -1212,92 +991,32 @@ export default function StatusDetails() {
             </View>
 
             <View style={styles.docsBody}>
-              {requiredReqDefs.map((r) => {
-                const doc = docByReqKey.get(r.key);
-                const fileName = doc ? pickFileName(doc) : "";
-                const sizeTxt = doc ? formatBytes(pickFileSize(doc)) : "";
-                const isPdf = (fileName || "").toLowerCase().endsWith(".pdf");
-                const isImage = !!doc && isImagePath(doc.path);
-                const thumbnailUri = doc ? thumbnailUrls[doc.path] : undefined;
-                const statusIcon = doc ? attachmentStatusIcon(doc.status) : null;
+              {!catalogReady && !requirementGroups.required.length ? (
+                <Text style={styles.docsCatalogHint}>
+                  Loading requirement labels from catalog…
+                </Text>
+              ) : null}
+              {requirementGroups.required.map((r) => (
+                <RequirementDocRow
+                  key={r.key}
+                  def={r}
+                  doc={docByReqKey.get(r.key)}
+                  thumbnailUrls={thumbnailUrls}
+                  emptyLabel="No file submitted yet"
+                  onOpenDoc={openDoc}
+                />
+              ))}
 
-                return (
-                  <View key={r.key} style={styles.reqBlock}>
-                    <View style={styles.reqTitleRow}>
-                      {!doc ? (
-                        <Ionicons
-                          name="ellipse-outline"
-                          size={16}
-                          color={TEXT_MUTED}
-                          style={{ marginTop: 1 }}
-                        />
-                      ) : statusIcon ? (
-                        <Ionicons
-                          name={statusIcon.name}
-                          size={18}
-                          color={statusIcon.color}
-                          style={{ marginTop: 1 }}
-                        />
-                      ) : (
-                        <View style={styles.reqNoStatusIcon} />
-                      )}
-                      <Text style={styles.reqTitle}>{r.label}</Text>
-                    </View>
-
-                    <Pressable
-                      disabled={!doc}
-                      onPress={() => (doc ? openDoc(doc) : null)}
-                      style={({ pressed }) => [
-                        styles.fileCardMini,
-                        !doc && styles.fileCardMiniDisabled,
-                        pressed && doc ? { opacity: 0.9 } : null,
-                      ]}
-                    >
-                      <View
-                        style={[
-                          styles.fileIconBoxMini,
-                          !doc && styles.fileIconBoxMiniDisabled,
-                        ]}
-                      >
-                        {isImage && thumbnailUri ? (
-                          <Image
-                            source={{ uri: thumbnailUri }}
-                            style={styles.fileThumbnail}
-                            resizeMode="cover"
-                          />
-                        ) : (
-                          <Ionicons
-                            name={
-                              doc
-                                ? isPdf
-                                  ? "document-text"
-                                  : "image"
-                                : "document-outline"
-                            }
-                            size={16}
-                            color={
-                              doc
-                                ? isPdf
-                                  ? "#D94B4B"
-                                  : "#0B8F8B"
-                                : "#BDBDBD"
-                            }
-                          />
-                        )}
-                      </View>
-
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.fileNameMini} numberOfLines={1}>
-                          {doc ? fileName : "No file submitted yet"}
-                        </Text>
-                        <Text style={styles.fileSizeMini} numberOfLines={1}>
-                          {doc ? sizeTxt || " " : " "}
-                        </Text>
-                      </View>
-                    </Pressable>
-                  </View>
-                );
-              })}
+              {requirementGroups.optionalRequirements.map((r) => (
+                <RequirementDocRow
+                  key={r.key}
+                  def={r}
+                  doc={docByReqKey.get(r.key)}
+                  thumbnailUrls={thumbnailUrls}
+                  emptyLabel="No optional file submitted"
+                  onOpenDoc={openDoc}
+                />
+              ))}
 
               <View style={styles.reqBlock}>
                 <View style={styles.reqTitleRow}>
@@ -1312,95 +1031,19 @@ export default function StatusDetails() {
                 <View style={styles.additionalInfoCard}>
                   <Text style={styles.additionalInfoText}>{additionalInfoText}</Text>
                 </View>
+                {requirementGroups.additionalAttachment ? (
+                  <View style={styles.additionalAttachmentWrap}>
+                    <RequirementDocRow
+                      def={requirementGroups.additionalAttachment}
+                      doc={docByReqKey.get(requirementGroups.additionalAttachment.key)}
+                      thumbnailUrls={thumbnailUrls}
+                      emptyLabel="No additional attachment submitted"
+                      onOpenDoc={openDoc}
+                      compactTitle
+                    />
+                  </View>
+                ) : null}
               </View>
-
-              {optionalReqDef ? (
-                (() => {
-                  const doc = docByReqKey.get(optionalReqDef.key);
-                  const fileName = doc ? pickFileName(doc) : "";
-                  const isPdf = (fileName || "").toLowerCase().endsWith(".pdf");
-                  const isImage = !!doc && isImagePath(doc.path);
-                  const thumbnailUri = doc ? thumbnailUrls[doc.path] : undefined;
-                  const statusIcon = doc ? attachmentStatusIcon(doc.status) : null;
-
-                  return (
-                    <View key={optionalReqDef.key} style={styles.reqBlock}>
-                      <View style={styles.reqTitleRow}>
-                        {!doc ? (
-                          <Ionicons
-                            name="ellipse-outline"
-                            size={16}
-                            color={TEXT_MUTED}
-                            style={{ marginTop: 1 }}
-                          />
-                        ) : statusIcon ? (
-                          <Ionicons
-                            name={statusIcon.name}
-                            size={18}
-                            color={statusIcon.color}
-                            style={{ marginTop: 1 }}
-                          />
-                        ) : (
-                          <View style={styles.reqNoStatusIcon} />
-                        )}
-                        <Text style={styles.reqTitle}>{optionalReqDef.label}</Text>
-                      </View>
-
-                      <Pressable
-                        disabled={!doc}
-                        onPress={() => (doc ? openDoc(doc) : null)}
-                        style={({ pressed }) => [
-                          styles.fileCardMini,
-                          !doc && styles.fileCardMiniDisabled,
-                          pressed && doc ? { opacity: 0.9 } : null,
-                        ]}
-                      >
-                        <View
-                          style={[
-                            styles.fileIconBoxMini,
-                            !doc && styles.fileIconBoxMiniDisabled,
-                          ]}
-                        >
-                          {isImage && thumbnailUri ? (
-                            <Image
-                              source={{ uri: thumbnailUri }}
-                              style={styles.fileThumbnail}
-                              resizeMode="cover"
-                            />
-                          ) : (
-                            <Ionicons
-                              name={
-                                doc
-                                  ? isPdf
-                                    ? "document-text"
-                                    : "image"
-                                  : "document-outline"
-                              }
-                              size={16}
-                              color={
-                                doc
-                                  ? isPdf
-                                    ? "#D94B4B"
-                                    : "#0B8F8B"
-                                  : "#BDBDBD"
-                              }
-                            />
-                          )}
-                        </View>
-
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.fileNameMini} numberOfLines={1}>
-                            {doc ? fileName : "No optional attachment submitted"}
-                          </Text>
-                          <Text style={styles.fileSizeMini} numberOfLines={1}>
-                            {doc ? " " : " "}
-                          </Text>
-                        </View>
-                      </Pressable>
-                    </View>
-                  );
-                })()
-              ) : null}
             </View>
           </View>
         </View>
@@ -1445,6 +1088,88 @@ export default function StatusDetails() {
         </View>
       ) : null}
     </SafeAreaView>
+  );
+}
+
+function RequirementDocRow(props: {
+  def: StatusScreenRequirementDef;
+  doc?: StoredDoc;
+  thumbnailUrls: Record<string, string>;
+  emptyLabel: string;
+  onOpenDoc: (doc: StoredDoc) => void;
+  compactTitle?: boolean;
+}) {
+  const { def, doc, thumbnailUrls, emptyLabel, onOpenDoc, compactTitle } = props;
+  const fileName = doc ? pickFileName(doc) : "";
+  const sizeTxt = doc ? formatBytes(pickFileSize(doc)) : "";
+  const isImage = !!doc && isImagePath(doc.path);
+  const thumbnailUri = doc ? thumbnailUrls[doc.path] : undefined;
+  const statusIcon = doc ? attachmentStatusIcon(doc.status) : null;
+  const iconName = doc ? fileIconName(undefined, fileName) : "document-outline";
+
+  return (
+    <View style={compactTitle ? styles.reqBlockNested : styles.reqBlock}>
+      <View style={styles.reqTitleRow}>
+        {!doc ? (
+          <Ionicons
+            name="ellipse-outline"
+            size={16}
+            color={TEXT_MUTED}
+            style={{ marginTop: 1 }}
+          />
+        ) : statusIcon ? (
+          <Ionicons
+            name={statusIcon.name}
+            size={18}
+            color={statusIcon.color}
+            style={{ marginTop: 1 }}
+          />
+        ) : (
+          <View style={styles.reqNoStatusIcon} />
+        )}
+        <Text style={styles.reqTitle}>{def.label}</Text>
+      </View>
+
+      <Pressable
+        disabled={!doc}
+        onPress={() => (doc ? onOpenDoc(doc) : null)}
+        style={({ pressed }) => [
+          styles.fileCardMini,
+          !doc && styles.fileCardMiniDisabled,
+          pressed && doc ? { opacity: 0.9 } : null,
+        ]}
+      >
+        <View
+          style={[
+            styles.fileIconBoxMini,
+            !doc && styles.fileIconBoxMiniDisabled,
+          ]}
+        >
+          {isImage && thumbnailUri ? (
+            <Image
+              source={{ uri: thumbnailUri }}
+              style={styles.fileThumbnail}
+              resizeMode="cover"
+            />
+          ) : (
+            <Ionicons
+              name={iconName}
+              size={16}
+              color={doc ? TEAL : "#BDBDBD"}
+            />
+          )}
+        </View>
+
+        <View style={{ flex: 1 }}>
+          <Text style={styles.fileNameMini} numberOfLines={1}>
+            {doc ? fileName : emptyLabel}
+          </Text>
+          <Text style={styles.fileSizeMini} numberOfLines={1}>
+            {doc ? sizeTxt || " " : " "}
+          </Text>
+        </View>
+      </Pressable>
+    </View>
   );
 }
 
@@ -1545,7 +1270,6 @@ const styles = StyleSheet.create({
     position: "absolute",
     right: 12,
     top: 10,
-    backgroundColor: BADGE_PENDING,
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 10,
@@ -1554,7 +1278,6 @@ const styles = StyleSheet.create({
     fontFamily: FONT,
     fontWeight: "700",
     fontSize: 10,
-    color: "#4A2E5B",
   },
 
   requestCodeBlock: {
@@ -1593,6 +1316,48 @@ const styles = StyleSheet.create({
     fontWeight: "500",
     fontSize: 10,
     color: TEXT_MUTED,
+  },
+
+  choiceCardWrap: {
+    marginTop: 10,
+    marginHorizontal: 12,
+  },
+  choiceCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 11,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: "#D8ECEC",
+  },
+  choiceCardTitle: {
+    fontFamily: FONT,
+    fontSize: 13,
+    fontWeight: "700",
+    color: TEAL,
+    marginBottom: 8,
+  },
+  choiceRow: {
+    paddingVertical: 6,
+  },
+  choiceRowBorder: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#E6ECEC",
+  },
+  choiceLabel: {
+    fontFamily: FONT,
+    fontSize: 12,
+    fontWeight: "400",
+    color: "#9AA6A6",
+    lineHeight: 17,
+  },
+  choiceValue: {
+    marginTop: 4,
+    fontFamily: FONT,
+    fontSize: 14,
+    fontWeight: "700",
+    color: TEAL,
+    lineHeight: 20,
   },
 
   infoRows: { marginTop: 10, paddingHorizontal: 12, gap: 6 },
@@ -1834,8 +1599,19 @@ const styles = StyleSheet.create({
     paddingTop: 10,
     paddingBottom: 14,
   },
+  docsCatalogHint: {
+    fontFamily: FONT,
+    fontWeight: "500",
+    fontSize: 11,
+    color: TEXT_MUTED,
+    marginBottom: 10,
+  },
 
   reqBlock: { marginBottom: 12 },
+  reqBlockNested: { marginTop: 10, marginBottom: 0 },
+  additionalAttachmentWrap: {
+    marginTop: 4,
+  },
   reqTitleRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -1875,7 +1651,7 @@ const styles = StyleSheet.create({
     height: 30,
     borderRadius: 8,
     borderWidth: 2,
-    borderColor: "#0B8F8B",
+    borderColor: TEAL,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "#FFFFFF",

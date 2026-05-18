@@ -1,0 +1,127 @@
+-- Cross-check registration step-0 identity against public.registered_voters (read-only; no table changes).
+
+begin;
+
+create or replace function private.normalize_registration_name(p text)
+returns text
+language sql
+immutable
+as $$
+  select lower(trim(regexp_replace(coalesce(p, ''), '\s+', ' ', 'g')));
+$$;
+
+create or replace function public.verify_registered_voter_for_registration(
+  p_first_name text,
+  p_middle_name text,
+  p_last_name text,
+  p_suffix text,
+  p_birth_date text,
+  p_sex text,
+  p_barangay_id uuid
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, private
+as $$
+declare
+  v_first text;
+  v_middle text;
+  v_last text;
+  v_suffix text;
+  v_sex char(1);
+  v_birth date;
+  v_match_count int;
+begin
+  v_first := private.normalize_registration_name(p_first_name);
+  v_middle := private.normalize_registration_name(p_middle_name);
+  v_last := private.normalize_registration_name(p_last_name);
+  v_suffix := private.normalize_registration_name(p_suffix);
+
+  if v_first = '' or v_last = '' then
+    return jsonb_build_object(
+      'matched', false,
+      'message', 'Please enter your first and last name as they appear on your voter registration.'
+    );
+  end if;
+
+  if p_barangay_id is null then
+    return jsonb_build_object(
+      'matched', false,
+      'message', 'Please select your barangay.'
+    );
+  end if;
+
+  v_sex := upper(trim(coalesce(p_sex, '')))::char(1);
+  if v_sex is null or v_sex not in ('M', 'F') then
+    return jsonb_build_object(
+      'matched', false,
+      'message', 'Please select your sex as it appears on your voter registration.'
+    );
+  end if;
+
+  begin
+    v_birth := nullif(trim(coalesce(p_birth_date, '')), '')::date;
+  exception
+    when others then
+      return jsonb_build_object(
+        'matched', false,
+        'message', 'Please enter a valid birth date.'
+      );
+  end;
+
+  if v_birth is null then
+    return jsonb_build_object(
+      'matched', false,
+      'message', 'Please enter your birth date as it appears on your voter registration.'
+    );
+  end if;
+
+  if v_birth > current_date then
+    return jsonb_build_object(
+      'matched', false,
+      'message', 'Birth date cannot be in the future.'
+    );
+  end if;
+
+  select count(*)::int
+    into v_match_count
+  from public.registered_voters rv
+  where private.normalize_registration_name(rv.first_name) = v_first
+    and private.normalize_registration_name(rv.middle_name) = v_middle
+    and private.normalize_registration_name(rv.last_name) = v_last
+    and private.normalize_registration_name(rv.suffix) = v_suffix
+    and rv.birth_date = v_birth
+    and rv.sex = v_sex
+    and rv.barangay_id = p_barangay_id;
+
+  if v_match_count = 1 then
+    return jsonb_build_object('matched', true);
+  end if;
+
+  if v_match_count > 1 then
+    return jsonb_build_object(
+      'matched', false,
+      'message', 'We could not verify your voter registration. Please contact your barangay office for assistance.'
+    );
+  end if;
+
+  return jsonb_build_object(
+    'matched', false,
+    'message', 'We could not find your information in the Dasmariñas City registered voter list. Only registered voters may create an Apoyo account. Please review your details and try again, or visit your barangay office if you believe this is an error.'
+  );
+end;
+$$;
+
+revoke all on function public.verify_registered_voter_for_registration(
+  text, text, text, text, text, text, uuid
+) from public;
+
+grant execute on function public.verify_registered_voter_for_registration(
+  text, text, text, text, text, text, uuid
+) to anon, authenticated;
+
+comment on function public.verify_registered_voter_for_registration is
+  'Returns { matched: boolean, message?: string } for mobile registration step 0. Does not expose voter rows.';
+
+commit;

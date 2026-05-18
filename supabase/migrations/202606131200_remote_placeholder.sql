@@ -1,0 +1,2 @@
+-- Remote-only migration placeholder (ApoyoAdmin: registered_voters).
+-- Intentionally no-op.

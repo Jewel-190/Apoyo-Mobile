@@ -1,17 +1,31 @@
 // app/Status/Status.tsx
 
 import { Ionicons } from "@expo/vector-icons";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useFocusEffect } from "@react-navigation/native";
+import { Image as ExpoImage } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
-import React, { useCallback, useMemo, useState } from "react";
-import { supabase } from "../../lib/supabase";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  categoryCardTrimGradientForItem,
+  enrichStatusApplicationItem,
+  resolveServiceMobileImageUrl,
+} from "@/AppCore/ServiceCatalogDisplay";
+import { getCatalogLookupRuntime } from "@/AppCore/CatalogLookupRuntime";
+import { useAssistanceCatalog } from "@/AppCore/UseAssistanceCatalog";
+import { supabase } from "@/AppCore/SupabaseClient";
+import {
+  fetchStatusApplicationsFromServer,
+  readStatusApplicationsCache,
+  writeStatusApplicationsCache,
+} from "@/AppCore/StatusApplicationsRepository";
+import { useLatestAsyncSequence, useSingleFlight } from "@/AppCore/UseInteractionGuard";
+import { getService } from "@/AppCore/AssistanceServiceDefinitions";
+import { defaultServiceFormPath } from "@/AppCore/RequestPipelineRoutes";
 import {
   Alert,
   ActivityIndicator,
   Dimensions,
-  Image,
   Modal,
   Pressable,
   RefreshControl,
@@ -21,6 +35,9 @@ import {
   Text,
   View,
 } from "react-native";
+import type { ApplicationItem } from "@/AppCore/AssistanceStatusApplicationsCache";
+import type { Category, ServiceStatus } from "@/AppCore/AppUiDomainTypes";
+import { statusBadgeTheme } from "@/AppCore/RequestStatusPresentation";
 import BottomNavBar, { NAV_TOTAL_HEIGHT } from "../../components/BottomNavBar";
 
 const FONT = "SF Pro Rounded";
@@ -32,31 +49,7 @@ const BORDER = "#E6E6E6";
 const DANGER = "#E45454";
 const CANCEL_BG = "#BDBDBD";
 
-/* ========= BADGE COLORS ========= */
-const BADGE_PENDING = "#E8C6FF";
-const BADGE_PROGRESS = "#B9E3FF";
-const BADGE_ACTION = "#FFD59E";
-const BADGE_RESUBMITTED = "#FFE082";
-/** Request milestone before final approval (matches DB `for approval`). */
-const BADGE_FOR_APPROVAL = "#C8EDE9";
-/** Matches DB `scheduled` (e.g. payout / service date set). */
-const BADGE_SCHEDULED = "#D8E6FA";
-const BADGE_APPROVED = "#C8F1C8";
-const BADGE_DRAFT = "#D4D4D4";
-
 const ROUTE_TIMELINE = "/Status/StatusDetails";
-const STORAGE_KEY_STATUS_LIST = "apoyo_status_applications_v1";
-
-/* ========= ICONS ========= */
-const ICON_HOSPITAL = require("../../assets/images/Hospital.png");
-const ICON_TREATMENT = require("../../assets/images/Treatment.png");
-const ICON_MEDICAL = require("../../assets/images/Medical.png");
-const ICON_FINANCIAL = require("../../assets/images/Financial.png");
-const ICON_MONETARY = require("../../assets/images/Monetary.png");
-const ICON_BURIAL = require("../../assets/images/Burial.png");
-const ICON_CREMATION = require("../../assets/images/Cremation.png");
-const ICON_COLOMBARIUM = require("../../assets/images/Colombarium.png");
-
 type FilterKey =
   | "all"
   | "pending"
@@ -68,84 +61,6 @@ type FilterKey =
   /** Final DB `approved`; no chip — only listed under All. */
   | "approvedFinal"
   | "draft";
-type Category = "medical" | "financial" | "burial";
-type ServiceStatus =
-  | "Pending"
-  | "In Progress"
-  | "Action Required"
-  | "Resubmitted"
-  | "For Approval"
-  | "Scheduled"
-  | "Approved"
-  | "Draft";
-
-type ApplicationItem = {
-  id: string;
-  title: string;
-  description: string;
-  status: ServiceStatus;
-  category: Category;
-  service?: string;
-  createdAt?: number;
-  requestCode?: string;
-};
-
-const REQUEST_STATUSES = [
-  "draft",
-  "pending",
-  "in progress",
-  "action required",
-  "resubmitted",
-  "for approval",
-  "scheduled",
-  "approved",
-  // keep legacy compatibility
-  "submitted",
-] as const;
-
-// Normalize raw DB/cached status values to `ServiceStatus`
-function normalizeStatus(raw?: string): ServiceStatus {
-  if (!raw) return "Pending";
-  const s = raw.toString().trim().toLowerCase().replace(/_/g, " ");
-  if (s === "submitted" || s === "pending") return "Pending";
-  if (s === "resubmitted") return "Resubmitted";
-  if (s === "in progress" || s === "inprogress" || s === "processing") return "In Progress";
-  if (s === "action required" || s === "action") return "Action Required";
-  if (s === "for approval") return "For Approval";
-  if (s === "scheduled") return "Scheduled";
-  if (s === "approved" || s === "accepted") return "Approved";
-  if (s === "draft") return "Draft";
-  return "Pending";
-}
-
-function badgeColor(status: ServiceStatus) {
-  switch (status) {
-    case "Pending":
-      return BADGE_PENDING;
-    case "In Progress":
-      return BADGE_PROGRESS;
-    case "Action Required":
-      return BADGE_ACTION;
-    case "Resubmitted":
-      return BADGE_RESUBMITTED;
-    case "For Approval":
-      return BADGE_FOR_APPROVAL;
-    case "Scheduled":
-      return BADGE_SCHEDULED;
-    case "Approved":
-      return BADGE_APPROVED;
-    case "Draft":
-      return BADGE_DRAFT;
-    default:
-      return "#EEE";
-  }
-}
-
-function badgeLabelColor(status: ServiceStatus): string {
-  if (status === "For Approval") return "#0D5C58";
-  if (status === "Scheduled") return "#2F4F7A";
-  return "#333";
-}
 
 function statusToFilter(status: ServiceStatus): Exclude<FilterKey, "all"> {
   switch (status) {
@@ -168,35 +83,62 @@ function statusToFilter(status: ServiceStatus): Exclude<FilterKey, "all"> {
   }
 }
 
-function topBarGradient(category?: Category): [string, string] {
-  switch (category) {
-    case "medical":
-      return ["#12B4D8", "#2AC8EE"];
-    case "financial":
-      return ["#F6D34D", "#F2B600"];
-    case "burial":
-      return ["#FF2DF7", "#7B61FF"];
-    default:
-      return ["#12B4D8", "#2AC8EE"];
-  }
+function StatusCardSkeleton() {
+  return (
+    <View style={styles.cardWrap}>
+      <View style={[styles.card, styles.skeletonCard]}>
+        <View style={styles.skeletonBar} />
+        <View style={styles.cardTapArea}>
+          <View style={styles.cardTopRow}>
+            <View style={styles.skeletonIcon} />
+            <View style={styles.skeletonBadge} />
+          </View>
+          <View style={styles.skeletonTitle} />
+          <View style={styles.skeletonMeta} />
+        </View>
+        <View style={styles.cardFooter}>
+          <View style={styles.skeletonDelete} />
+        </View>
+      </View>
+    </View>
+  );
 }
 
-function iconForTitle(title: string) {
-  const t = (title || "").toLowerCase();
+function ServiceCardIcon({
+  item,
+  catalogReady,
+}: {
+  item: ApplicationItem;
+  catalogReady: boolean;
+}) {
+  const iconUrl = useMemo(
+    () =>
+      resolveServiceMobileImageUrl({
+        service: item.service,
+        title: item.title,
+        categorySlug: item.categorySlug,
+        category: item.category,
+      }),
+    [item.service, item.title, item.categorySlug, item.category, catalogReady]
+  );
 
-  if (t.includes("hospitalization")) return ICON_HOSPITAL;
-  if (t.includes("treatment")) return ICON_TREATMENT;
-  if (t.includes("medical")) return ICON_MEDICAL;
-  if (t.includes("operations")) return ICON_MEDICAL;
-  if (t.includes("monetary")) return ICON_MONETARY;
-  if (t.includes("emergency financial")) return ICON_FINANCIAL;
-  if (t.includes("financial")) return ICON_FINANCIAL;
-  if (t.includes("cremation")) return ICON_CREMATION;
-  if (t.includes("colombarium") || t.includes("columbarium"))
-    return ICON_COLOMBARIUM;
-  if (t.includes("burial")) return ICON_BURIAL;
+  if (iconUrl) {
+    return (
+      <ExpoImage
+        source={{ uri: iconUrl }}
+        style={styles.icon}
+        contentFit="contain"
+        cachePolicy="memory-disk"
+        recyclingKey={iconUrl}
+      />
+    );
+  }
 
-  return ICON_HOSPITAL;
+  if (!catalogReady && !iconUrl) {
+    return <ActivityIndicator size="small" color="#6E7E7E" style={styles.icon} />;
+  }
+
+  return <Ionicons name="layers-outline" size={28} color="#6E7E7E" />;
 }
 
 function cardRequestId(item: ApplicationItem) {
@@ -214,305 +156,82 @@ const CARD_W = (width - PAD_X * 2 - GAP) / 2;
 const BODY_PAD_BOTTOM = NAV_TOTAL_HEIGHT + 26;
 
 export default function Status() {
+  const { bundle } = useAssistanceCatalog();
+  const catalogReady = !!bundle?.runtime;
   const router = useRouter();
   const [activeFilter, setActiveFilter] = useState<FilterKey>("all");
   const [apps, setApps] = useState<ApplicationItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isSyncing, setIsSyncing] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [openingId, setOpeningId] = useState<string | null>(null);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ApplicationItem | null>(null);
 
-  // Fetch request rows in all status states for this user
-  const fetchDraftsFromSupabase = async (): Promise<ApplicationItem[]> => {
-    try {
-      const { data: userData } = await supabase.auth.getUser();
-      if (!userData?.user?.id) return [];
-      // hospitalization requests
-      const [{ data: hospData, error: hospError } = {} as any] = [
-        await supabase
-          .from("hospitalization_requests")
-          .select("id, status, created_at, updated_at, request_code")
-          .eq("user_id", userData.user.id)
-          .in("status", [...REQUEST_STATUSES]),
-      ];
+  const { inFlight: navigationBusy, run: runNavigation } = useSingleFlight();
+  const loadSequence = useLatestAsyncSequence();
 
-      // treatment requests
-      const [{ data: treatData, error: treatError } = {} as any] = [
-        await supabase
-          .from("treatment_requests")
-          .select("id, status, created_at, updated_at, request_code")
-          .eq("user_id", userData.user.id)
-          .in("status", [...REQUEST_STATUSES]),
-      ];
+  const cardsReady = catalogReady && !isSyncing && !isLoading;
 
-      // medical requests
-      const [{ data: medData, error: medError } = {} as any] = [
-        await supabase
-          .from("medical_requests")
-          .select("id, status, created_at, updated_at, request_code")
-          .eq("user_id", userData.user.id)
-          .in("status", [...REQUEST_STATUSES]),
-      ];
-
-      // financial requests
-      const [{ data: finData, error: finError } = {} as any] = [
-        await supabase
-          .from("financial_requests")
-          .select("id, status, created_at, updated_at, request_code")
-          .eq("user_id", userData.user.id)
-          .in("status", [...REQUEST_STATUSES]),
-      ];
-
-      // monetary requests
-      const [{ data: monData, error: monError } = {} as any] = [
-        await supabase
-          .from("monetary_requests")
-          .select("id, status, created_at, updated_at, request_code")
-          .eq("user_id", userData.user.id)
-          .in("status", [...REQUEST_STATUSES]),
-      ];
-
-      // burial site requests
-      const [{ data: burData, error: burError } = {} as any] = [
-        await supabase
-          .from("burial_requests")
-          .select("id, status, created_at, updated_at, request_code")
-          .eq("user_id", userData.user.id)
-          .in("status", [...REQUEST_STATUSES]),
-      ];
-
-      // cremation requests
-      const [{ data: creData, error: creError } = {} as any] = [
-        await supabase
-          .from("cremation_requests")
-          .select("id, status, created_at, updated_at, request_code")
-          .eq("user_id", userData.user.id)
-          .in("status", [...REQUEST_STATUSES]),
-      ];
-
-      // columbarium requests
-      const [{ data: colData, error: colError } = {} as any] = [
-        await supabase
-          .from("columbarium_requests")
-          .select("id, status, created_at, updated_at, request_code")
-          .eq("user_id", userData.user.id)
-          .in("status", [...REQUEST_STATUSES]),
-      ];
-
-      const items: ApplicationItem[] = [];
-
-      if (hospData && !hospError) {
-        for (const row of hospData) {
-          const rawStatus = (row.status || "").toString();
-          const isDraft = rawStatus.trim().toLowerCase() === "draft";
-          const status = isDraft ? "Draft" : normalizeStatus(rawStatus);
-          const id = isDraft ? `draft_${row.id}` : row.id?.toString();
-
-          items.push({
-            id,
-            title: "Hospitalization Expense",
-            description: isDraft ? "Continue your application" : "View application status",
-            status: status as ServiceStatus,
-            category: "medical" as Category,
-            service: "hospitalization",
-            createdAt: new Date(row.updated_at || row.created_at).getTime(),
-            requestCode:
-              typeof row.request_code === "string" ? row.request_code : undefined,
-          });
-        }
-      }
-
-      if (treatData && !treatError) {
-        for (const row of treatData) {
-          const rawStatus = (row.status || "").toString();
-          const isDraft = rawStatus.trim().toLowerCase() === "draft";
-          const status = isDraft ? "Draft" : normalizeStatus(rawStatus);
-          const id = isDraft ? `draft_${row.id}` : row.id?.toString();
-
-          items.push({
-            id,
-            title: "Treatment & Procedures",
-            description: isDraft ? "Continue your application" : "View application status",
-            status: status as ServiceStatus,
-            category: "medical" as Category,
-            service: "treatment",
-            createdAt: new Date(row.updated_at || row.created_at).getTime(),
-            requestCode:
-              typeof row.request_code === "string" ? row.request_code : undefined,
-          });
-        }
-      }
-
-      if (medData && !medError) {
-        for (const row of medData) {
-          const rawStatus = (row.status || "").toString();
-          const isDraft = rawStatus.trim().toLowerCase() === "draft";
-          const status = isDraft ? "Draft" : normalizeStatus(rawStatus);
-          const id = isDraft ? `draft_${row.id}` : row.id?.toString();
-
-          items.push({
-            id,
-            title: "Medical Operations",
-            description: isDraft ? "Continue your application" : "View application status",
-            status: status as ServiceStatus,
-            category: "medical" as Category,
-            service: "medical",
-            createdAt: new Date(row.updated_at || row.created_at).getTime(),
-            requestCode:
-              typeof row.request_code === "string" ? row.request_code : undefined,
-          });
-        }
-      }
-
-      if (finData && !finError) {
-        for (const row of finData) {
-          const rawStatus = (row.status || "").toString();
-          const isDraft = rawStatus.trim().toLowerCase() === "draft";
-          const status = isDraft ? "Draft" : normalizeStatus(rawStatus);
-          const id = isDraft ? `draft_${row.id}` : row.id?.toString();
-
-          items.push({
-            id,
-            title: "Emergency Financial Relief",
-            description: isDraft ? "Continue your application" : "View application status",
-            status: status as ServiceStatus,
-            category: "financial" as Category,
-            service: "financial",
-            createdAt: new Date(row.updated_at || row.created_at).getTime(),
-            requestCode:
-              typeof row.request_code === "string" ? row.request_code : undefined,
-          });
-        }
-      }
-
-      if (monData && !monError) {
-        for (const row of monData) {
-          const rawStatus = (row.status || "").toString();
-          const isDraft = rawStatus.trim().toLowerCase() === "draft";
-          const status = isDraft ? "Draft" : normalizeStatus(rawStatus);
-          const id = isDraft ? `draft_${row.id}` : row.id?.toString();
-
-          items.push({
-            id,
-            title: "Monetary Burial Aid",
-            description: isDraft ? "Continue your application" : "View application status",
-            status: status as ServiceStatus,
-            category: "financial" as Category,
-            service: "monetary",
-            createdAt: new Date(row.updated_at || row.created_at).getTime(),
-            requestCode:
-              typeof row.request_code === "string" ? row.request_code : undefined,
-          });
-        }
-      }
-
-      if (burData && !burError) {
-        for (const row of burData) {
-          const rawStatus = (row.status || "").toString();
-          const isDraft = rawStatus.trim().toLowerCase() === "draft";
-          const status = isDraft ? "Draft" : normalizeStatus(rawStatus);
-          const id = isDraft ? `draft_${row.id}` : row.id?.toString();
-
-          items.push({
-            id,
-            title: "Burial Site Assistance",
-            description: isDraft ? "Continue your application" : "View application status",
-            status: status as ServiceStatus,
-            category: "burial" as Category,
-            service: "burial-site",
-            createdAt: new Date(row.updated_at || row.created_at).getTime(),
-            requestCode:
-              typeof row.request_code === "string" ? row.request_code : undefined,
-          });
-        }
-      }
-
-      if (creData && !creError) {
-        for (const row of creData) {
-          const rawStatus = (row.status || "").toString();
-          const isDraft = rawStatus.trim().toLowerCase() === "draft";
-          const status = isDraft ? "Draft" : normalizeStatus(rawStatus);
-          const id = isDraft ? `draft_${row.id}` : row.id?.toString();
-
-          items.push({
-            id,
-            title: "Cremation Assistance",
-            description: isDraft ? "Continue your application" : "View application status",
-            status: status as ServiceStatus,
-            category: "burial" as Category,
-            service: "cremation",
-            createdAt: new Date(row.updated_at || row.created_at).getTime(),
-            requestCode:
-              typeof row.request_code === "string" ? row.request_code : undefined,
-          });
-        }
-      }
-
-      if (colData && !colError) {
-        for (const row of colData) {
-          const rawStatus = (row.status || "").toString();
-          const isDraft = rawStatus.trim().toLowerCase() === "draft";
-          const status = isDraft ? "Draft" : normalizeStatus(rawStatus);
-          const id = isDraft ? `draft_${row.id}` : row.id?.toString();
-
-          items.push({
-            id,
-            title: "Columbarium Allocation",
-            description: isDraft ? "Continue your application" : "View application status",
-            status: status as ServiceStatus,
-            category: "burial" as Category,
-            service: "colombarium",
-            createdAt: new Date(row.updated_at || row.created_at).getTime(),
-            requestCode:
-              typeof row.request_code === "string" ? row.request_code : undefined,
-          });
-        }
-      }
-
-      return items;
-    } catch {
-      return [];
-    }
-  };
+  const interactionsLocked =
+    !cardsReady ||
+    navigationBusy ||
+    !!openingId ||
+    !!deletingId ||
+    isRefreshing;
 
   const loadApps = async ({ refresh = false }: { refresh?: boolean } = {}) => {
+    const seq = loadSequence.begin();
     try {
       if (refresh) {
-        setIsRefreshing(true);
+        if (loadSequence.isCurrent(seq)) setIsRefreshing(true);
       } else {
-        setIsLoading(true);
+        const cached = await readStatusApplicationsCache();
+        if (!loadSequence.isCurrent(seq)) return;
+        if (cached.length > 0) {
+          setApps(cached.map(enrichStatusApplicationItem));
+          setIsLoading(false);
+          if (!getCatalogLookupRuntime()) setIsSyncing(true);
+        } else {
+          setIsLoading(true);
+        }
       }
 
-      // Try to load cached apps first for instant UI
-      try {
-        const raw = await AsyncStorage.getItem(STORAGE_KEY_STATUS_LIST);
-        if (raw) {
-          const cached = JSON.parse(raw) as any[];
-          const normalized = cached.map((x) => ({
-            ...x,
-            status: normalizeStatus(x?.status as string),
-          })) as ApplicationItem[];
-          setApps(normalized.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0)));
-        }
-      } catch {}
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (!loadSequence.isCurrent(seq)) return;
 
-      // Fetch fresh data directly from DB every time.
-      const drafts = await fetchDraftsFromSupabase();
-      // ensure statuses normalized (drafts are already Draft)
-      const normalizedDrafts = drafts.map((d) => ({ ...d, status: normalizeStatus(d.status as string) }));
-      const sorted = normalizedDrafts.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
-      setApps(sorted);
-      try {
-        await AsyncStorage.setItem(STORAGE_KEY_STATUS_LIST, JSON.stringify(sorted));
-      } catch {}
+      const uid = sessionData?.session?.user?.id ?? null;
+      if (!uid) {
+        if (loadSequence.isCurrent(seq)) {
+          setApps([]);
+          setIsSyncing(false);
+        }
+        return;
+      }
+
+      const sorted = await fetchStatusApplicationsFromServer(uid);
+      if (!loadSequence.isCurrent(seq)) return;
+
+      const enriched = sorted.map(enrichStatusApplicationItem);
+      setApps(enriched);
+      await writeStatusApplicationsCache(enriched);
     } catch (err) {
       console.log("loadApps error:", err);
     } finally {
-      setIsLoading(false);
-      setIsRefreshing(false);
+      if (loadSequence.isCurrent(seq)) {
+        setIsLoading(false);
+        setIsRefreshing(false);
+        if (getCatalogLookupRuntime()) setIsSyncing(false);
+      }
     }
   };
+
+  useEffect(() => {
+    if (!catalogReady) return;
+    setApps((prev) => prev.map(enrichStatusApplicationItem));
+    setIsSyncing(false);
+  }, [catalogReady]);
 
   const onRefresh = useCallback(() => {
     loadApps({ refresh: true });
@@ -524,30 +243,24 @@ export default function Status() {
     }, [])
   );
 
+  /** Status cards never show CMS description — strip cached fields from older builds. */
+  const cardApps = useMemo(
+    () =>
+      apps.map((a) => ({
+        ...a,
+        description: a.status === "Draft" ? "Continue your application" : "",
+        descriptionHtml: undefined,
+        descriptionFontFamily: undefined,
+      })),
+    [apps]
+  );
+
   const filtered = useMemo(() => {
-    if (activeFilter === "all") return apps;
-    return apps.filter((a) => statusToFilter(a.status) === activeFilter);
-  }, [activeFilter, apps]);
+    if (activeFilter === "all") return cardApps;
+    return cardApps.filter((a) => statusToFilter(a.status) === activeFilter);
+  }, [activeFilter, cardApps]);
 
   const deleteRequestFromStatus = async (item: ApplicationItem) => {
-    const tableByService: Record<string, string> = {
-      hospitalization: "hospitalization_requests",
-      treatment: "treatment_requests",
-      medical: "medical_requests",
-      financial: "financial_requests",
-      monetary: "monetary_requests",
-      "burial-site": "burial_requests",
-      cremation: "cremation_requests",
-      colombarium: "columbarium_requests",
-      columbarium: "columbarium_requests",
-    };
-
-    const table = tableByService[item.service || "hospitalization"];
-    if (!table) {
-      Alert.alert("Delete Error", "Unsupported request type.");
-      return;
-    }
-
     const realId = item.id.startsWith("draft_")
       ? item.id.replace("draft_", "")
       : item.id;
@@ -555,20 +268,15 @@ export default function Status() {
     try {
       setDeletingId(item.id);
 
-      const { error: attachmentDeleteError } = await supabase
-        .from("request_attachments")
+      const { error } = await supabase
+        .from("assistance_requests")
         .delete()
-        .eq("request_table", table)
-        .eq("request_uid", realId);
-
-      if (attachmentDeleteError) throw attachmentDeleteError;
-
-      const { error } = await supabase.from(table).delete().eq("id", realId);
+        .eq("id", realId);
       if (error) throw error;
 
       setApps((prev) => {
         const next = prev.filter((x) => x.id !== item.id);
-        AsyncStorage.setItem(STORAGE_KEY_STATUS_LIST, JSON.stringify(next)).catch(() => {});
+        void writeStatusApplicationsCache(next);
         return next;
       });
     } catch (err: any) {
@@ -590,11 +298,78 @@ export default function Status() {
   };
 
   const handleConfirmDelete = async () => {
-    if (!deleteTarget) return;
+    if (!deleteTarget || deletingId) return;
     await deleteRequestFromStatus(deleteTarget);
     setDeleteConfirmOpen(false);
     setDeleteTarget(null);
   };
+
+  const openApplication = (item: ApplicationItem) => {
+    if (interactionsLocked) return;
+
+    void runNavigation(async () => {
+      setOpeningId(item.id);
+      try {
+      if (item.status === "Draft") {
+        const realId = item.id?.toString().startsWith("draft_")
+          ? item.id.toString().replace("draft_", "")
+          : item.id;
+
+        const svc = getService(item.service);
+        const pathname = svc?.requestRoute ?? defaultServiceFormPath();
+
+        router.push({
+          pathname,
+          params: {
+            requestId: String(realId),
+            ...(svc?.id ? { serviceId: svc.id } : {}),
+          },
+        } as any);
+        return;
+      }
+
+      if (
+        item.status === "For Approval" ||
+        item.status === "Scheduled" ||
+        item.status === "Approved"
+      ) {
+        router.push({
+          pathname: "/Home/ApprovedAssistance",
+          params: {
+            id: item.id,
+            title: item.title,
+            status: item.status,
+            category: item.category,
+            createdAt: String(item.createdAt ?? ""),
+            requestCode: item.requestCode,
+            service: item.service,
+          },
+        } as any);
+        return;
+      }
+
+      router.push({
+        pathname: ROUTE_TIMELINE,
+        params: {
+          id: item.id,
+          title: item.title,
+          status: item.status,
+          category: item.category,
+          createdAt: String(item.createdAt ?? ""),
+          requestCode: item.requestCode,
+          service: item.service,
+        },
+      } as any);
+      } finally {
+        setOpeningId(null);
+      }
+    });
+  };
+
+  const skeletonCount = useMemo(() => {
+    const n = Math.max(apps.length, 4);
+    return Math.min(n, 8);
+  }, [apps.length]);
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -672,10 +447,16 @@ export default function Status() {
           />
         }
       >
-        {isLoading ? (
+        {isLoading && apps.length === 0 ? (
           <View style={styles.loadingWrap}>
             <ActivityIndicator size="large" color="#0B8F8B" />
             <Text style={styles.loadingText}>Loading your applications...</Text>
+          </View>
+        ) : !cardsReady && apps.length > 0 ? (
+          <View style={styles.grid}>
+            {Array.from({ length: skeletonCount }).map((_, i) => (
+              <StatusCardSkeleton key={`status-skel-${i}`} />
+            ))}
           </View>
         ) : filtered.length === 0 ? (
           <View style={styles.emptyWrap}>
@@ -686,162 +467,75 @@ export default function Status() {
             </Text>
           </View>
         ) : (
-          <View style={styles.grid}>
-            {filtered.map((a) => (
+          <View
+            style={[styles.grid, interactionsLocked && styles.gridLocked]}
+            pointerEvents={interactionsLocked ? "none" : "auto"}
+          >
+            {filtered.map((a) => {
+              const isOpening = openingId === a.id;
+              return (
               <View key={a.id} style={styles.cardWrap}>
                 <View style={styles.card}>
                   <LinearGradient
-                    colors={topBarGradient(a.category)}
+                    colors={categoryCardTrimGradientForItem(a)}
                     start={{ x: 0, y: 0 }}
                     end={{ x: 1, y: 0 }}
                     style={styles.cardTopBar}
                   />
 
                   <Pressable
-                    onPress={() => {
-                      // If it's a draft, navigate to the appropriate form to continue editing
-                      if (a.status === "Draft") {
-                        // a.id is prefixed with 'draft_' so strip it to get the real request id
-                        const realId = a.id?.toString().startsWith("draft_")
-                          ? a.id.toString().replace("draft_", "")
-                          : a.id;
-
-                        // route based on service type
-                        if (a.service === "medical") {
-                          router.push({
-                            pathname: "/Home/Medical/MedicalReq",
-                            params: { requestId: realId },
-                          } as any);
-                          return;
-                        }
-
-                        if (a.service === "treatment") {
-                          router.push({
-                            pathname: "/Home/Treatment/TreatmentReq",
-                            params: { requestId: realId },
-                          } as any);
-                          return;
-                        }
-
-                        if (a.service === "financial") {
-                          router.push({
-                            pathname: "/Home/Financial/FinancialReq",
-                            params: { requestId: realId },
-                          } as any);
-                          return;
-                        }
-
-                        if (a.service === "monetary") {
-                          router.push({
-                            pathname: "/Home/Monetary/MonetaryReq",
-                            params: { requestId: realId },
-                          } as any);
-                          return;
-                        }
-
-                        if (a.service === "burial-site") {
-                          router.push({
-                            pathname: "/Home/Burial/BurialReq",
-                            params: { requestId: realId, serviceId: "burial-site" },
-                          } as any);
-                          return;
-                        }
-
-                        if (a.service === "cremation") {
-                          router.push({
-                            pathname: "/Home/Cremation/CremationReq",
-                            params: { requestId: realId, serviceId: "cremation" },
-                          } as any);
-                          return;
-                        }
-
-                        if (a.service === "colombarium") {
-                          router.push({
-                            pathname: "/Home/Columbarium/ColumbariumReq",
-                            params: { requestId: realId, serviceId: "colombarium" },
-                          } as any);
-                          return;
-                        }
-
-                        // default to hospitalization
-                        router.push({
-                          pathname: "/Home/Hospitalization/HospitalizationReq",
-                          params: { requestId: realId },
-                        } as any);
-                        return;
-                      }
-
-                      // Post-verification monitoring (for approval → scheduled → approved)
-                      if (
-                        a.status === "For Approval" ||
-                        a.status === "Scheduled" ||
-                        a.status === "Approved"
-                      ) {
-                        router.push({
-                          pathname: "/Home/ApprovedAssistance",
-                          params: {
-                            id: a.id,
-                            title: a.title,
-                            status: a.status,
-                            category: a.category,
-                            createdAt: String(a.createdAt ?? ""),
-                            requestCode: a.requestCode,
-                            service: a.service,
-                          },
-                        } as any);
-                        return;
-                      }
-
-                      // Other submitted applications → timeline
-                      router.push({
-                        pathname: ROUTE_TIMELINE,
-                        params: {
-                          id: a.id,
-                          title: a.title,
-                          status: a.status,
-                          category: a.category,
-                          createdAt: String(a.createdAt ?? ""),
-                          requestCode: a.requestCode,
-                          service: a.service,
-                        },
-                      } as any);
-                    }}
+                    onPress={() => openApplication(a)}
+                    disabled={interactionsLocked}
                     style={({ pressed }) => [
                       styles.cardTapArea,
-                      pressed && { opacity: 0.96, transform: [{ scale: 0.99 }] },
+                      pressed && !interactionsLocked && { opacity: 0.96, transform: [{ scale: 0.99 }] },
+                      interactionsLocked && styles.cardTapDisabled,
                     ]}
                   >
                     <View style={styles.cardTopRow}>
-                      <Image source={iconForTitle(a.title)} style={styles.icon} />
-                      <View
-                        style={[
-                          styles.badge,
-                          { backgroundColor: badgeColor(a.status) },
-                        ]}
-                      >
-                        <Text
-                          style={[styles.badgeText, { color: badgeLabelColor(a.status) }]}
-                        >
-                          {a.status}
-                        </Text>
-                      </View>
+                      <ServiceCardIcon item={a} catalogReady={catalogReady} />
+                      {(() => {
+                        const theme = statusBadgeTheme(a.status);
+                        return (
+                          <View
+                            style={[
+                              styles.badge,
+                              { backgroundColor: theme.bg },
+                            ]}
+                          >
+                            <Text
+                              style={[
+                                styles.badgeText,
+                                { color: theme.text },
+                              ]}
+                            >
+                              {a.status}
+                            </Text>
+                          </View>
+                        );
+                      })()}
                     </View>
 
                     <Text style={styles.cardTitle} numberOfLines={2}>
                       {a.title}
                     </Text>
                     <Text style={styles.cardMeta} numberOfLines={1}>
-                      {a.status !== "Draft" ? "Request ID: " + cardRequestId(a) : ""}
+                      {a.status !== "Draft"
+                        ? "Request ID: " + cardRequestId(a)
+                        : "Continue your application"}
                     </Text>
-                    <Text style={styles.cardDesc} numberOfLines={3}>
-                      {a.description}
-                    </Text>
+
+                    {isOpening ? (
+                      <View style={styles.cardOpeningOverlay}>
+                        <ActivityIndicator size="small" color="#0B8F8B" />
+                      </View>
+                    ) : null}
                   </Pressable>
 
                   <View style={styles.cardFooter}>
                     <Pressable
                       onPress={() => confirmDeleteRequest(a)}
-                      disabled={deletingId === a.id}
+                      disabled={interactionsLocked}
                       style={({ pressed }) => [
                         styles.cardDeleteBtn,
                         pressed && { opacity: 0.85 },
@@ -857,7 +551,8 @@ export default function Status() {
                   </View>
                 </View>
               </View>
-            ))}
+            );
+            })}
           </View>
         )}
       </ScrollView>
@@ -1010,7 +705,60 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     justifyContent: "space-between",
   },
+  gridLocked: {
+    opacity: 0.88,
+  },
   cardWrap: { width: CARD_W, marginBottom: 12 },
+  skeletonCard: {
+    borderColor: "#ECECEC",
+    backgroundColor: "#FAFBFB",
+  },
+  skeletonBar: {
+    position: "absolute",
+    left: 0,
+    top: 0,
+    right: 0,
+    height: 4,
+    backgroundColor: "#D8E8E8",
+  },
+  skeletonIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 8,
+    backgroundColor: "#E8EEEE",
+  },
+  skeletonBadge: {
+    width: 72,
+    height: 22,
+    borderRadius: 10,
+    backgroundColor: "#E8EEEE",
+  },
+  skeletonTitle: {
+    height: 14,
+    width: "88%",
+    borderRadius: 6,
+    backgroundColor: "#E8EEEE",
+    marginBottom: 8,
+  },
+  skeletonMeta: {
+    height: 10,
+    width: "62%",
+    borderRadius: 5,
+    backgroundColor: "#F0F2F2",
+  },
+  skeletonDelete: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: "#E8EEEE",
+  },
+  cardOpeningOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(255,255,255,0.72)",
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 12,
+  },
 
   card: {
     backgroundColor: "#FFFFFF",
@@ -1023,13 +771,15 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 7 },
     elevation: 5,
     overflow: "hidden",
-    minHeight: 164,
+    minHeight: 128,
   },
   cardTapArea: {
     flexGrow: 1,
     paddingHorizontal: 14,
     paddingTop: 12,
+    position: "relative",
   },
+  cardTapDisabled: { opacity: 0.72 },
   cardTopBar: { position: "absolute", left: 0, top: 0, right: 0, height: 4 },
   cardTopRow: {
     flexDirection: "row",
@@ -1044,8 +794,7 @@ const styles = StyleSheet.create({
   badgeText: {
     fontFamily: FONT,
     fontWeight: "700",
-    fontSize: 9,
-    color: "#333",
+    fontSize: 10,
   },
 
   cardTitle: {
@@ -1061,13 +810,6 @@ const styles = StyleSheet.create({
     fontSize: 9.5,
     color: "#6A6A6A",
     marginBottom: 6,
-  },
-  cardDesc: {
-    fontFamily: FONT,
-    fontWeight: "400",
-    fontSize: 10.8,
-    lineHeight: 14.5,
-    color: "#3A3A3A",
   },
   cardFooter: {
     marginTop: 8,

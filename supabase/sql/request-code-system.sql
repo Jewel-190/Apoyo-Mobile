@@ -400,26 +400,71 @@ as $$
 declare
   v_service text := lower(trim(coalesce(p_service, '')));
 begin
-  case v_service
-    when 'hospitalizationreq', 'hospitalization', 'hosp', 'hospitalization_requests' then
-      return public.generate_hospitalization_request_code(p_timestamp);
-    when 'treatmentreq', 'treatment', 'treat', 'treatment_requests' then
-      return public.generate_treatment_request_code(p_timestamp);
-    when 'medicalreq', 'medical', 'med', 'medical_requests' then
-      return public.generate_medical_request_code(p_timestamp);
-    when 'financialreq', 'financial', 'fin', 'financial_requests' then
-      return public.generate_financial_request_code(p_timestamp);
-    when 'monetaryreq', 'monetary', 'mon', 'monetary_requests' then
-      return public.generate_monetary_request_code(p_timestamp);
-    when 'burialreq', 'burial', 'bur', 'burial_requests' then
-      return public.generate_burial_request_code(p_timestamp);
-    when 'cremationreq', 'cremation', 'crem', 'cremation_requests' then
-      return public.generate_cremation_request_code(p_timestamp);
-    when 'columbariumreq', 'columbarium', 'colombarium', 'colu', 'columbarium_requests' then
-      return public.generate_columbarium_request_code(p_timestamp);
-    else
-      raise exception 'Unsupported service type: %', p_service using errcode = '22023';
-  end case;
+  if v_service in (
+    'hospitalizationreq',
+    'hospitalization',
+    'hosp',
+    'hospital',
+    'hospitalization_requests'
+  ) then
+    return public.generate_hospitalization_request_code(p_timestamp);
+  elsif v_service in (
+    'treatmentreq',
+    'treatment',
+    'treat',
+    'treatment_requests'
+  ) then
+    return public.generate_treatment_request_code(p_timestamp);
+  elsif v_service in (
+    'medicalreq',
+    'medical',
+    'med',
+    'operations',
+    'medical_requests'
+  ) then
+    return public.generate_medical_request_code(p_timestamp);
+  elsif v_service in (
+    'financialreq',
+    'financial',
+    'fin',
+    'emergency-finance',
+    'financial_requests'
+  ) then
+    return public.generate_financial_request_code(p_timestamp);
+  elsif v_service in (
+    'monetaryreq',
+    'monetary',
+    'mon',
+    'burial-money',
+    'monetary_requests'
+  ) then
+    return public.generate_monetary_request_code(p_timestamp);
+  elsif v_service in (
+    'burialreq',
+    'burial',
+    'bur',
+    'burial-site',
+    'burial_requests'
+  ) then
+    return public.generate_burial_request_code(p_timestamp);
+  elsif v_service in (
+    'cremationreq',
+    'cremation',
+    'crem',
+    'cremation_requests'
+  ) then
+    return public.generate_cremation_request_code(p_timestamp);
+  elsif v_service in (
+    'columbariumreq',
+    'columbarium',
+    'colombarium',
+    'colu',
+    'columbarium_requests'
+  ) then
+    return public.generate_columbarium_request_code(p_timestamp);
+  else
+    raise exception 'Unsupported service type: %', p_service using errcode = '22023';
+  end if;
 end;
 $$;
 

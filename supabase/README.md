@@ -34,23 +34,61 @@ npm run supabase:functions:deploy:cleanup
 
 ## Migration drift (read this first)
 
-`supabase migration list --linked` currently shows that the linked
-project has additional migrations that are NOT tracked in this repo
-(timestamps `202604080001`, `202604080007–9`, `202604130012–14`,
-`202604250015–16`, `202604260001–5`). These were applied to the project
-from another source (e.g. the admin dashboard repo) and likely cover
-admin-side features.
+`supabase migration list --linked` shows two-way drift between this
+repo and the linked project:
+
+- **Remote-only** (applied on the project, no file in this repo):
+  `202604080001`, `202604080007–9`, `202604130012–14`,
+  `202604250015–16`, `202604260001–5`, `202605030002–3`. These were
+  applied from another source (probably the admin dashboard repo) and
+  cover admin-side features.
+- **Local-only** (file in this repo, never pushed): `202604150001`,
+  `202604160001`, `202604170001–4`, `202605010001–2`,
+  `202605020001–2`. These were committed locally but never pushed —
+  status unknown, possibly applied via the SQL editor outside the CLI.
 
 **Implications:**
 
 - `supabase db pull` will refuse to run until the histories are
   reconciled.
+- `supabase db push` will refuse for the same reason; even if forced,
+  it would attempt to apply all 8+ older local-only migrations in
+  chronological order, which is risky.
 - The local `migrations/` folder is **not a complete reproduction** of
   the live schema. Treat it as a chronological log of changes made from
   this repo, not the source of truth.
 
-When you need to reconcile, contact whoever owns the admin repo so we
-can merge histories. Until then, do not run `migration repair` or
+### How to apply a single new migration without resolving the drift
+
+This is the procedure that was used to apply
+`202605090001_safe_facade.sql` on 2026-05-10:
+
+```pwsh
+# 1. Pre-flight: read-only checks against the live DB to verify every
+#    table / column the migration references exists. Use one .sql file
+#    per check and run via:
+supabase db query --linked --file <check>.sql --output json
+
+# 2. Apply the migration via the Management API (bypasses the local
+#    migration tracking and therefore does NOT cascade into older
+#    un-pushed local migrations):
+supabase db query --linked --file supabase/migrations/<timestamp>_<name>.sql --output json
+
+# 3. Verify the new objects on remote (enums, views, functions...).
+
+# 4. Record it in the migration tracking table so `migration list`
+#    reflects reality:
+supabase migration repair --status applied <timestamp> --linked
+```
+
+This procedure is safe **only** for migrations that are fully
+idempotent (e.g. `do $$ if not exists ... create type`,
+`create or replace view`, `create or replace function`). For
+non-idempotent migrations, resolve the drift first by contacting
+whoever owns the admin repo so we can merge histories.
+
+When you need to reconcile fully, contact whoever owns the admin
+repo. Until then, do not run `migration repair --status reverted` or
 `db push` blindly.
 
 ## SQL scripts

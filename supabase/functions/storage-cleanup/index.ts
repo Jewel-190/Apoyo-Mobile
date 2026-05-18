@@ -28,6 +28,7 @@ const PROJECT_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 
 const REQUEST_BUCKET_BY_TABLE: Record<string, string> = {
+  assistance_requests: "request-documents",
   hospitalization_requests: "request-documents",
   treatment_requests: "request-documents",
   medical_requests: "request-documents",

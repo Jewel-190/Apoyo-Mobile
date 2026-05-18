@@ -14,7 +14,16 @@ import {
   View,
 } from "react-native";
 import BottomNavBar from "../../components/BottomNavBar";
-import { supabase } from "../../lib/supabase";
+import type { Category } from "@/AppCore/AppUiDomainTypes";
+import { resolveServiceId } from "@/AppCore/CatalogLookupRuntime";
+import { getService } from "@/AppCore/AssistanceServiceDefinitions";
+import { useAssistanceCatalog } from "@/AppCore/UseAssistanceCatalog";
+import { supabase } from "@/AppCore/SupabaseClient";
+import {
+  listNotifications,
+  markRequestNotificationsRead,
+  type NotificationItem as NotificationApiRow,
+} from "@/AppCore/UserNotificationsQuery";
 
 const FONT = "SF Pro Rounded";
 
@@ -24,114 +33,62 @@ const MUTED = "#7B7B7B";
 const CARD_BORDER = "#E2E8E8";
 const TEAL = "#0B8F8B";
 
-type Category = "medical" | "financial" | "burial";
-type RequestTableName =
-  | "hospitalization_requests"
-  | "treatment_requests"
-  | "medical_requests"
-  | "financial_requests"
-  | "monetary_requests"
-  | "burial_requests"
-  | "cremation_requests"
-  | "columbarium_requests";
-
 const ROUTE_TIMELINE = "/Status/StatusDetails";
-
-type NotificationRow = {
-  id: string;
-  audit_log_id: string;
-  request_id: string;
-  request_table: RequestTableName;
-  action?: string | null;
-  is_read: boolean;
-  old_status?: string | null;
-  new_status?: string | null;
-  created_at: string;
-};
 
 type NotifItem = {
   id: string;
   requestId: string;
-  requestTable: RequestTableName;
   title: string;
   body: string;
   createdAt: number;
   read: boolean;
   category: Category;
+  accentHex: string;
   service: string;
   requestTitle: string;
   status: string | null;
 };
 
-function accentColor(cat: Category): string {
-  if (cat === "medical") return "#12B4D8";
-  if (cat === "financial") return "#F2B600";
-  return "#9B59D0";
+function defaultAccentHex(): string {
+  return "#12B4D8";
 }
 
-function categoryFromRequestTable(requestTable: RequestTableName): Category {
-  if (
-    requestTable === "hospitalization_requests" ||
-    requestTable === "treatment_requests" ||
-    requestTable === "medical_requests"
-  ) {
-    return "medical";
-  }
-
-  if (
-    requestTable === "financial_requests" ||
-    requestTable === "monetary_requests"
-  ) {
-    return "financial";
-  }
-
-  return "burial";
+function titleFromServiceKey(serviceKey: string): string {
+  const clean = serviceKey.replace(/[-_]/g, " ").trim();
+  if (!clean) return "Assistance Request";
+  return clean.replace(/\b\w/g, (m) => m.toUpperCase());
 }
 
-function serviceFromRequestTable(requestTable: RequestTableName): string {
-  switch (requestTable) {
-    case "hospitalization_requests":
-      return "hospitalization";
-    case "treatment_requests":
-      return "treatment";
-    case "medical_requests":
-      return "medical";
-    case "financial_requests":
-      return "financial";
-    case "monetary_requests":
-      return "monetary";
-    case "burial_requests":
-      return "burial";
-    case "cremation_requests":
-      return "cremation";
-    case "columbarium_requests":
-      return "columbarium";
-    default:
-      return "medical";
-  }
-}
+function resolveServiceMeta(serviceKey: string | null | undefined): {
+  serviceKey: string | null;
+  category: Category;
+  requestTitle: string;
+} {
+  const raw = (serviceKey || "").toString().trim();
+  const sid = resolveServiceId(raw);
+  const svc = sid ? getService(sid) : null;
 
-function titleFromRequestTable(requestTable: RequestTableName): string {
-  switch (requestTable) {
-    case "hospitalization_requests":
-      return "Hospitalization Expense";
-    case "treatment_requests":
-      return "Treatment & Procedures";
-    case "medical_requests":
-      return "Medical Operations";
-    case "financial_requests":
-      return "Emergency Financial Relief";
-    case "monetary_requests":
-      return "Monetary Burial Aid";
-    case "burial_requests":
-      return "Burial Site Assistance";
-    case "cremation_requests":
-      return "Cremation Assistance";
-    case "columbarium_requests":
-      return "Columbarium Allocation";
-    default:
-      return "Medical Operations";
+  if (svc) {
+    return {
+      serviceKey: svc.id,
+      category: svc.category,
+      requestTitle: svc.label || titleFromServiceKey(svc.routeToken),
+    };
   }
+
+  if (sid) {
+    return {
+      serviceKey: sid,
+      category: "medical",
+      requestTitle: titleFromServiceKey(sid),
+    };
+  }
+
+  return {
+    serviceKey: null,
+    category: "medical",
+    requestTitle: "Assistance Request",
+  };
 }
 
 function toMillis(ts: string | null | undefined): number {
@@ -213,23 +170,26 @@ function buildNotificationCopy(
   };
 }
 
-function normalizeNotifications(rows: unknown[]): NotifItem[] {
+function normalizeNotifications(
+  rows: NotificationApiRow[],
+  serviceKeyByRequestId: Record<string, string>,
+  accentHexByServiceKey: Record<string, string>
+): NotifItem[] {
   if (!Array.isArray(rows)) return [];
 
   const mapped = rows
     .map((row) => {
-      const r = row as NotificationRow;
+      const r = row as NotificationApiRow;
       const requestId = (r?.request_id || "").toString().trim();
-      const requestTable = (r?.request_table || "").toString().trim() as
-        | RequestTableName
-        | "";
+      if (!requestId) return null;
 
-      if (!requestId || !requestTable) return null;
-
-      const category = categoryFromRequestTable(requestTable as RequestTableName);
-      const requestTitle = titleFromRequestTable(requestTable as RequestTableName);
+      const serviceKey = serviceKeyByRequestId[requestId];
+      const meta = resolveServiceMeta(serviceKey);
+      const accentHex = meta.serviceKey
+        ? accentHexByServiceKey[meta.serviceKey] ?? defaultAccentHex()
+        : defaultAccentHex();
       const copy = buildNotificationCopy(
-        requestTitle,
+        meta.requestTitle,
         r?.action,
         r?.old_status,
         r?.new_status
@@ -238,14 +198,14 @@ function normalizeNotifications(rows: unknown[]): NotifItem[] {
       return {
         id: String(r?.id || `notif_${requestId}`),
         requestId,
-        requestTable: requestTable as RequestTableName,
         title: copy.title,
         body: copy.body,
         createdAt: toMillis(r?.created_at),
         read: !!r?.is_read,
-        category,
-        service: serviceFromRequestTable(requestTable as RequestTableName),
-        requestTitle,
+        category: meta.category,
+        accentHex,
+        service: meta.serviceKey ?? "",
+        requestTitle: meta.requestTitle,
         status: r?.new_status ?? r?.old_status ?? null,
       } satisfies NotifItem;
     })
@@ -264,38 +224,101 @@ function normalizeNotifications(rows: unknown[]): NotifItem[] {
   );
 }
 
-async function fetchNotifications(): Promise<NotifItem[]> {
-  const { data, error } = await supabase.functions.invoke("notifications", {
-    body: { action: "list", limit: 80 },
-  });
+async function fetchServiceIdsByRequestId(
+  requestIds: string[]
+): Promise<Record<string, string>> {
+  if (!requestIds.length) return {};
 
-  if (error) {
-    throw error;
+  const { data, error } = await supabase
+    .from("assistance_requests")
+    .select("id,service_id")
+    .in("id", requestIds);
+
+  if (error) return {};
+
+  const map: Record<string, string> = {};
+  for (const row of data ?? []) {
+    const id = (row as { id?: string }).id;
+    const serviceId = (row as { service_id?: string }).service_id;
+    if (id && serviceId) map[id] = serviceId;
   }
+  return map;
+}
 
-  return normalizeNotifications(data?.notifications || []);
+async function fetchNotifications(): Promise<{
+  rows: NotificationApiRow[];
+  serviceKeyByRequestId: Record<string, string>;
+}> {
+  const rows = await listNotifications(80);
+  const requestIds = Array.from(
+    new Set(rows.map((r) => String(r?.request_id || "")).filter(Boolean))
+  );
+  const serviceKeyByRequestId = await fetchServiceIdsByRequestId(requestIds);
+  return { rows, serviceKeyByRequestId };
 }
 
 export default function Notifications() {
   const router = useRouter();
-  const [items, setItems] = useState<NotifItem[]>([]);
+  const { bundle } = useAssistanceCatalog();
+
+  const [rawRows, setRawRows] = useState<NotificationApiRow[]>([]);
+  const [serviceKeyByRequestId, setServiceKeyByRequestId] = useState<
+    Record<string, string>
+  >({});
   const [isLoading, setIsLoading] = useState(true);
+
+  const accentHexByServiceKey = useMemo(() => {
+    const map: Record<string, string> = {};
+    const rt = bundle?.runtime;
+    for (const svc of bundle?.services ?? []) {
+      const hex =
+        rt?.categoryThemeBySlug[svc.categorySlug]?.homeCardStripeGradient?.[0] ??
+        defaultAccentHex();
+      map[svc.id] = hex;
+    }
+    return map;
+  }, [bundle]);
+
+  const items = useMemo(
+    () =>
+      normalizeNotifications(rawRows, serviceKeyByRequestId, accentHexByServiceKey),
+    [rawRows, serviceKeyByRequestId, accentHexByServiceKey]
+  );
 
   const hasResults = useMemo(() => items.length > 0, [items]);
 
   const load = async () => {
     setIsLoading(true);
     try {
-      const remote = await fetchNotifications();
-      setItems(remote);
+      const { rows, serviceKeyByRequestId: serviceMap } =
+        await fetchNotifications();
+      setRawRows(rows);
+      setServiceKeyByRequestId(serviceMap);
     } catch {
-      setItems([]);
+      setRawRows([]);
+      setServiceKeyByRequestId({});
     } finally {
       setIsLoading(false);
     }
   };
 
+  const markRead = useCallback(async (requestId: string) => {
+    try {
+      await markRequestNotificationsRead(requestId);
+      setRawRows((prev) =>
+        prev.map((row) =>
+          row.request_id === requestId ? { ...row, is_read: true } : row
+        )
+      );
+    } catch {
+      // Best effort; keep unread badge until next refresh.
+    }
+  }, []);
+
   const openNotif = async (n: NotifItem) => {
+    if (n.requestId) {
+      void markRead(n.requestId);
+    }
     if (opensApprovedAssistanceMonitoring(n.status)) {
       router.push({
         pathname: "/Home/ApprovedAssistance",
@@ -368,7 +391,7 @@ export default function Notifications() {
         ) : (
           <>
             {items.map((n) => {
-              const color = accentColor(n.category);
+              const color = n.accentHex;
 
               return (
                 <Pressable
