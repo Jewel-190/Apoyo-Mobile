@@ -15,8 +15,8 @@ import { getCatalogLookupRuntime } from "@/AppCore/CatalogLookupRuntime";
 import { useAssistanceCatalog } from "@/AppCore/UseAssistanceCatalog";
 import { supabase } from "@/AppCore/SupabaseClient";
 import {
-  fetchStatusApplicationsFromServer,
   readStatusApplicationsCache,
+  syncStatusApplicationsWithServer,
   writeStatusApplicationsCache,
 } from "@/AppCore/StatusApplicationsRepository";
 import { useLatestAsyncSequence, useSingleFlight } from "@/AppCore/UseInteractionGuard";
@@ -36,6 +36,10 @@ import {
   View,
 } from "react-native";
 import type { ApplicationItem } from "@/AppCore/AssistanceStatusApplicationsCache";
+import {
+  dedupeStatusApplications,
+  statusApplicationRealId,
+} from "@/AppCore/AssistanceStatusApplicationsCache";
 import type { Category, ServiceStatus } from "@/AppCore/AppUiDomainTypes";
 import { statusBadgeTheme } from "@/AppCore/RequestStatusPresentation";
 import BottomNavBar, { NAV_TOTAL_HEIGHT } from "../../components/BottomNavBar";
@@ -76,6 +80,8 @@ function statusToFilter(status: ServiceStatus): Exclude<FilterKey, "all"> {
       return "forApproval";
     case "Scheduled":
       return "scheduled";
+    case "Case Study":
+      return "forApproval";
     case "Approved":
       return "approvedFinal";
     case "Draft":
@@ -181,7 +187,10 @@ export default function Status() {
     !!deletingId ||
     isRefreshing;
 
-  const loadApps = async ({ refresh = false }: { refresh?: boolean } = {}) => {
+  const loadApps = async ({
+    refresh = false,
+    syncFromServer = false,
+  }: { refresh?: boolean; syncFromServer?: boolean } = {}) => {
     const seq = loadSequence.begin();
     try {
       if (refresh) {
@@ -190,7 +199,7 @@ export default function Status() {
         const cached = await readStatusApplicationsCache();
         if (!loadSequence.isCurrent(seq)) return;
         if (cached.length > 0) {
-          setApps(cached.map(enrichStatusApplicationItem));
+          setApps(dedupeStatusApplications(cached.map(enrichStatusApplicationItem)));
           setIsLoading(false);
           if (!getCatalogLookupRuntime()) setIsSyncing(true);
         } else {
@@ -210,10 +219,12 @@ export default function Status() {
         return;
       }
 
-      const sorted = await fetchStatusApplicationsFromServer(uid);
+      const sorted = await syncStatusApplicationsWithServer(uid, {
+        force: refresh || syncFromServer,
+      });
       if (!loadSequence.isCurrent(seq)) return;
 
-      const enriched = sorted.map(enrichStatusApplicationItem);
+      const enriched = dedupeStatusApplications(sorted.map(enrichStatusApplicationItem));
       setApps(enriched);
       await writeStatusApplicationsCache(enriched);
     } catch (err) {
@@ -239,7 +250,7 @@ export default function Status() {
 
   useFocusEffect(
     useCallback(() => {
-      loadApps();
+      void loadApps({ syncFromServer: true });
     }, [])
   );
 
@@ -275,7 +286,10 @@ export default function Status() {
       if (error) throw error;
 
       setApps((prev) => {
-        const next = prev.filter((x) => x.id !== item.id);
+        const removedKey = statusApplicationRealId(item);
+        const next = prev.filter(
+          (x) => statusApplicationRealId(x) !== removedKey
+        );
         void writeStatusApplicationsCache(next);
         return next;
       });
@@ -331,6 +345,7 @@ export default function Status() {
       if (
         item.status === "For Approval" ||
         item.status === "Scheduled" ||
+        item.status === "Case Study" ||
         item.status === "Approved"
       ) {
         router.push({

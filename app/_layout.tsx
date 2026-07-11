@@ -13,6 +13,7 @@ import * as SplashScreen from "expo-splash-screen";
 import { supabase } from "@/AppCore/SupabaseClient";
 import { syncStatusApplicationsWithServer } from "@/AppCore/StatusApplicationsRepository";
 import { hydrateCatalogRuntimeFromCache } from "@/AppCore/UseAssistanceCatalog";
+import { NotificationsProvider } from "@/AppCore/NotificationsContext";
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -66,7 +67,7 @@ export default function RootLayout() {
   }
 
   return (
-    <>
+    <NotificationsProvider>
       <StatusBar style="light" backgroundColor="#008E8A" translucent={false} />
       <Stack
         screenOptions={{ headerShown: false }}
@@ -79,6 +80,6 @@ export default function RootLayout() {
         <Stack.Screen name="Notification/Notifications" options={{ animation: "none" }} />
         <Stack.Screen name="Account/Account" options={{ animation: "none" }} />
       </Stack>
-    </>
+    </NotificationsProvider>
   );
 }

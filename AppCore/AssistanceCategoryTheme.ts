@@ -145,6 +145,15 @@ function readLegacyAccent(obj: Record<string, unknown>): string | null {
   );
 }
 
+/** ApoyoAdmin `theme_json` text column: `{ primary, accent, ring, ... }`. */
+function readCmsThemeBundleAccent(obj: Record<string, unknown>): string | null {
+  for (const key of ["primary", "accent", "ring", "secondary", "tertiary"] as const) {
+    const v = String(obj[key] ?? "").trim();
+    if (isHex6(v)) return v;
+  }
+  return readLegacyAccent(obj);
+}
+
 /**
  * Reads a single stored accent (`#RRGGBB`) or the first stop of a legacy gradient object.
  */
@@ -152,10 +161,21 @@ export function parseThemeAccentFromDb(raw: unknown): string | null {
   if (raw == null) return null;
   if (typeof raw === "string") {
     const t = raw.trim();
-    return isHex6(t) ? t : null;
+    if (isHex6(t)) return t;
+    if (t.startsWith("{")) {
+      try {
+        const parsed = JSON.parse(t) as unknown;
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          return readCmsThemeBundleAccent(parsed as Record<string, unknown>);
+        }
+      } catch {
+        return null;
+      }
+    }
+    return null;
   }
   if (typeof raw === "object" && !Array.isArray(raw)) {
-    return readLegacyAccent(raw as Record<string, unknown>);
+    return readCmsThemeBundleAccent(raw as Record<string, unknown>);
   }
   return null;
 }

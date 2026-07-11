@@ -7,7 +7,6 @@
  */
 
 import { supabase } from "./SupabaseClient";
-import { ASSISTANCE_REQUESTS_TABLE } from "./AssistanceRequestSql";
 import type { RequestTableName } from "./AssistanceRequestTables";
 import {
   type AttachmentSlotKey,
@@ -25,8 +24,7 @@ export type RequestAttachmentStatus =
 
 export type RequestAttachmentRecord = {
   uid: string;
-  request_uid: string;
-  request_table: RequestTableName;
+  assistance_request_id: string;
   /** DB-side file type (e.g. `letter_file`). */
   file_type: string;
   /** UI-side slot key (e.g. `letter`). */
@@ -47,8 +45,7 @@ export async function listRequestAttachments(params: {
   const { data, error } = await supabase
     .from("request_attachments")
     .select("file_type,path")
-    .eq("assistance_request_id", requestUid)
-    .eq("request_table", ASSISTANCE_REQUESTS_TABLE);
+    .eq("assistance_request_id", requestUid);
 
   if (error) throw error;
 
@@ -72,15 +69,13 @@ export async function listRequestAttachmentRows(params: {
   const { data, error } = await supabase
     .from("request_attachments")
     .select("*")
-    .eq("assistance_request_id", requestUid)
-    .eq("request_table", ASSISTANCE_REQUESTS_TABLE);
+    .eq("assistance_request_id", requestUid);
 
   if (error) throw error;
 
   return (data ?? []).map((row) => ({
     uid: row.uid,
-    request_uid: row.request_uid,
-    request_table: row.request_table as RequestTableName,
+    assistance_request_id: row.assistance_request_id,
     file_type: row.file_type,
     slot: fromDbFileType(attachmentSlotMap, row.file_type),
     path: row.path,
@@ -111,8 +106,6 @@ export async function upsertRequestAttachment(params: {
 
   const { error } = await supabase.from("request_attachments").upsert(
     {
-      request_table: ASSISTANCE_REQUESTS_TABLE,
-      request_uid: requestUid,
       assistance_request_id: requestUid,
       file_type: dbFileType,
       path,
@@ -142,7 +135,6 @@ export async function deleteRequestAttachment(params: {
     .from("request_attachments")
     .delete()
     .eq("assistance_request_id", requestUid)
-    .eq("request_table", ASSISTANCE_REQUESTS_TABLE)
     .eq("file_type", dbFileType);
 
   if (error) throw error;

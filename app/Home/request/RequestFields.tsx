@@ -58,7 +58,7 @@ import { supabase } from "@/AppCore/SupabaseClient";
 import {
   MAX_REQUEST_FILE_BYTES,
   deleteRequestDocument,
-  getRequestDocumentSignedUrl,
+  getRequestDocumentSignedUrlCached,
   uploadRequestDocument,
   type UploadFileInput,
 } from "@/AppCore/RequestDocumentUpload";
@@ -69,7 +69,10 @@ import {
   partitionAssistanceRowPatch,
   submitRequest,
 } from "@/AppCore/AssistanceRequestSql";
+import { upsertSubmittedStatusApplication } from "@/AppCore/AssistanceStatusApplicationsCache";
+import { markStatusApplicationsCacheDirty } from "@/AppCore/StatusApplicationsRepository";
 import { toDbFileType } from "@/AppCore/AttachmentSlotDbMapping";
+import { isOptionalAttachmentSlot } from "@/AppCore/CatalogContentParse";
 import {
   type ServiceId,
   getService,
@@ -178,7 +181,7 @@ function AttachmentFileRow(props: AttachmentFileRowProps) {
     setThumbLoading(true);
     setThumbUri(null);
     void (async () => {
-      const url = await getRequestDocumentSignedUrl(props.storagePath, 60 * 60);
+      const url = await getRequestDocumentSignedUrlCached(props.storagePath, 60 * 60);
       if (cancelled) return;
       setThumbUri(url);
       setThumbLoading(false);
@@ -420,13 +423,6 @@ function AttachmentSlot(props: AttachmentSlotProps) {
 
 const DROP_BG = "#F6FEFE";
 const DROP_DASH = "#68C9C5";
-
-/** Optional file slot(s) shown after “Additional information” (notes) field. */
-const OPTIONAL_ATTACHMENT_TAIL_KEYS = new Set([
-  "attachment",
-  "additional_attachment",
-  "additionalAttachment",
-]);
 
 const attachmentSlotStyles = StyleSheet.create({
   row: {
@@ -1291,8 +1287,8 @@ function useRequestForm(opts: UseRequestFormOptions): UseRequestFormReturn {
 
       const missingOnServer = fileSlots.filter(
         (slot) =>
-          !OPTIONAL_ATTACHMENT_TAIL_KEYS.has(slot) &&
           slotRequired[slot] &&
+          !isOptionalAttachmentSlot(slot) &&
           !remotePaths[slot]?.trim()
       );
       if (missingOnServer.length) {
@@ -1328,6 +1324,23 @@ function useRequestForm(opts: UseRequestFormOptions): UseRequestFormReturn {
         requestId: rid,
         extras: { additional_info: notes || null },
       });
+
+      const rt = getCatalogLookupRuntime()?.byServiceId[service.id];
+      await upsertSubmittedStatusApplication(
+        {
+          id: rid,
+          title: rt?.displayName ?? service.title,
+          description: "",
+          status: "Pending",
+          category: (rt?.categorySlug ?? "uncategorized") as import("@/AppCore/AppUiDomainTypes").Category,
+          categorySlug: rt?.categorySlug,
+          service: service.id,
+          createdAt: Date.now(),
+        },
+        rid
+      );
+      markStatusApplicationsCacheDirty();
+
       router.replace({
         pathname: successRouteForService(opts.serviceId) as never,
         params: {
@@ -1482,8 +1495,7 @@ function RequestFieldsBody(props: {
     () =>
       props.runtime.fileSlots.filter(
         (s) =>
-          !OPTIONAL_ATTACHMENT_TAIL_KEYS.has(s) &&
-          props.runtime.slotRequired[s]
+          props.runtime.slotRequired[s] && !isOptionalAttachmentSlot(s)
       ),
     [props.runtime]
   );
@@ -1491,16 +1503,14 @@ function RequestFieldsBody(props: {
     () => props.runtime.fileSlots.filter((s) => !props.runtime.slotRequired[s]),
     [props.runtime]
   );
-  /** Fixed CMS “attachment” slot — always optional, always below Additional information. */
+  /** Optional extra file slot(s) — below Additional information. */
   const optionalAttachmentSlots = useMemo(
-    () =>
-      props.runtime.fileSlots.filter((s) =>
-        OPTIONAL_ATTACHMENT_TAIL_KEYS.has(s)
-      ),
+    () => props.runtime.fileSlots.filter((s) => isOptionalAttachmentSlot(s)),
     [props.runtime.fileSlots]
   );
   const optionalWithRequirementsSlots = useMemo(
-    () => optionalSlots.filter((s) => !OPTIONAL_ATTACHMENT_TAIL_KEYS.has(s)),
+    () =>
+      optionalSlots.filter((s) => !isOptionalAttachmentSlot(s)),
     [optionalSlots]
   );
 
@@ -1569,8 +1579,8 @@ function RequestFieldsBody(props: {
   const onSubmit = () => {
     const missing = props.runtime.fileSlots.filter(
       (s) =>
-        !OPTIONAL_ATTACHMENT_TAIL_KEYS.has(s) &&
         props.runtime.slotRequired[s] &&
+        !isOptionalAttachmentSlot(s) &&
         !form.state.paths[s]
     );
     if (missing.length) {
@@ -1587,8 +1597,8 @@ function RequestFieldsBody(props: {
     if (form.state.loading || !form.state.requestId || !form.state.userId) return false;
     const missing = props.runtime.fileSlots.some(
       (s) =>
-        !OPTIONAL_ATTACHMENT_TAIL_KEYS.has(s) &&
         props.runtime.slotRequired[s] &&
+        !isOptionalAttachmentSlot(s) &&
         !form.state.paths[s]
     );
     if (missing) return false;

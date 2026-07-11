@@ -120,23 +120,23 @@ export type Database = {
       }
       admins: {
         Row: {
+          category_id: string | null
           created_at: string
-          role: string | null
-          service_type: string
+          is_super_admin: boolean
           updated_at: string
           user_id: string
         }
         Insert: {
+          category_id?: string | null
           created_at?: string
-          role?: string | null
-          service_type: string
+          is_super_admin?: boolean
           updated_at?: string
           user_id: string
         }
         Update: {
+          category_id?: string | null
           created_at?: string
-          role?: string | null
-          service_type?: string
+          is_super_admin?: boolean
           updated_at?: string
           user_id?: string
         }
@@ -145,10 +145,10 @@ export type Database = {
       assistance_categories: {
         Row: {
           active: boolean
+          assistance_name: string
           created_at: string
-          headline: string
+          description: string | null
           id: string
-          label: string
           slug: string
           sort_order: number
           theme_json: string
@@ -156,10 +156,10 @@ export type Database = {
         }
         Insert: {
           active?: boolean
+          assistance_name: string
           created_at?: string
-          headline: string
+          description?: string | null
           id?: string
-          label: string
           slug: string
           sort_order?: number
           theme_json?: string
@@ -167,10 +167,10 @@ export type Database = {
         }
         Update: {
           active?: boolean
+          assistance_name?: string
           created_at?: string
-          headline?: string
+          description?: string | null
           id?: string
-          label?: string
           slug?: string
           sort_order?: number
           theme_json?: string
@@ -219,7 +219,7 @@ export type Database = {
       assistance_requirements: {
         Row: {
           created_at: string
-          help_html: string | null
+          help: string | null
           id: string
           metadata: Json
           required: boolean
@@ -231,7 +231,7 @@ export type Database = {
         }
         Insert: {
           created_at?: string
-          help_html?: string | null
+          help?: string | null
           id?: string
           metadata?: Json
           required?: boolean
@@ -243,7 +243,7 @@ export type Database = {
         }
         Update: {
           created_at?: string
-          help_html?: string | null
+          help?: string | null
           id?: string
           metadata?: Json
           required?: boolean
@@ -1232,8 +1232,6 @@ export type Database = {
           file_type: string
           path: string
           reason_for_action: string | null
-          request_table: string
-          request_uid: string
           status: string
           uid: string
           updated: string
@@ -1245,8 +1243,6 @@ export type Database = {
           file_type: string
           path: string
           reason_for_action?: string | null
-          request_table: string
-          request_uid: string
           status?: string
           uid?: string
           updated?: string
@@ -1258,8 +1254,6 @@ export type Database = {
           file_type?: string
           path?: string
           reason_for_action?: string | null
-          request_table?: string
-          request_uid?: string
           status?: string
           uid?: string
           updated?: string
@@ -1460,35 +1454,90 @@ export type Database = {
       }
       user_notification: {
         Row: {
-          audit_log_id: string
+          action: string | null
+          audit_log_id: string | null
           created_at: string
           id: string
           is_read: boolean
+          new_status: string | null
+          old_status: string | null
+          request_id: string
           updated_at: string
+          user_id: string
         }
         Insert: {
-          audit_log_id: string
+          action?: string | null
+          audit_log_id?: string | null
           created_at?: string
           id?: string
           is_read?: boolean
+          new_status?: string | null
+          old_status?: string | null
+          request_id: string
           updated_at?: string
+          user_id: string
         }
         Update: {
-          audit_log_id?: string
+          action?: string | null
+          audit_log_id?: string | null
           created_at?: string
           id?: string
           is_read?: boolean
+          new_status?: string | null
+          old_status?: string | null
+          request_id?: string
           updated_at?: string
+          user_id?: string
         }
         Relationships: [
           {
             foreignKeyName: "user_notification_audit_log_id_fkey"
             columns: ["audit_log_id"]
-            isOneToOne: true
+            isOneToOne: false
             referencedRelation: "audit_logs"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "user_notification_request_id_fkey"
+            columns: ["request_id"]
+            isOneToOne: false
+            referencedRelation: "assistance_requests"
+            referencedColumns: ["id"]
+          },
         ]
+      }
+      user_push_token: {
+        Row: {
+          created_at: string
+          device_id: string | null
+          enabled: boolean
+          id: string
+          platform: string | null
+          token: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          device_id?: string | null
+          enabled?: boolean
+          id?: string
+          platform?: string | null
+          token: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          device_id?: string | null
+          enabled?: boolean
+          id?: string
+          platform?: string | null
+          token?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
       }
       users: {
         Row: {
@@ -1758,6 +1807,19 @@ export type Database = {
         Returns: boolean
       }
       is_superadmin: { Args: { uid: string }; Returns: boolean }
+      upsert_user_push_token: {
+        Args: {
+          p_token: string
+          p_platform?: string | null
+          p_device_id?: string | null
+          p_enabled?: boolean
+        }
+        Returns: string
+      }
+      disable_user_push_token: {
+        Args: { p_token: string }
+        Returns: number
+      }
       mark_request_notifications_read: {
         Args: { p_request_id: string }
         Returns: number

@@ -7,6 +7,7 @@ import {
   buildAssistanceCategoryTheme,
   defaultAccentHexForSlug,
 } from "./AssistanceCategoryTheme";
+import { formatCategoryAssistanceTitle } from "./CategoryAssistanceNaming";
 import { getCatalogLookupRuntime, resolveServiceId } from "./CatalogLookupRuntime";
 
 export function normalizeCategorySlug(raw?: string | null): string {
@@ -31,20 +32,19 @@ export function resolveApplicationCategorySlug(item: {
   return normalizeCategorySlug(item.category);
 }
 
+/** Long category title: `{assistance_name} Assistance`. */
 export function categoryHeadlineFromSlug(slug: string): string {
   const s = normalizeCategorySlug(slug);
   const rt = getCatalogLookupRuntime();
-  return (
-    rt?.categoryHeadlineBySlug[s] ??
+  if (rt?.categoryHeadlineBySlug[s]) return rt.categoryHeadlineBySlug[s];
+  const name =
     rt?.categoryLabelBySlug[s] ??
-    (s ? s.replace(/-/g, " ").replace(/\b\w/g, (m) => m.toUpperCase()) : "Assistance")
-  );
+    (s ? s.replace(/-/g, " ").replace(/\b\w/g, (m) => m.toUpperCase()) : "");
+  return formatCategoryAssistanceTitle(name);
 }
 
 export function categoryAssistanceTitle(slug: string): string {
-  const headline = categoryHeadlineFromSlug(slug);
-  if (/assistance/i.test(headline)) return headline;
-  return `${headline} Assistance`;
+  return categoryHeadlineFromSlug(slug);
 }
 
 export function typeOfAssistanceLabel(slug: string): string {

@@ -26,7 +26,11 @@ export type ServiceRequestRecordRow = {
 export async function listServiceRequestRecordsForUser(
   userId: string
 ): Promise<ServiceRequestRecordRow[]> {
-  const rows = await fetchAssistanceRequestsListing({ userId });
+  const rows = await fetchAssistanceRequestsListing({
+    userId,
+    includePayload: false,
+    limit: 100,
+  });
 
   return rows.map((row) => ({
     id: row.id,

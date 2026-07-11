@@ -1,5 +1,5 @@
 -- Used by the facial-verification edge function (service role) to ensure
--- CompareFaces runs only for an active, unconsumed registration attempt.
+-- face verification runs only for an active, unconsumed registration attempt.
 
 create or replace function public.validate_registration_attempt_token(
   p_token uuid,

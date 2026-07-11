@@ -114,6 +114,33 @@ export async function getRequestDocumentSignedUrl(
   return data?.signedUrl ?? null;
 }
 
+const signedUrlCache = new Map<string, { url: string; expiresAtMs: number }>();
+
+/** Reuses in-session signed URLs to avoid repeated storage API calls for the same path. */
+export async function getRequestDocumentSignedUrlCached(
+  path: string,
+  expiresInSeconds = 60 * 60
+): Promise<string | null> {
+  const key = path.trim();
+  if (!key) return null;
+
+  const now = Date.now();
+  const cached = signedUrlCache.get(key);
+  const refreshBufferMs = 5 * 60 * 1000;
+  if (cached && cached.expiresAtMs > now + refreshBufferMs) {
+    return cached.url;
+  }
+
+  const url = await getRequestDocumentSignedUrl(key, expiresInSeconds);
+  if (url) {
+    signedUrlCache.set(key, {
+      url,
+      expiresAtMs: now + expiresInSeconds * 1000,
+    });
+  }
+  return url;
+}
+
 /** Delete a stored object. Triggers the storage-cleanup edge fn via DB
  * trigger when a `request_attachments` row points at this path. */
 export async function deleteRequestDocument(path: string): Promise<void> {

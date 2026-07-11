@@ -10,7 +10,8 @@ import {
   type DetailPreflightConfig,
 } from "./DetailPreflightConfig";
 import { mergeAttachmentSlotMapWithRequirements } from "./AttachmentSlotDbMapping";
-import { isAdditionalAttachmentSlot } from "./CatalogContentParse";
+import { isOptionalAttachmentSlot } from "./CatalogContentParse";
+import { formatCategoryAssistanceTitle } from "./CategoryAssistanceNaming";
 import {
   applicationCodePrefixForToken,
   successDedupeSuffixForToken,
@@ -170,8 +171,11 @@ export function buildAssistanceCatalogRuntime(
 
   for (const r of sorted) {
     const slug = (r.category_slug || "uncategorized").trim().toLowerCase();
-    categoryHeadlineBySlug[slug] = r.category_headline || "Assistance";
-    categoryLabelBySlug[slug] = r.category_label || slug;
+    const assistanceName = r.category_label?.trim() || slug;
+    categoryLabelBySlug[slug] = assistanceName;
+    categoryHeadlineBySlug[slug] =
+      r.category_headline?.trim() ||
+      formatCategoryAssistanceTitle(assistanceName);
 
     const sortedReq = [...r.requirements].sort(
       (a, b) => a.sort_order - b.sort_order
@@ -184,9 +188,7 @@ export function buildAssistanceCatalogRuntime(
 
     for (const q of sortedReq) {
       slotTitles[q.slot_key] = q.title;
-      slotRequired[q.slot_key] = isAdditionalAttachmentSlot(q.slot_key)
-        ? false
-        : q.required !== false;
+      slotRequired[q.slot_key] = !isOptionalAttachmentSlot(q.slot_key, q.required);
       const tipsSorted = [...q.tips].sort((a, b) => a.sort_order - b.sort_order);
       requirementTipsBySlot[q.slot_key] = tipsSorted.map((t, idx) => {
         const tipBody = (t.description ?? "").trim();
@@ -216,7 +218,9 @@ export function buildAssistanceCatalogRuntime(
       displayName: r.display_name,
       categorySlug: slug,
       categoryLabel: r.category_label || slug,
-      categoryHeadline: r.category_headline || "Assistance",
+      categoryHeadline:
+        r.category_headline?.trim() ||
+        formatCategoryAssistanceTitle(r.category_label || slug),
       introPlain: r.intro_plain,
       preflightConfig,
       fileSlots,

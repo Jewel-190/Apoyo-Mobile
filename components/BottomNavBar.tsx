@@ -1,11 +1,10 @@
 import { Ionicons } from "@expo/vector-icons";
-import { useFocusEffect } from "@react-navigation/native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter, usePathname } from "expo-router";
-import React, { useCallback, useRef, useState } from "react";
+import React, { useCallback, useRef } from "react";
 import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
-import { supabase } from "@/AppCore/SupabaseClient";
 import { useSingleFlight } from "@/AppCore/UseInteractionGuard";
+import { useNotifications } from "@/AppCore/NotificationsContext";
 
 const TEAL_DARK = "#07807C";
 const ACTIVE_PILL = "#6FB8B5";
@@ -16,8 +15,6 @@ const ROUTE_HOME = "/Home/Home";
 const ROUTE_STATUS = "/Status/Status";
 const ROUTE_NOTIF = "/Notification/Notifications";
 const ROUTE_ACCOUNT = "/Account/Account";
-
-let unreadNotificationCache = false;
 
 export const NAV_BAR_HEIGHT = 64;
 export const IOS_SAFE_EXTRA = Platform.OS === "ios" ? 18 : 0;
@@ -65,9 +62,7 @@ export default function BottomNavBar({ activeTab, onBeforeNavigate, maskColor = 
   const pathname = usePathname();
   const lastNavAtRef = useRef(0);
   const { inFlight: tabNavBusy, run: runTabNav } = useSingleFlight();
-  const [hasUnreadNotification, setHasUnreadNotification] = useState(
-    unreadNotificationCache
-  );
+  const { hasUnread } = useNotifications();
 
   const currentTab =
     activeTab ??
@@ -94,34 +89,7 @@ export default function BottomNavBar({ activeTab, onBeforeNavigate, maskColor = 
     [onBeforeNavigate, pathname, router, runTabNav, tabNavBusy]
   );
 
-  const loadUnreadNotificationState = useCallback(async () => {
-    try {
-      const { data, error } = await supabase.functions.invoke("notifications", {
-        body: { action: "unread-count" },
-      });
-
-      if (error) {
-        return;
-      }
-
-      const count = Number(data?.unreadCount || 0) || 0;
-      const nextHasUnread = count > 0;
-      unreadNotificationCache = nextHasUnread;
-      setHasUnreadNotification(nextHasUnread);
-    } catch {
-      // Keep the last known unread state to avoid badge flicker while switching pages.
-    }
-  }, []);
-
-  const showNotificationBadge =
-    hasUnreadNotification && currentTab !== "notification";
-
-  useFocusEffect(
-    useCallback(() => {
-      loadUnreadNotificationState();
-      return () => {};
-    }, [loadUnreadNotificationState])
-  );
+  const showNotificationBadge = hasUnread && currentTab !== "notification";
 
   return (
     <>

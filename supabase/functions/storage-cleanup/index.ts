@@ -104,15 +104,9 @@ async function filterInactiveAttachmentPaths(bucketId: string, paths: string[]):
     return { removable: [], active: [] };
   }
 
-  const requestTables = REQUEST_TABLES_BY_BUCKET[bucketId] ?? [];
-  if (requestTables.length === 0) {
-    return { removable: candidates, active: [] };
-  }
-
   const { data, error } = await supabaseAdmin
     .from("request_attachments")
     .select("path")
-    .in("request_table", requestTables)
     .in("path", candidates);
 
   if (error) {

@@ -6,6 +6,22 @@ export const CMS_ADDITIONAL_ATTACHMENT_SLOT = "attachment";
 
 export const CMS_ADDITIONAL_ATTACHMENT_DEFAULT_TITLE = "Additional attachment";
 
+/** CMS / legacy slot keys for the optional extra file (not required at submit). */
+export const OPTIONAL_ATTACHMENT_SLOT_KEYS = new Set([
+  CMS_ADDITIONAL_ATTACHMENT_SLOT,
+  "attachments",
+  "additional_attachment",
+  "additionalattachment",
+]);
+
+export function isOptionalAttachmentSlot(
+  slotKey: string,
+  required?: boolean | null
+): boolean {
+  if (required === false) return true;
+  return OPTIONAL_ATTACHMENT_SLOT_KEYS.has(slotKey.trim().toLowerCase());
+}
+
 export type RequirementMetadata = {
   sampleDocumentImage: string;
   sampleDocumentName: string;
@@ -29,5 +45,5 @@ export function parseRequirementMetadata(raw: unknown): RequirementMetadata {
 }
 
 export function isAdditionalAttachmentSlot(slotKey: string): boolean {
-  return slotKey.trim().toLowerCase() === CMS_ADDITIONAL_ATTACHMENT_SLOT;
+  return isOptionalAttachmentSlot(slotKey);
 }

@@ -1,7 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect } from "@react-navigation/native";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Platform,
@@ -15,12 +15,15 @@ import {
   View,
 } from "react-native";
 import { formatDateLong } from "@/AppCore/CaseStudySchedule";
-import { ASSISTANCE_REQUESTS_TABLE } from "@/AppCore/AssistanceRequestSql";
 import { buildPreflightChoiceLines } from "@/AppCore/PreflightSelections";
-import { statusBadgeThemeFromRaw } from "@/AppCore/RequestStatusPresentation";
+import {
+  normalizeServiceStatus,
+  statusBadgeThemeFromRaw,
+} from "@/AppCore/RequestStatusPresentation";
 import { resolveServiceId } from "@/AppCore/CatalogLookupRuntime";
 import { useAssistanceCatalog } from "@/AppCore/UseAssistanceCatalog";
 import { supabase } from "@/AppCore/SupabaseClient";
+import { markRequestNotificationsRead } from "@/AppCore/UserNotificationsQuery";
 
 const FONT = "SF Pro Rounded";
 const TEXT_DARK = "#2B2B2B";
@@ -84,24 +87,10 @@ function normalizeRawStatus(raw?: string | null): string {
   return s;
 }
 
-function statusLabel(raw?: string | null): string {
-  const s = normalizeRawStatus(raw);
-  if (s === "pending") return "Pending";
-  if (s === "in progress") return "In Progress";
-  if (s === "action required") return "Action Required";
-  if (s === "resubmitted") return "Resubmitted";
-  if (s === "for approval") return "For Approval";
-  if (s === "scheduled") return "Scheduled";
-  if (s === "approved") return "Approved";
-  if (s === "accepted") return "Approved";
-  if (s === "draft") return "Draft";
-  return "Pending";
-}
-
 function monitoringPhaseFromRaw(raw?: string | null): MonitoringPhase {
-  const s = normalizeRawStatus(raw);
-  if (s === "approved" || s === "accepted") return "approved";
-  if (s === "scheduled") return "scheduled";
+  const label = normalizeServiceStatus(raw);
+  if (label === "Approved") return "approved";
+  if (label === "Scheduled") return "scheduled";
   return "forApproval";
 }
 
@@ -215,12 +204,7 @@ export default function ApprovedAssistance() {
 
     (async () => {
       try {
-        await supabase.functions.invoke("notifications", {
-          body: {
-            action: "mark-read",
-            requestId,
-          },
-        });
+        await markRequestNotificationsRead(requestId);
       } catch (e) {
         if (active) {
           console.log("Approved assistance notification read sync failed:", e);
@@ -247,6 +231,8 @@ export default function ApprovedAssistance() {
     actionRequired: 0,
     resubmitted: 0,
   });
+  const lastDetailsFetchAtRef = useRef(0);
+  const APPROVED_FOCUS_TTL_MS = 30 * 1000;
 
   const loadRequestDetails = useCallback(async (opts?: { refresh?: boolean }) => {
     const refresh = opts?.refresh === true;
@@ -315,8 +301,7 @@ export default function ApprovedAssistance() {
       const { data: attachmentData } = await supabase
         .from("request_attachments")
         .select("status")
-        .eq("assistance_request_id", requestId)
-        .eq("request_table", ASSISTANCE_REQUESTS_TABLE);
+        .eq("assistance_request_id", requestId);
 
       const rowsAtt = (attachmentData || []) as { status: string | null }[];
       const stats = {
@@ -346,17 +331,26 @@ export default function ApprovedAssistance() {
   }, [requestId]);
 
   const onRefresh = useCallback(() => {
+    lastDetailsFetchAtRef.current = 0;
     void loadRequestDetails({ refresh: true });
   }, [loadRequestDetails]);
 
   useFocusEffect(
     useCallback(() => {
+      const now = Date.now();
+      if (now - lastDetailsFetchAtRef.current < APPROVED_FOCUS_TTL_MS) {
+        setIsLoading(false);
+        return () => {};
+      }
+      lastDetailsFetchAtRef.current = now;
       loadRequestDetails();
       return () => {};
     }, [loadRequestDetails])
   );
 
-  const displayStatus = statusLabel(requestRow?.status || firstParam(params?.status));
+  const displayStatus = normalizeServiceStatus(
+    requestRow?.status || firstParam(params?.status)
+  );
   const phase: MonitoringPhase = monitoringPhaseFromRaw(
     requestRow?.status || firstParam(params?.status)
   );

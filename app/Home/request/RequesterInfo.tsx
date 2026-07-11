@@ -13,7 +13,6 @@ import {
 } from "@/AppCore/PreflightSelections";
 import { supabase } from "@/AppCore/SupabaseClient";
 import { getService } from "@/AppCore/AssistanceServiceDefinitions";
-import { useAssistanceServiceCopy } from "@/AppCore/AssistanceServiceScreenCopy";
 import { useAssistanceCatalog } from "@/AppCore/UseAssistanceCatalog";
 import {
   defaultServiceFormPath,
@@ -137,7 +136,7 @@ function usePressScale() {
 }
 
 export default function RequesterInfo() {
-  useAssistanceCatalog();
+  const { bundle, loading: catalogLoading } = useAssistanceCatalog();
   const router = useRouter();
 
   const params = useLocalSearchParams();
@@ -161,7 +160,18 @@ export default function RequesterInfo() {
     [serviceId, category]
   );
 
-  const catalogCopy = useAssistanceServiceCopy(serviceId);
+  const catalogCopy = useMemo(() => {
+    const sid = resolveServiceId((serviceId || "").trim());
+    if (!sid) {
+      return { displayName: null as string | null, loading: catalogLoading };
+    }
+    const detail = bundle?.detailsByServiceId[sid];
+    const svc = bundle?.services.find((s) => s.id === sid);
+    return {
+      displayName: detail?.serviceTitle ?? svc?.title ?? null,
+      loading: catalogLoading && !bundle,
+    };
+  }, [bundle, catalogLoading, serviceId]);
   const serviceHeadline = useMemo(() => {
     const fromParams = serviceTitle.trim();
     if (catalogCopy.loading) return fromParams || null;

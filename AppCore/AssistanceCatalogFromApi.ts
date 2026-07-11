@@ -19,18 +19,28 @@ import {
   parseRequirementMetadata,
 } from "./CatalogContentParse";
 import { parseCmsMetadata, type CmsServiceFonts } from "./CmsTypography";
+import {
+  categoryAssistanceNameFromRow,
+  categoryAssistanceTitleFromRow,
+} from "./CategoryAssistanceNaming";
 import type { HomeRequirementItem, RequirementTipItem } from "./ServiceRequirementFieldTypes";
 import { supabase } from "./SupabaseClient";
+
+export {
+  categoryAssistanceNameFromRow,
+  categoryAssistanceTitleFromRow,
+  categoryHeadlineFromRow,
+  formatCategoryAssistanceTitle,
+} from "./CategoryAssistanceNaming";
 
 export type { CmsServiceFonts };
 
 export type CatalogCategoryRow = {
   slug: string;
-  label: string;
-  headline: string;
+  assistance_name: string;
   active: boolean | null;
   sort_order?: number | null;
-  /** Single `#RRGGBB` from DB; legacy objects may appear from old caches. */
+  /** `#RRGGBB` or ApoyoAdmin JSON theme bundle in `theme_json` text column. */
   theme_json?: string | unknown;
 };
 
@@ -47,7 +57,8 @@ export type CatalogRequirementRow = {
   slot_key: string;
   title: string;
   required: boolean | null;
-  help_html: string | null;
+  help?: string | null;
+  help_html?: string | null;
   metadata: unknown;
   assistance_requirement_tips: CatalogRequirementTipRow[] | null;
 };
@@ -122,10 +133,12 @@ export type AssistanceCatalogBundle = {
     Record<string, RequirementTipItem[]>
   >;
   runtime: AssistanceCatalogRuntime;
+  /** Unix ms when this bundle was last fetched from Supabase (client-side). */
+  cachedAt?: number;
 };
 
 export const ASSISTANCE_CATALOG_CACHE_KEY =
-  "apoyo_assistance_catalog_bundle_v19";
+  "apoyo_assistance_catalog_bundle_v22";
 
 export type { AssistanceCatalogRuntime, CatalogServiceRuntime } from "./CatalogLookupRuntime";
 
@@ -186,7 +199,7 @@ function buildCategoryFilters(
     .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
     .map((c) => ({
       slug: c.slug.trim().toLowerCase(),
-      label: c.label,
+      label: categoryAssistanceNameFromRow(c),
       sort_order: Number(c.sort_order ?? 0),
     }));
 }
@@ -220,7 +233,7 @@ function mapRequirementsForMobile(rows: CatalogRequirementRow[] | null): {
     }
     if (!title) continue;
 
-    const helpHtml = (r.help_html ?? "").trim();
+    const helpHtml = (r.help_html ?? r.help ?? "").trim();
     const sample = parseRequirementMetadata(r.metadata);
     requirements.push({
       id: r.slot_key,
@@ -293,8 +306,8 @@ function toRuntimeRow(r: CatalogServiceRow): CatalogRowForRuntime {
     intro_plain: descriptionPlain,
     radio_selection: r.radio_selection,
     category_slug: (cat?.slug ?? "uncategorized").trim().toLowerCase(),
-    category_label: cat?.label ?? cat?.slug ?? "Assistance",
-    category_headline: cat?.headline ?? "Assistance",
+    category_label: categoryAssistanceNameFromRow(cat ?? {}),
+    category_headline: categoryAssistanceTitleFromRow(cat ?? {}),
     requirements: reqs,
     attachment_slot_map: parseAttachmentSlotMap(r.attachment_slot_map),
     description_plain: descriptionPlain,
@@ -350,7 +363,7 @@ export function bundleCatalogRows(
       cardStripeGradient: stripe,
       iconUrl: r.mobile_image_url?.trim() || null,
       categorySlug: slug,
-      categoryLabel: cat?.label ?? slug,
+      categoryLabel: categoryAssistanceNameFromRow(cat ?? {}),
     };
   });
 
@@ -383,7 +396,7 @@ export function bundleCatalogRows(
     );
 
     detailsByServiceId[r.id] = {
-      headerTitle: cat?.headline ?? "Assistance",
+      headerTitle: categoryAssistanceTitleFromRow(cat ?? {}),
       serviceTitle: r.display_name,
       serviceDesc: stripHtml(descriptionHtml),
       descriptionHtml,
@@ -419,15 +432,107 @@ const ASSISTANCE_SERVICES_EXTENDED_COLUMNS = `
       attachment_slot_map,
 `;
 
-const ASSISTANCE_SERVICES_EMBEDS = `
-      assistance_categories ( slug, label, headline, active, sort_order ),
+function isMissingCatalogColumnError(error: { message?: string } | null): boolean {
+  const m = (error?.message || "").toLowerCase();
+  return (
+    m.includes("does not exist") ||
+    m.includes("could not find") ||
+    m.includes("column")
+  );
+}
+
+function isMissingCategoryEmbedColumnError(error: { message?: string } | null): boolean {
+  const m = (error?.message || "").toLowerCase();
+  return isMissingCatalogColumnError(error) && m.includes("assistance_categories");
+}
+
+function isMissingRequirementHelpColumnError(error: { message?: string } | null): boolean {
+  const m = (error?.message || "").toLowerCase();
+  return (
+    isMissingCatalogColumnError(error) &&
+    m.includes("assistance_requirements") &&
+    m.includes("help")
+  );
+}
+
+function assistanceCategoriesEmbed(columns: string[]): string {
+  return `assistance_categories ( ${columns.join(", ")} )`;
+}
+
+const CATEGORY_COLUMN_ATTEMPTS = [
+  ["slug", "assistance_name", "active", "sort_order", "theme_json"],
+  ["slug", "assistance_name", "active", "sort_order"],
+  ["slug", "label", "headline", "active", "sort_order", "theme_json"],
+  ["slug", "label", "active", "sort_order", "theme_json"],
+] as const;
+
+const SERVICE_EMBED_ATTEMPTS: readonly string[][] = [
+  ["slug", "assistance_name", "active", "sort_order", "theme_json"],
+  ["slug", "assistance_name", "active", "sort_order"],
+  ["slug", "label", "headline", "active", "sort_order", "theme_json"],
+  ["slug", "label", "active", "sort_order", "theme_json"],
+];
+
+function serviceEmbedAttemptsForCategoryCols(
+  categoryEmbedCols: readonly string[]
+): readonly (readonly string[])[] {
+  if (categoryEmbedCols.includes("assistance_name")) {
+    return SERVICE_EMBED_ATTEMPTS.filter((cols) => cols.includes("assistance_name"));
+  }
+  if (categoryEmbedCols.includes("label")) {
+    return SERVICE_EMBED_ATTEMPTS.filter((cols) => cols.includes("label"));
+  }
+  return SERVICE_EMBED_ATTEMPTS;
+}
+
+function normalizeCategoryRow(raw: Record<string, unknown>): CatalogCategoryRow {
+  return {
+    slug: String(raw.slug ?? "")
+      .trim()
+      .toLowerCase(),
+    assistance_name: categoryAssistanceNameFromRow(
+      raw as Parameters<typeof categoryAssistanceNameFromRow>[0]
+    ),
+    active: (raw.active as boolean | null) ?? null,
+    sort_order:
+      typeof raw.sort_order === "number" ? raw.sort_order : Number(raw.sort_order ?? 0),
+    theme_json: raw.theme_json,
+  };
+}
+
+async function fetchCategoryRows(): Promise<{
+  rows: CatalogCategoryRow[];
+  embedCols: readonly string[];
+}> {
+  for (const cols of CATEGORY_COLUMN_ATTEMPTS) {
+    const { data, error } = await supabase
+      .from("assistance_categories")
+      .select(cols.join(","))
+      .order("sort_order", { ascending: true });
+
+    if (!error && data) {
+      return {
+        rows: (data as unknown as Record<string, unknown>[]).map(normalizeCategoryRow),
+        embedCols: cols,
+      };
+    }
+    if (!isMissingCatalogColumnError(error)) {
+      console.warn("[assistanceCatalog] categories fetch failed:", error?.message);
+      break;
+    }
+  }
+  return { rows: [], embedCols: ["slug", "assistance_name", "active", "sort_order"] };
+}
+
+function assistanceServicesEmbedsPrefix(helpColumn: "help" | "help_html"): string {
+  return `
       assistance_requirements (
         id,
         sort_order,
         slot_key,
         title,
         required,
-        help_html,
+        ${helpColumn},
         metadata,
         assistance_requirement_tips (
           id,
@@ -437,8 +542,18 @@ const ASSISTANCE_SERVICES_EMBEDS = `
         )
       )
 `;
+}
 
-function assistanceServicesSelect(includeExtendedColumns: boolean): string {
+const REQUIREMENTS_HELP_COLUMN_ATTEMPTS: readonly ("help" | "help_html")[] = [
+  "help",
+  "help_html",
+];
+
+function assistanceServicesSelect(
+  includeExtendedColumns: boolean,
+  categoryEmbedCols: readonly string[],
+  helpColumn: "help" | "help_html"
+): string {
   const base = `
       id,
       request_code_token,
@@ -454,7 +569,10 @@ function assistanceServicesSelect(includeExtendedColumns: boolean): string {
       cms_metadata,
 `;
   const mid = includeExtendedColumns ? `${ASSISTANCE_SERVICES_EXTENDED_COLUMNS}` : "";
-  return `${base}${mid}${ASSISTANCE_SERVICES_EMBEDS}`;
+  const embed = assistanceCategoriesEmbed([...categoryEmbedCols]);
+  const requirementsEmbed = assistanceServicesEmbedsPrefix(helpColumn);
+  return `${base}${mid}${embed},
+${requirementsEmbed}`;
 }
 
 /** PostgREST fails the whole select if any requested column is missing from the DB. */
@@ -470,61 +588,61 @@ export type FetchAssistanceCatalogResult = {
 };
 
 export async function fetchAssistanceCatalog(): Promise<FetchAssistanceCatalogResult> {
-  const run = async (extended: boolean) =>
+  const { rows: categoryRows, embedCols: categoryEmbedCols } =
+    await fetchCategoryRows();
+
+  const run = async (
+    extended: boolean,
+    embedCols: readonly string[],
+    helpColumn: "help" | "help_html"
+  ) =>
     supabase
       .from("assistance_services")
-      .select(assistanceServicesSelect(extended))
+      .select(assistanceServicesSelect(extended, embedCols, helpColumn))
       .order("sort_order", { ascending: true });
 
-  const catQuery = supabase
-    .from("assistance_categories")
-    .select("slug,label,headline,sort_order,active,theme_json")
-    .order("sort_order", { ascending: true });
+  const embedFamily = serviceEmbedAttemptsForCategoryCols(categoryEmbedCols);
+  const embedAttempts: readonly (readonly string[])[] = [
+    categoryEmbedCols,
+    ...embedFamily.filter((cols) => cols.join(",") !== categoryEmbedCols.join(",")),
+  ];
 
-  const [{ data: catData, error: catError }, firstSvc] = await Promise.all([
-    catQuery,
-    run(true),
-  ]);
+  let embedCols: readonly string[] = embedAttempts[0];
+  let selectedHelpColumn: "help" | "help_html" = REQUIREMENTS_HELP_COLUMN_ATTEMPTS[0];
+  let data: unknown = null;
+  let error: { message?: string } | null = null;
 
-  let categoryRows: CatalogCategoryRow[] = [];
-  if (catError) {
-    const msg = (catError.message || "").toLowerCase();
-    if (msg.includes("theme_json")) {
-      const retry = await supabase
-        .from("assistance_categories")
-        .select("slug,label,headline,sort_order,active")
-        .order("sort_order", { ascending: true });
-      if (!retry.error && retry.data) {
-        categoryRows = (retry.data as CatalogCategoryRow[]).map((c) => ({
-          ...c,
-          theme_json: undefined,
-        }));
-      } else {
-        console.warn(
-          "[assistanceCatalog] categories fetch failed:",
-          catError.message
-        );
+  for (const helpColumn of REQUIREMENTS_HELP_COLUMN_ATTEMPTS) {
+    selectedHelpColumn = helpColumn;
+    ({ data, error } = await run(true, embedCols, helpColumn));
+
+    if (error && isMissingCategoryEmbedColumnError(error)) {
+      for (const attempt of embedAttempts.slice(1)) {
+        ({ data, error } = await run(true, attempt, helpColumn));
+        if (!error) {
+          embedCols = attempt;
+          break;
+        }
+        if (!isMissingCategoryEmbedColumnError(error)) break;
       }
-    } else {
-      console.warn("[assistanceCatalog] categories fetch failed:", catError.message);
     }
-  } else {
-    categoryRows = (catData ?? []) as CatalogCategoryRow[];
+    if (!error) break;
+    if (isMissingRequirementHelpColumnError(error)) continue;
+    break;
   }
-
-  let { data, error } = firstSvc;
 
   if (error && isExtendedCatalogColumnsError(error)) {
     console.warn(
       "[assistanceCatalog] Retrying without extended columns (migration may not be applied):",
       error.message
     );
-    ({ data, error } = await run(false));
+    ({ data, error } = await run(false, embedCols, selectedHelpColumn));
   }
 
   if (error) {
-    console.warn("[assistanceCatalog] fetch failed:", error.message);
-    return { bundle: null, error: error.message };
+    const message = error.message ?? "catalog_fetch_error";
+    console.warn("[assistanceCatalog] fetch failed:", message);
+    return { bundle: null, error: message };
   }
 
   const rows = (data || []) as unknown as CatalogServiceRow[];

@@ -11,15 +11,19 @@ const FACE_VERIFY_SERVICE_URL = (Deno.env.get("FACE_VERIFY_SERVICE_URL") ?? "").
 const FACE_VERIFY_SERVICE_KEY = Deno.env.get("FACE_VERIFY_SERVICE_KEY") ?? "";
 
 const MAX_IMAGE_BYTES = 15 * 1024 * 1024;
-const MIN_LIVENESS_FRAMES = 4;
 
 type RequestBody = {
   email?: string;
   registrationAttemptToken?: string;
   idImageBase64?: string;
-  selfieImageBase64?: string;
-  livenessFramesBase64?: string[];
-  poseLabels?: string[];
+  firstName?: string;
+  middleName?: string;
+  lastName?: string;
+  suffix?: string;
+  noMiddle?: boolean;
+  birthDate?: string;
+  voterIdNumber?: string;
+  sex?: string;
 };
 
 function stripDataUrl(b64: string): string {
@@ -51,16 +55,6 @@ async function validateRegistrationToken(
   return tokenOk === true;
 }
 
-type VerifierResponse = {
-  ok?: boolean;
-  verified?: boolean;
-  liveness_passed?: boolean;
-  similarity?: number;
-  threshold?: number;
-  error?: string;
-  code?: string;
-};
-
 Deno.serve(async (request: Request) => {
   if (request.method === "OPTIONS") {
     return corsPreflight();
@@ -79,7 +73,7 @@ Deno.serve(async (request: Request) => {
       {
         ok: false,
         error:
-          "Face verification service is not configured (set FACE_VERIFY_SERVICE_URL and FACE_VERIFY_SERVICE_KEY).",
+          "ID verification service is not configured (set FACE_VERIFY_SERVICE_URL and FACE_VERIFY_SERVICE_KEY).",
       },
       200,
     );
@@ -95,13 +89,6 @@ Deno.serve(async (request: Request) => {
   const email = (body.email ?? "").toString().trim().toLowerCase();
   const tokenStr = (body.registrationAttemptToken ?? "").toString().trim();
   const idB64 = (body.idImageBase64 ?? "").toString();
-  const selfieB64 = (body.selfieImageBase64 ?? "").toString();
-  const livenessFrames = Array.isArray(body.livenessFramesBase64)
-    ? body.livenessFramesBase64.filter((f) => typeof f === "string" && f.trim())
-    : [];
-  const poseLabels = Array.isArray(body.poseLabels)
-    ? body.poseLabels.filter((p) => typeof p === "string" && p.trim())
-    : [];
 
   const uuidRe =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -113,33 +100,16 @@ Deno.serve(async (request: Request) => {
     return jsonResponse({ ok: false, error: "Missing email" }, 200);
   }
 
-  if (!selfieB64) {
-    return jsonResponse({ ok: false, error: "Missing selfieImageBase64" }, 200);
-  }
-
   if (!idB64) {
     return jsonResponse({ ok: false, error: "Missing idImageBase64" }, 200);
   }
 
-  if (livenessFrames.length < MIN_LIVENESS_FRAMES) {
-    return jsonResponse(
-      {
-        ok: false,
-        error: `Live check requires at least ${MIN_LIVENESS_FRAMES} camera frames.`,
-        code: "LIVENESS_FRAMES_REQUIRED",
-      },
-      200,
-    );
+  const size = estimateBase64Bytes(idB64);
+  if (size < 100) {
+    return jsonResponse({ ok: false, error: "Image too small" }, 200);
   }
-
-  for (const img of [idB64, selfieB64, ...livenessFrames]) {
-    const size = estimateBase64Bytes(img);
-    if (size < 100) {
-      return jsonResponse({ ok: false, error: "Image too small" }, 200);
-    }
-    if (size > MAX_IMAGE_BYTES) {
-      return jsonResponse({ ok: false, error: "Image too large (max 15 MB)" }, 200);
-    }
+  if (size > MAX_IMAGE_BYTES) {
+    return jsonResponse({ ok: false, error: "Image too large (max 15 MB)" }, 200);
   }
 
   const supabaseAdmin = createClient(PROJECT_URL, SERVICE_ROLE_KEY, {
@@ -155,7 +125,7 @@ Deno.serve(async (request: Request) => {
   }
 
   try {
-    const verifyRes = await fetch(`${FACE_VERIFY_SERVICE_URL}/verify`, {
+    const verifyRes = await fetch(`${FACE_VERIFY_SERVICE_URL}/verify-id`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -163,36 +133,39 @@ Deno.serve(async (request: Request) => {
       },
       body: JSON.stringify({
         id_image_base64: idB64,
-        selfie_image_base64: selfieB64,
-        liveness_frames_base64: livenessFrames,
-        pose_labels: poseLabels,
+        profile: {
+          first_name: body.firstName ?? "",
+          middle_name: body.middleName ?? "",
+          last_name: body.lastName ?? "",
+          suffix: body.suffix ?? "",
+          no_middle: body.noMiddle === true,
+          birth_date: body.birthDate ?? "",
+          voter_id: body.voterIdNumber ?? "",
+          sex: body.sex ?? "",
+        },
       }),
       signal: AbortSignal.timeout(110_000),
     });
 
-    const payload = (await verifyRes.json()) as VerifierResponse;
+    const payload = await verifyRes.json();
 
     if (!verifyRes.ok && !payload?.error) {
-      return jsonResponse(
-        { ok: false, error: "Face verification service unavailable." },
-        200,
-      );
+      return jsonResponse({ ok: false, error: "ID verification service unavailable." }, 200);
     }
 
     return jsonResponse({
       ok: payload.ok ?? false,
       verified: payload.verified ?? false,
-      liveness_passed: payload.liveness_passed ?? false,
-      similarity: payload.similarity ?? 0,
-      threshold: payload.threshold,
       error: payload.error,
       code: payload.code,
+      checks: payload.checks ?? [],
+      ocr_preview: payload.ocr_preview,
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    console.error("face_verifier_request", msg);
+    console.error("id_verifier_request", msg);
     return jsonResponse(
-      { ok: false, error: "Face verification service unreachable. Try again." },
+      { ok: false, error: "ID verification service unreachable. Try again." },
       200,
     );
   }

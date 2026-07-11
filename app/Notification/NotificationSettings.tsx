@@ -1,5 +1,4 @@
 import { Ionicons } from "@expo/vector-icons";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import React, { useEffect, useState } from "react";
@@ -12,15 +11,19 @@ import {
   Text,
   View,
 } from "react-native";
+import {
+  getInAppPreference,
+  getPushPreference,
+  registerForPushNotificationsAsync,
+  setInAppPreference,
+  setPushPreference,
+} from "@/AppCore/PushNotifications";
 
 const FONT = "SF Pro Rounded";
 const TEXT_DARK = "#2B2B2B";
 const TEAL = "#0B8F8B";
 const MUTED = "#8A9A9A";
 const DIVIDER = "#E6EEEE";
-
-const STORAGE_PUSH = "apoyo_push_notif";
-const STORAGE_INAPP = "apoyo_inapp_notif";
 
 export default function NotificationSettings() {
   const router = useRouter();
@@ -30,21 +33,23 @@ export default function NotificationSettings() {
 
   useEffect(() => {
     (async () => {
-      const push = await AsyncStorage.getItem(STORAGE_PUSH);
-      const inApp = await AsyncStorage.getItem(STORAGE_INAPP);
-      if (push !== null) setPushEnabled(push === "1");
-      if (inApp !== null) setInAppEnabled(inApp === "1");
+      setPushEnabled(await getPushPreference());
+      setInAppEnabled(await getInAppPreference());
     })();
   }, []);
 
   const togglePush = async (val: boolean) => {
     setPushEnabled(val);
-    await AsyncStorage.setItem(STORAGE_PUSH, val ? "1" : "0");
+    await setPushPreference(val);
+    // Registers the device token when turning push on (no-op until push is wired).
+    if (val) {
+      void registerForPushNotificationsAsync();
+    }
   };
 
   const toggleInApp = async (val: boolean) => {
     setInAppEnabled(val);
-    await AsyncStorage.setItem(STORAGE_INAPP, val ? "1" : "0");
+    await setInAppPreference(val);
   };
 
   return (

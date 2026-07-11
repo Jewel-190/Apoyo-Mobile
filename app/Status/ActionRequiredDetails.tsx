@@ -26,9 +26,10 @@ import {
 } from "@/AppCore/ServiceRequirementFieldTypes";
 import { resolveServiceId } from "@/AppCore/CatalogLookupRuntime";
 import { inferAttachmentName } from "@/AppCore/AssistanceRequestAttachments";
-import { ASSISTANCE_REQUESTS_TABLE } from "@/AppCore/AssistanceRequestSql";
+import { getRequestDocumentSignedUrlCached } from "@/AppCore/RequestDocumentUpload";
 import { supabase } from "@/AppCore/SupabaseClient";
-import { statusBadgeTheme } from "@/AppCore/RequestStatusPresentation";
+import { normalizeServiceStatus, statusBadgeTheme } from "@/AppCore/RequestStatusPresentation";
+import { patchStatusApplicationInCache } from "@/AppCore/StatusApplicationsRepository";
 import { COLORS, FONT_FAMILY_ROUNDED } from "@/AppCore/Theme";
 
 const FONT = FONT_FAMILY_ROUNDED;
@@ -87,14 +88,6 @@ function humanizeFileType(fileType: string) {
 function isImagePath(path?: string) {
   const p = (path || "").toLowerCase();
   return /\.(png|jpe?g|gif|webp|bmp|heic|heif)$/.test(p);
-}
-
-async function createSignedUrl(path: string, ttlSeconds = 3600) {
-  const { data, error } = await supabase.storage
-    .from(REQUEST_DOCS_BUCKET)
-    .createSignedUrl(path, ttlSeconds);
-  if (error) return null;
-  return data?.signedUrl || null;
 }
 
 function sanitizeFileName(name: string) {
@@ -161,7 +154,6 @@ export default function ActionRequiredDetails() {
           .from("request_attachments")
           .select("uid,file_type,path,status,reason_for_action,additional_reason")
           .eq("assistance_request_id", requestId)
-          .eq("request_table", ASSISTANCE_REQUESTS_TABLE)
           .in("status", ["action_required", "resubmitted"])
           .order("created", { ascending: true });
 
@@ -178,7 +170,7 @@ export default function ActionRequiredDetails() {
               (row.status || "").toString().trim().toLowerCase() ===
               "action_required";
             const existingUrl = isImagePath(row.path)
-              ? await createSignedUrl(row.path, 3600)
+              ? await getRequestDocumentSignedUrlCached(row.path, 3600)
               : null;
 
             const slotKey = resolveAttachmentSlotKey({
@@ -332,7 +324,7 @@ export default function ActionRequiredDetails() {
 
     try {
       setLoadingPreview(true);
-      const signedUrl = (await createSignedUrl(item.path, 60)) || "";
+      const signedUrl = (await getRequestDocumentSignedUrlCached(item.path, 60)) || "";
       if (!signedUrl) {
         Alert.alert("Error", "Could not load file preview.");
         return;
@@ -405,15 +397,20 @@ export default function ActionRequiredDetails() {
         if (updateAttachmentError) throw updateAttachmentError;
       }
 
-      const { error: updateRequestError } = await supabase
+      const { data: updatedRequest, error: updateRequestError } = await supabase
         .from("assistance_requests")
         .update({
           status: "resubmitted",
           submitted_at: new Date().toISOString(),
         })
-        .eq("id", requestId);
+        .eq("id", requestId)
+        .select("id,status")
+        .single();
 
       if (updateRequestError) throw updateRequestError;
+      if (normalizeServiceStatus(updatedRequest?.status) !== "Resubmitted") {
+        throw new Error("Request status did not update. Please try again.");
+      }
 
       const oldPathsToDelete = stagedUpdates
         .filter((x) => !!x.oldPath && x.oldPath !== x.newPath)
@@ -422,6 +419,11 @@ export default function ActionRequiredDetails() {
       if (oldPathsToDelete.length) {
         await supabase.storage.from(REQUEST_DOCS_BUCKET).remove(oldPathsToDelete);
       }
+
+      await patchStatusApplicationInCache(requestId, {
+        status: "Resubmitted",
+        createdAt: Date.now(),
+      });
 
       router.back();
     } catch (e: any) {

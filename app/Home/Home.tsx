@@ -21,7 +21,6 @@ import {
   View,
 } from "react-native";
 import BottomNavBar, { NAV_TOTAL_HEIGHT } from "../../components/BottomNavBar";
-import { ROUTES } from "@/AppCore/AppRoutePaths";
 import type { HomeDetailsPage } from "@/AppCore/AssistanceCatalogFromApi";
 import { categoryCardTrimGradient } from "@/AppCore/ServiceCatalogDisplay";
 import { resolveServiceId } from "@/AppCore/CatalogLookupRuntime";
@@ -41,14 +40,18 @@ const GRAD = {
   chip: ["#7BE05B", "#63C44A"] as [string, string],
 };
 
+// Brand default for the "All Services" filter chip.
+const DEFAULT_CHIP_GRADIENT: [string, string] = [TEAL, "#077E7B"];
+
 const FONT = "SF Pro Rounded";
 
 const CACHE_USER = "apoyo_user_cache";
+const USER_PROFILE_TTL_MS = 5 * 60 * 1000;
+let lastUserProfileFetchAtMs = 0;
 
 const ROUTE_REQUEST = "/Home/request/RequestInfo";
 
 const PROFILE_PNG = require("../../assets/images/ProfileIcon.png");
-const APPROVED_ICON_PNG = require("../../assets/images/Book2.png");
 
 type Service = {
   id: string;
@@ -62,10 +65,32 @@ type Service = {
   categoryLabel: string;
 };
 
+function stripHtmlForSearch(html: string): string {
+  return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function serviceMatchesSearch(service: Service, rawQuery: string): boolean {
+  const query = rawQuery.trim().toLowerCase();
+  if (!query) return true;
+
+  const haystack = [
+    service.title,
+    service.categoryLabel,
+    service.desc,
+    stripHtmlForSearch(service.descHtml),
+  ]
+    .join(" ")
+    .toLowerCase();
+
+  const tokens = query.split(/\s+/).filter(Boolean);
+  return tokens.every((token) => haystack.includes(token));
+}
+
 export default function Assistance() {
   const router = useRouter();
 
   const [chip, setChip] = useState<"all" | string>("all");
+  const [searchQuery, setSearchQuery] = useState("");
 
   const [displayName, setDisplayName] = useState("");
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
@@ -81,10 +106,12 @@ export default function Assistance() {
 
   const { inFlight: serviceActionBusy, run: runServiceAction } = useSingleFlight();
   const { inFlight: catalogRetryBusy, run: runCatalogRetry } = useSingleFlight();
-  const { inFlight: navBusy, run: runNavAction } = useSingleFlight();
 
   const interactionsLocked =
-    serviceActionBusy || catalogRetryBusy || navBusy || catalogLoading;
+    serviceActionBusy || catalogRetryBusy || catalogLoading;
+
+  const trimmedSearchQuery = searchQuery.trim();
+  const isSearchActive = trimmedSearchQuery.length > 0;
 
   const services: Service[] = useMemo(() => {
     if (!bundle?.services?.length) return [];
@@ -116,16 +143,18 @@ export default function Assistance() {
   }, [bundle?.categoryFilters, services]);
 
   const filtered = useMemo(() => {
-    if (chip === "all") return services;
-    return services.filter((s) => s.categorySlug === chip);
-  }, [chip, services]);
+    const byCategory =
+      chip === "all" ? services : services.filter((s) => s.categorySlug === chip);
+    if (!trimmedSearchQuery) return byCategory;
+    return byCategory.filter((s) => serviceMatchesSearch(s, trimmedSearchQuery));
+  }, [chip, services, trimmedSearchQuery]);
 
   const detailsMap: Record<string, HomeDetailsPage> = useMemo(
     () => bundle?.detailsByServiceId ?? {},
     [bundle]
   );
 
-  const refreshUserProfile = useCallback(async () => {
+  const refreshUserProfile = useCallback(async (force = false) => {
     const cached = await AsyncStorage.getItem(CACHE_USER);
     if (cached) {
       try {
@@ -138,6 +167,10 @@ export default function Assistance() {
       } catch {
         /* ignore corrupt cache */
       }
+    }
+
+    if (!force && Date.now() - lastUserProfileFetchAtMs < USER_PROFILE_TTL_MS) {
+      return;
     }
 
     const {
@@ -154,6 +187,8 @@ export default function Assistance() {
       .single();
 
     if (!data) return;
+
+    lastUserProfileFetchAtMs = Date.now();
 
     if (data.first_name) setDisplayName(data.first_name);
     if (data.avatar_url) {
@@ -176,7 +211,7 @@ export default function Assistance() {
   const onPullRefresh = useCallback(async () => {
     setIsRefreshing(true);
     try {
-      await Promise.all([reloadCatalog(), refreshUserProfile()]);
+      await Promise.all([reloadCatalog(), refreshUserProfile(true)]);
     } finally {
       setIsRefreshing(false);
     }
@@ -282,27 +317,29 @@ export default function Assistance() {
       <View style={styles.header}>
         <View style={styles.headerTopRow}>
           <View style={styles.searchPill}>
+            <Ionicons name="search" size={18} color="#9AA6A6" style={styles.searchIcon} />
             <TextInput
-              placeholder="Search"
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              placeholder="Search services"
               placeholderTextColor="#9AA6A6"
               style={styles.searchInput}
+              returnKeyType="search"
+              autoCorrect={false}
+              autoCapitalize="none"
+              clearButtonMode="while-editing"
             />
+            {isSearchActive && Platform.OS === "android" ? (
+              <Pressable
+                onPress={() => setSearchQuery("")}
+                hitSlop={8}
+                style={styles.searchClearBtn}
+                accessibilityLabel="Clear search"
+              >
+                <Ionicons name="close-circle" size={18} color="#9AA6A6" />
+              </Pressable>
+            ) : null}
           </View>
-          <Pressable
-            style={[styles.approvedBtn, interactionsLocked && { opacity: 0.6 }]}
-            onPress={() => {
-              void runNavAction(async () => {
-                router.push(ROUTES.status as any);
-              });
-            }}
-            disabled={interactionsLocked}
-          >
-            <Image
-              source={APPROVED_ICON_PNG}
-              style={styles.approvedIcon}
-              resizeMode="contain"
-            />
-          </Pressable>
         </View>
 
         <View style={styles.greetRow}>
@@ -333,30 +370,42 @@ export default function Assistance() {
       </View>
 
       <View style={styles.panel}>
-        <Text style={[styles.title, { paddingHorizontal: 16 }]}>Popular Services</Text>
-        <Text style={[styles.subtitle, { paddingHorizontal: 16 }]}>
-          Avail city benefits and services in just a few taps.
-        </Text>
+        <View style={styles.servicesHeaderBlock}>
+          <View style={styles.servicesHeader}>
+            <Text style={styles.servicesHeaderTitle}>Popular Services</Text>
+            <Text style={styles.servicesHeaderSubtitle}>
+              Avail city benefits and services in just a few taps.
+            </Text>
+          </View>
 
-        <View style={[styles.chipsRow, { paddingHorizontal: 16 }]}>
-          <ChipGradient
-            label="All Services"
-            active={chip === "all"}
-            activeGradient={GRAD.chip}
-            onPress={() => setChip("all")}
-          />
-          {categoryChips.map((c) => (
-            <ChipGradient
-              key={c.slug}
-              label={c.label}
-              active={chip === c.slug}
-              activeGradient={
-                bundle?.runtime?.categoryThemeBySlug[c.slug]
-                  ?.homeChipActiveGradient ?? GRAD.chip
-              }
-              onPress={() => setChip(c.slug)}
-            />
-          ))}
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={styles.chipsScroll}
+            contentContainerStyle={styles.chipsRow}
+          >
+            <View style={styles.chipItem}>
+              <ChipGradient
+                label="All Services"
+                active={chip === "all"}
+              activeGradient={DEFAULT_CHIP_GRADIENT}
+                onPress={() => setChip("all")}
+              />
+            </View>
+            {categoryChips.map((c) => (
+              <View key={c.slug} style={styles.chipItem}>
+                <ChipGradient
+                  label={c.label}
+                  active={chip === c.slug}
+                  activeGradient={
+                    bundle?.runtime?.categoryThemeBySlug[c.slug]
+                      ?.homeChipActiveGradient ?? GRAD.chip
+                  }
+                  onPress={() => setChip(c.slug)}
+                />
+              </View>
+            ))}
+          </ScrollView>
         </View>
 
         <ScrollView
@@ -399,6 +448,35 @@ export default function Assistance() {
                 >
                   <Text style={styles.catalogRetryText}>Retry</Text>
                 </Pressable>
+              </View>
+            ) : null}
+            {!catalogLoading && services.length > 0 && filtered.length === 0 ? (
+              <View style={styles.searchEmptyWrap}>
+                <Ionicons name="search-outline" size={40} color="#B8C4C4" />
+                <Text style={styles.searchEmptyTitle}>No matching services</Text>
+                <Text style={styles.searchEmptyText}>
+                  {isSearchActive
+                    ? `Nothing found for "${trimmedSearchQuery}"${
+                        chip !== "all"
+                          ? ` in ${
+                              categoryChips.find((c) => c.slug === chip)?.label ??
+                              "this category"
+                            }`
+                          : ""
+                      }. Try another keyword or category.`
+                    : "Try another category filter."}
+                </Text>
+                {isSearchActive ? (
+                  <Pressable
+                    onPress={() => setSearchQuery("")}
+                    style={({ pressed }) => [
+                      styles.searchEmptyClearBtn,
+                      pressed && { opacity: 0.85 },
+                    ]}
+                  >
+                    <Text style={styles.searchEmptyClearText}>Clear search</Text>
+                  </Pressable>
+                ) : null}
               </View>
             ) : null}
             {filtered.map((s) => (
@@ -523,11 +601,21 @@ function ChipGradient({
               pressed && { opacity: 0.92 },
             ]}
           >
-            <Text style={[styles.chipText, { color: "#FFFFFF" }]}>{label}</Text>
+            <Text
+              numberOfLines={1}
+              style={[styles.chipText, { color: "#FFFFFF" }]}
+            >
+              {label}
+            </Text>
           </LinearGradient>
         ) : (
           <View style={[styles.chipBase, { backgroundColor: "#FFFFFF" }]}>
-            <Text style={[styles.chipText, { color: "#5D6B6B" }]}>{label}</Text>
+            <Text
+              numberOfLines={1}
+              style={[styles.chipText, { color: "#5D6B6B" }]}
+            >
+              {label}
+            </Text>
           </View>
         )
       }
@@ -545,36 +633,73 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: Platform.OS === "android" ? 10 : 0,
   },
-  headerTopRow: { flexDirection: "row", alignItems: "center", gap: 12 },
+  headerTopRow: { flexDirection: "row", alignItems: "center" },
   searchPill: {
     flex: 1,
     height: 40,
     backgroundColor: "#FFFFFF",
     borderRadius: 22,
-    paddingHorizontal: 16,
-    justifyContent: "center",
+    paddingHorizontal: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
     shadowColor: "#000",
     shadowOpacity: 0.12,
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 4 },
     elevation: 4,
   },
+  searchIcon: {
+    marginLeft: 2,
+  },
   searchInput: {
+    flex: 1,
     fontSize: 14,
     color: "#2F3B3B",
     paddingVertical: 0,
     fontFamily: FONT,
     fontWeight: "600",
   },
-  approvedBtn: {
-    width: 44,
-    height: 44,
+  searchClearBtn: {
+    padding: 2,
+  },
+  searchEmptyWrap: {
+    width: "100%",
     alignItems: "center",
     justifyContent: "center",
+    paddingHorizontal: 24,
+    paddingVertical: 48,
+    gap: 10,
   },
-  approvedIcon: {
-    width: 28,
-    height: 28,
+  searchEmptyTitle: {
+    marginTop: 4,
+    fontSize: 17,
+    color: TEXT_DARK,
+    fontFamily: FONT,
+    fontWeight: "700",
+    textAlign: "center",
+  },
+  searchEmptyText: {
+    fontSize: 14,
+    lineHeight: 20,
+    color: TEXT_MUTED,
+    fontFamily: FONT,
+    fontWeight: "500",
+    textAlign: "center",
+  },
+  searchEmptyClearBtn: {
+    marginTop: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: TEAL,
+  },
+  searchEmptyClearText: {
+    color: TEAL,
+    fontFamily: FONT,
+    fontWeight: "700",
+    fontSize: 14,
   },
   greetRow: {
     paddingVertical: 12.5,
@@ -621,7 +746,11 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     paddingTop: 15,
   },
-  gridScrollContent: { paddingBottom: NAV_TOTAL_HEIGHT + 26, paddingHorizontal: 16 },
+  gridScrollContent: {
+    paddingTop: 7.5,
+    paddingBottom: NAV_TOTAL_HEIGHT + 26,
+    paddingHorizontal: 15,
+  },
   title: {
     fontSize: 22,
     fontFamily: FONT,
@@ -635,17 +764,50 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: TEXT_MUTED,
   },
+  servicesHeaderBlock: {
+    paddingBottom: 5,
+    borderBottomWidth: 1,
+    borderBottomColor: "#E6EAEC",
+  },
+  servicesHeader: {
+    paddingHorizontal: 16,
+    paddingBottom: 2,
+  },
+  servicesHeaderTitle: {
+    fontSize: 22,
+    fontFamily: FONT,
+    fontWeight: "700",
+    color: TEXT_DARK,
+  },
+  servicesHeaderSubtitle: {
+    marginTop: 4,
+    fontSize: 12,
+    fontFamily: FONT,
+    fontWeight: "600",
+    color: TEXT_MUTED,
+  },
   chipsRow: {
     flexDirection: "row",
-    gap: 8,
-    marginTop: 12,
-    marginBottom: 10,
-    justifyContent: "space-between",
+    alignItems: "center",
+    paddingHorizontal: 16,
+    paddingRight: 20,
+    paddingVertical: 0,
+  },
+  chipsScroll: {
+    marginTop: 4,
+    marginBottom: 4,
+    height: 45,
+  },
+  chipItem: {
+    marginRight: 10,
+    flexShrink: 0,
   },
 
   chipShadow: {
-    flex: 1,
     borderRadius: 20,
+    alignSelf: "flex-start",
+    flexShrink: 0,
+    flexGrow: 0,
     shadowColor: "#000",
     shadowOpacity: 0.12,
     shadowRadius: 10,
@@ -655,10 +817,15 @@ const styles = StyleSheet.create({
   
   chipBase: {
     height: 40,
-    paddingHorizontal: 10,
+    paddingHorizontal: 18,
+    minWidth: 70,
     borderRadius: 20,
     alignItems: "center",
     justifyContent: "center",
+    alignSelf: "flex-start",
+    flexShrink: 0,
+    flexGrow: 0,
+    flexDirection: "row",
   },
   chipBaseActive: {
     shadowColor: "#000",
@@ -668,7 +835,13 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
 
-  chipText: { fontSize: 12, fontFamily: FONT, fontWeight: "700", textAlign: "center" },
+  chipText: {
+    fontSize: 12,
+    fontFamily: FONT,
+    fontWeight: "700",
+    textAlign: "center",
+    flexShrink: 0,
+  },
   grid: {
     flexDirection: "row",
     flexWrap: "wrap",

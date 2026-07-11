@@ -1,7 +1,6 @@
 // app/Status/StatusDetails.tsx
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect } from "@react-navigation/native";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
@@ -23,7 +22,8 @@ import {
 } from "react-native";
 import { inferAttachmentName } from "@/AppCore/AssistanceRequestAttachments";
 import type { ApplicationItem } from "@/AppCore/AssistanceStatusApplicationsCache";
-import { STORAGE_KEYS } from "@/AppCore/ClientStorageKeys";
+import { statusApplicationRealId } from "@/AppCore/AssistanceStatusApplicationsCache";
+import { readStatusApplicationsCache } from "@/AppCore/StatusApplicationsRepository";
 import { fromDbFileType } from "@/AppCore/AttachmentSlotDbMapping";
 import {
   categoryAssistanceTitle,
@@ -36,6 +36,7 @@ import {
   resolveServiceId,
 } from "@/AppCore/CatalogLookupRuntime";
 import { fileIconName } from "@/AppCore/FileKindIcons";
+import { getRequestDocumentSignedUrlCached } from "@/AppCore/RequestDocumentUpload";
 import { useAssistanceCatalog } from "@/AppCore/UseAssistanceCatalog";
 import { buildPreflightChoiceLines } from "@/AppCore/PreflightSelections";
 import {
@@ -46,14 +47,18 @@ import {
 import { enrichStatusApplicationItem } from "@/AppCore/ServiceCatalogDisplay";
 import type { Category, ServiceStatus } from "@/AppCore/AppUiDomainTypes";
 import {
-  ATTACHMENT_STATUS_ACCENT,
-  headerStatusForDetails,
+  attachmentStatusIcon,
+  dbStatusForLabel,
+  resolveStatusDetailsHeaderStatus,
   normalizeServiceStatus,
   statusBadgeTheme,
+  STATUS_TIMELINE_PROGRESS_ACCENT,
+  statusTimelineActionLinkTheme,
   statusTimelineDotTheme,
 } from "@/AppCore/RequestStatusPresentation";
 import { ASSISTANCE_REQUESTS_TABLE } from "@/AppCore/AssistanceRequestSql";
 import { supabase } from "@/AppCore/SupabaseClient";
+import { markRequestNotificationsRead } from "@/AppCore/UserNotificationsQuery";
 import { COLORS, FONT_FAMILY_ROUNDED } from "@/AppCore/Theme";
 
 const FONT = FONT_FAMILY_ROUNDED;
@@ -64,12 +69,9 @@ const TEXT_DARK = COLORS.textDark;
 const TEXT_MUTED = COLORS.textMuted;
 const TEAL = COLORS.teal;
 
-const REQUEST_DOCS_BUCKET = "request-documents";
-
 /* timeline */
 const LINE = "#DADADA";
 const NODE = "#CFCFCF";
-const GREEN = "#7CCB53";
 
 /* layout */
 const DATE_COL_W = 76;
@@ -122,43 +124,6 @@ function normalizeRawStatus(raw?: string | null): string {
   if (s === "inprogress" || s === "processing") return "in progress";
   if (s === "action required") return "action required";
   return s;
-}
-
-function normalizeAttachmentStatus(raw?: string | null): string {
-  const s = (raw || "").toString().trim().toLowerCase();
-  if (!s) return "in progress";
-  if (s === "pending" || s === "submitted") return "in progress";
-  if (s === "in_progress" || s === "inprogress" || s === "processing")
-    return "in progress";
-  if (s === "action_required") return "action required";
-  return s;
-}
-
-function attachmentStatusIcon(statusRaw?: string | null): {
-  name: keyof typeof Ionicons.glyphMap;
-  color: string;
-} | null {
-  const s = normalizeAttachmentStatus(statusRaw);
-  if (s === "approved") {
-    return { name: "checkmark-circle", color: ATTACHMENT_STATUS_ACCENT.approved };
-  }
-  if (s === "action required") {
-    return {
-      name: "alert-circle",
-      color: ATTACHMENT_STATUS_ACCENT.actionRequired,
-    };
-  }
-  if (s === "resubmitted") {
-    return {
-      name: "refresh-circle",
-      color: ATTACHMENT_STATUS_ACCENT.resubmitted,
-    };
-  }
-  return null;
-}
-
-function statusLabel(raw?: string | null): ServiceStatus {
-  return normalizeServiceStatus(raw || "");
 }
 
 function statusDescription(raw?: string | null): string {
@@ -248,6 +213,15 @@ function formatBytes(bytes?: number) {
   return `${mb.toFixed(2)} MB`;
 }
 
+function findCachedApplication(
+  list: ApplicationItem[],
+  requestKey: string
+): ApplicationItem | null {
+  const key = statusApplicationRealId(requestKey);
+  if (!key) return null;
+  return list.find((x) => statusApplicationRealId(x) === key) ?? null;
+}
+
 export default function StatusDetails() {
   const { bundle } = useAssistanceCatalog();
   const catalogReady = !!bundle?.runtime;
@@ -278,54 +252,43 @@ export default function StatusDetails() {
   const [refreshTick, setRefreshTick] = useState(0);
   const [isInitialLoading, setIsInitialLoading] = useState(true);
 
+  const hydrateAppFromStatusCache = useCallback(async (requestKey: string) => {
+    const key = statusApplicationRealId(requestKey);
+    if (!key) return;
+
+    try {
+      const cached = await readStatusApplicationsCache();
+      const found = findCachedApplication(cached, key);
+      if (!found) return;
+
+      const cachedDbStatus = dbStatusForLabel(found.status);
+
+      setApp((prev) =>
+        enrichStatusApplicationItem({
+          ...(prev ?? found),
+          ...found,
+          id: prev?.id ?? found.id,
+        })
+      );
+      setRequestRow((prev) =>
+        prev ? { ...prev, status: cachedDbStatus } : prev
+      );
+    } catch {
+      /* best-effort */
+    }
+  }, []);
+
   useEffect(() => {
     (async () => {
-      try {
-        const raw = await AsyncStorage.getItem(STORAGE_KEYS.statusApplicationsV1);
-        if (raw) {
-          const list = JSON.parse(raw);
-          if (Array.isArray(list)) {
-            const found = list.find(
-              (x: any) => String(x?.id) === String(params?.id)
-            );
-            if (found) {
-              const base: ApplicationItem = {
-                id: String(found?.id),
-                title: String(found?.title ?? ""),
-                description: String(found?.description ?? ""),
-                status: normalizeServiceStatus(found?.status as string),
-                category: (found?.category as Category) ?? "uncategorized",
-                categorySlug:
-                  typeof found?.categorySlug === "string"
-                    ? found.categorySlug
-                    : typeof found?.category === "string"
-                      ? found.category
-                      : undefined,
-                createdAt:
-                  typeof found?.createdAt === "number"
-                    ? found.createdAt
-                    : Date.now(),
-                applicationId:
-                  typeof found?.applicationId === "string"
-                    ? found.applicationId
-                    : undefined,
-                requestCode:
-                  typeof found?.requestCode === "string"
-                    ? found.requestCode
-                    : typeof found?.applicationId === "string"
-                    ? found.applicationId
-                    : undefined,
-                service:
-                  typeof found?.service === "string"
-                    ? found.service
-                    : undefined,
-              };
-              setApp(enrichStatusApplicationItem(base));
-              return;
-            }
-          }
-        }
-      } catch {}
+      const paramKey = String(params?.id ?? "");
+      const found = findCachedApplication(
+        await readStatusApplicationsCache(),
+        paramKey
+      );
+      if (found) {
+        setApp(enrichStatusApplicationItem(found));
+        return;
+      }
 
       const fallbackCategory =
         (params?.category as Category) ?? ("uncategorized" as Category);
@@ -361,19 +324,16 @@ export default function StatusDetails() {
     params?.service,
   ]);
 
-  const latestAuditStatus = useMemo(() => {
-    if (!auditHistory.length) return null;
-    const latest = auditHistory[auditHistory.length - 1];
-    return latest?.new_status || latest?.old_status || null;
-  }, [auditHistory]);
+  const timelineActionLink = statusTimelineActionLinkTheme();
 
   const badgeText = useMemo(
     () =>
-      headerStatusForDetails({
+      resolveStatusDetailsHeaderStatus({
+        requestStatus: requestRow?.status,
+        attachments: uploadedDocs,
         routedStatus: app?.status,
-        dbStatus: requestRow?.status,
       }),
-    [app?.status, requestRow?.status]
+    [app?.status, requestRow?.status, uploadedDocs]
   );
   const createdAt = app?.createdAt ?? Date.now();
   const badgeTheme = useMemo(
@@ -437,12 +397,7 @@ export default function StatusDetails() {
 
     (async () => {
       try {
-        await supabase.functions.invoke("notifications", {
-          body: {
-            action: "mark-read",
-            requestId: realRequestId,
-          },
-        });
+        await markRequestNotificationsRead(realRequestId);
       } catch (e) {
         if (active) {
           console.log("Status details notification read sync failed:", e);
@@ -487,10 +442,10 @@ export default function StatusDetails() {
     requestRow?.payload,
   ]);
   const normalizedStatus = useMemo(
-    () => normalizeRawStatus(latestAuditStatus || requestRow?.status || app?.status),
-    [latestAuditStatus, requestRow?.status, app?.status]
+    () => normalizeRawStatus(badgeText),
+    [badgeText]
   );
-  const isActionRequired = normalizedStatus === "action required";
+  const isActionRequired = badgeText === "Action Required";
 
   const timelineSteps = useMemo(() => {
     if (auditHistory.length > 0) {
@@ -512,7 +467,7 @@ export default function StatusDetails() {
 
         const next = {
           key: `${log.changed_at}-${index}`,
-          title: statusLabel(statusRaw),
+          title: normalizeServiceStatus(statusRaw),
           description: statusDescription(statusRaw),
           timestamp: toMillis(log.changed_at),
           statusRaw,
@@ -547,7 +502,7 @@ export default function StatusDetails() {
     return [
       {
         key: "fallback-current",
-        title: statusLabel(requestRow?.status || app?.status),
+        title: normalizeServiceStatus(requestRow?.status || app?.status),
         description: statusDescription(requestRow?.status || app?.status),
         timestamp: fallbackTimestamp,
         statusRaw: normalizeRawStatus(requestRow?.status || app?.status),
@@ -574,10 +529,11 @@ export default function StatusDetails() {
 
   useFocusEffect(
     useCallback(() => {
-      setIsInitialLoading(true);
+      const requestKey = String(params?.id ?? "");
+      void hydrateAppFromStatusCache(requestKey);
       setRefreshTick((x) => x + 1);
       return () => {};
-    }, [])
+    }, [hydrateAppFromStatusCache, params?.id])
   );
 
   useEffect(() => {
@@ -612,9 +568,7 @@ export default function StatusDetails() {
               if (!prev) return prev;
               const next: ApplicationItem = {
                 ...prev,
-                status: isRefreshing
-                  ? normalizeServiceStatus(row.status || prev.status)
-                  : prev.status,
+                status: normalizeServiceStatus(row.status || prev.status),
                 service:
                   typeof row.service_id === "string" && row.service_id.trim()
                     ? row.service_id.trim()
@@ -653,7 +607,6 @@ export default function StatusDetails() {
             "file_type,path,status,created,updated,reason_for_action,additional_reason"
           )
           .eq("assistance_request_id", realId)
-          .eq("request_table", ASSISTANCE_REQUESTS_TABLE)
           .order("created", { ascending: true });
 
         if (attachmentsError) throw attachmentsError;
@@ -736,12 +689,12 @@ export default function StatusDetails() {
       const next: Record<string, string> = {};
       await Promise.all(
         imageDocs.map(async (doc) => {
-          const { data, error } = await supabase.storage
-            .from(REQUEST_DOCS_BUCKET)
-            .createSignedUrl(doc.path, 3600);
-
-          if (!error && data?.signedUrl) {
-            next[doc.path] = data.signedUrl;
+          const signedUrl = await getRequestDocumentSignedUrlCached(
+            doc.path,
+            3600
+          );
+          if (signedUrl) {
+            next[doc.path] = signedUrl;
           }
         })
       );
@@ -765,12 +718,7 @@ export default function StatusDetails() {
 
     try {
       setLoadingPreview(true);
-      const { data, error } = await supabase.storage
-        .from(REQUEST_DOCS_BUCKET)
-        .createSignedUrl(path, 60);
-
-      if (error) throw error;
-      const signedUrl = (data?.signedUrl || "").toString();
+      const signedUrl = await getRequestDocumentSignedUrlCached(path, 60);
       if (!signedUrl) {
         Alert.alert("Cannot open", "Could not generate a file link.");
         return;
@@ -973,11 +921,26 @@ export default function StatusDetails() {
                       }
                       style={({ pressed }) => [
                         styles.timelineActionLinkWrap,
+                        {
+                          borderColor: timelineActionLink.border,
+                          backgroundColor: timelineActionLink.background,
+                        },
                         pressed && { opacity: 0.8 },
                       ]}
                     >
-                      <Text style={styles.timelineActionLink}>View Details</Text>
-                      <Ionicons name="chevron-forward" size={14} color="#D07C00" />
+                      <Text
+                        style={[
+                          styles.timelineActionLink,
+                          { color: timelineActionLink.text },
+                        ]}
+                      >
+                        View Details
+                      </Text>
+                      <Ionicons
+                        name="chevron-forward"
+                        size={14}
+                        color={timelineActionLink.icon}
+                      />
                     </Pressable>
                   ) : null}
                 </View>
@@ -1406,8 +1369,8 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   progressDotActive: {
-    borderColor: GREEN,
-    backgroundColor: GREEN,
+    borderColor: STATUS_TIMELINE_PROGRESS_ACCENT.completedDot,
+    backgroundColor: STATUS_TIMELINE_PROGRESS_ACCENT.completedDot,
   },
   progressDotCurrent: {
     borderColor: "#F0A13A",
@@ -1422,7 +1385,7 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   progressLineActive: {
-    backgroundColor: "#92D66A",
+    backgroundColor: STATUS_TIMELINE_PROGRESS_ACCENT.completedLine,
   },
   progressCard: {
     flex: 1,
@@ -1460,8 +1423,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 2,
     borderWidth: 1,
-    borderColor: "#FFD59E",
-    backgroundColor: "#FFF4E4",
     borderRadius: 8,
     paddingVertical: 5,
     paddingHorizontal: 8,
@@ -1470,7 +1431,6 @@ const styles = StyleSheet.create({
     fontFamily: FONT,
     fontWeight: "700",
     fontSize: 10,
-    color: "#D07C00",
   },
 
   line: {
@@ -1505,7 +1465,7 @@ const styles = StyleSheet.create({
     width: 18,
     height: 18,
     borderRadius: 18,
-    backgroundColor: GREEN,
+    backgroundColor: STATUS_TIMELINE_PROGRESS_ACCENT.completedDot,
     alignItems: "center",
     justifyContent: "center",
   },

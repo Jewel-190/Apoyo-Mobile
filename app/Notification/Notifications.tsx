@@ -2,10 +2,11 @@ import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect } from "@react-navigation/native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useMemo } from "react";
 import {
   ActivityIndicator,
   Pressable,
+  RefreshControl,
   SafeAreaView,
   ScrollView,
   StatusBar,
@@ -18,12 +19,9 @@ import type { Category } from "@/AppCore/AppUiDomainTypes";
 import { resolveServiceId } from "@/AppCore/CatalogLookupRuntime";
 import { getService } from "@/AppCore/AssistanceServiceDefinitions";
 import { useAssistanceCatalog } from "@/AppCore/UseAssistanceCatalog";
-import { supabase } from "@/AppCore/SupabaseClient";
-import {
-  listNotifications,
-  markRequestNotificationsRead,
-  type NotificationItem as NotificationApiRow,
-} from "@/AppCore/UserNotificationsQuery";
+import { useNotifications } from "@/AppCore/NotificationsContext";
+import { type NotificationItem as NotificationApiRow } from "@/AppCore/UserNotificationsQuery";
+import { statusDisplayLabel } from "@/AppCore/RequestStatusPresentation";
 
 const FONT = "SF Pro Rounded";
 
@@ -117,14 +115,6 @@ function shortDate(ts: number) {
   return `${months[d.getMonth()]} ${d.getDate()}`;
 }
 
-function statusLabel(raw: string | null | undefined): string {
-  const value = (raw || "").toString().trim();
-  if (!value) return "Pending";
-  return value
-    .replace(/_/g, " ")
-    .replace(/\b\w/g, (m) => m.toUpperCase());
-}
-
 /** Opens request monitoring (documents cleared → approval pipeline). */
 function opensApprovedAssistanceMonitoring(
   raw: string | null | undefined
@@ -153,7 +143,7 @@ function buildNotificationCopy(
   if (actionUpper === "INSERT") {
     return {
       title: `${requestTitle} Request Submitted`,
-      body: `${requestTitle} request is now ${statusLabel(newStatus)}.`,
+      body: `${requestTitle} request is now ${statusDisplayLabel(newStatus)}.`,
     };
   }
 
@@ -166,7 +156,7 @@ function buildNotificationCopy(
 
   return {
     title: `${requestTitle} Request Updated`,
-    body: `Status changed from ${statusLabel(oldStatus)} to ${statusLabel(newStatus)}.`,
+    body: `Status changed from ${statusDisplayLabel(oldStatus)} to ${statusDisplayLabel(newStatus)}.`,
   };
 }
 
@@ -224,48 +214,18 @@ function normalizeNotifications(
   );
 }
 
-async function fetchServiceIdsByRequestId(
-  requestIds: string[]
-): Promise<Record<string, string>> {
-  if (!requestIds.length) return {};
-
-  const { data, error } = await supabase
-    .from("assistance_requests")
-    .select("id,service_id")
-    .in("id", requestIds);
-
-  if (error) return {};
-
-  const map: Record<string, string> = {};
-  for (const row of data ?? []) {
-    const id = (row as { id?: string }).id;
-    const serviceId = (row as { service_id?: string }).service_id;
-    if (id && serviceId) map[id] = serviceId;
-  }
-  return map;
-}
-
-async function fetchNotifications(): Promise<{
-  rows: NotificationApiRow[];
-  serviceKeyByRequestId: Record<string, string>;
-}> {
-  const rows = await listNotifications(80);
-  const requestIds = Array.from(
-    new Set(rows.map((r) => String(r?.request_id || "")).filter(Boolean))
-  );
-  const serviceKeyByRequestId = await fetchServiceIdsByRequestId(requestIds);
-  return { rows, serviceKeyByRequestId };
-}
-
 export default function Notifications() {
   const router = useRouter();
   const { bundle } = useAssistanceCatalog();
+  const {
+    items: rawRows,
+    serviceKeyByRequestId,
+    loading: isLoading,
+    refresh,
+    markRead,
+  } = useNotifications();
 
-  const [rawRows, setRawRows] = useState<NotificationApiRow[]>([]);
-  const [serviceKeyByRequestId, setServiceKeyByRequestId] = useState<
-    Record<string, string>
-  >({});
-  const [isLoading, setIsLoading] = useState(true);
+  const [refreshing, setRefreshing] = React.useState(false);
 
   const accentHexByServiceKey = useMemo(() => {
     const map: Record<string, string> = {};
@@ -287,33 +247,14 @@ export default function Notifications() {
 
   const hasResults = useMemo(() => items.length > 0, [items]);
 
-  const load = async () => {
-    setIsLoading(true);
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
     try {
-      const { rows, serviceKeyByRequestId: serviceMap } =
-        await fetchNotifications();
-      setRawRows(rows);
-      setServiceKeyByRequestId(serviceMap);
-    } catch {
-      setRawRows([]);
-      setServiceKeyByRequestId({});
+      await refresh();
     } finally {
-      setIsLoading(false);
+      setRefreshing(false);
     }
-  };
-
-  const markRead = useCallback(async (requestId: string) => {
-    try {
-      await markRequestNotificationsRead(requestId);
-      setRawRows((prev) =>
-        prev.map((row) =>
-          row.request_id === requestId ? { ...row, is_read: true } : row
-        )
-      );
-    } catch {
-      // Best effort; keep unread badge until next refresh.
-    }
-  }, []);
+  }, [refresh]);
 
   const openNotif = async (n: NotifItem) => {
     if (n.requestId) {
@@ -325,7 +266,7 @@ export default function Notifications() {
         params: {
           id: n.requestId,
           title: n.requestTitle,
-          status: statusLabel(n.status),
+          status: statusDisplayLabel(n.status),
           category: n.category,
           createdAt: String(n.createdAt || ""),
           service: n.service,
@@ -346,10 +287,12 @@ export default function Notifications() {
     } as any);
   };
 
+  // Realtime keeps the list live; a light refresh on focus reconciles any
+  // events missed while the socket was asleep (e.g. app resumed from background).
   useFocusEffect(
     useCallback(() => {
-      load();
-    }, [])
+      void refresh();
+    }, [refresh])
   );
 
   return (
@@ -370,6 +313,14 @@ export default function Notifications() {
       <ScrollView
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.body}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={TEAL}
+            colors={[TEAL]}
+          />
+        }
       >
         {isLoading ? (
           <View style={styles.loadingWrap}>

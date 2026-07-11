@@ -11,11 +11,11 @@ import {
 } from "expo-router";
 import type { Category } from "@/AppCore/AppUiDomainTypes";
 import {
-  addStatusApplication,
   makeApplicationId,
-  makeStatusId,
   prettyDate,
+  upsertSubmittedStatusApplication,
 } from "@/AppCore/AssistanceStatusApplicationsCache";
+import { markStatusApplicationsCacheDirty } from "@/AppCore/StatusApplicationsRepository";
 import { useAssistanceCatalog } from "@/AppCore/UseAssistanceCatalog";
 import { successHeadingForService } from "@/AppCore/CategoryCatalogUi";
 import { getCatalogLookupRuntime } from "@/AppCore/CatalogLookupRuntime";
@@ -83,14 +83,13 @@ function SubmissionSuccessBody(props: SuccessBodyProps) {
     () => makeApplicationId(props.applicationCodePrefix),
     [props.applicationCodePrefix]
   );
-  const localRecordId = useMemo(
-    () => makeStatusId(props.applicationCodePrefix),
-    [props.applicationCodePrefix]
-  );
 
   const dedupeKey = useMemo(
-    () => submissionSavedKey(props.dedupeKey ?? props.applicationCodePrefix),
-    [props.dedupeKey, props.applicationCodePrefix]
+    () =>
+      requestId
+        ? submissionSavedKey(requestId)
+        : submissionSavedKey(props.dedupeKey ?? props.applicationCodePrefix),
+    [props.dedupeKey, props.applicationCodePrefix, requestId]
   );
 
   const savedOnce = useRef(false);
@@ -130,25 +129,31 @@ function SubmissionSuccessBody(props: SuccessBodyProps) {
     (async () => {
       try {
         if (savedOnce.current) return;
+        if (!requestId) return;
         const already = await AsyncStorage.getItem(dedupeKey);
-        if (already === appId) return;
+        if (already === requestId) return;
 
         savedOnce.current = true;
 
-        await addStatusApplication({
-          id: localRecordId,
-          title: props.detailTitle,
-          description: props.description,
-          status: "Pending",
-          category: props.category,
-          categorySlug: props.categorySlug,
-          service: props.serviceId,
-          createdAt,
-          applicationId: appId,
-          dateLabel: prettyDate(createdAt),
-        });
+        await upsertSubmittedStatusApplication(
+          {
+            id: requestId,
+            title: props.detailTitle,
+            description: props.description,
+            status: "Pending",
+            category: props.category,
+            categorySlug: props.categorySlug,
+            service: props.serviceId,
+            createdAt,
+            applicationId: appId,
+            dateLabel: prettyDate(createdAt),
+            requestCode: requestCode ?? undefined,
+          },
+          requestId
+        );
 
-        await AsyncStorage.setItem(dedupeKey, appId);
+        markStatusApplicationsCacheDirty();
+        await AsyncStorage.setItem(dedupeKey, requestId);
       } catch (err) {
         console.log("Save to Status failed:", err);
       }
@@ -157,12 +162,13 @@ function SubmissionSuccessBody(props: SuccessBodyProps) {
     appId,
     createdAt,
     dedupeKey,
-    localRecordId,
     props.category,
     props.categorySlug,
     props.description,
     props.detailTitle,
     props.serviceId,
+    requestCode,
+    requestId,
   ]);
 
   return (

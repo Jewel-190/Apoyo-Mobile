@@ -29,6 +29,12 @@ export const STORAGE_KEYS = {
   regFullname: "apoyo_reg_fullname",
   regEmail: "apoyo_reg_email",
   regMobile: "apoyo_reg_mobile",
+
+  /** Full multi-step registration snapshot (phase1/register). */
+  registrationDraftV1: "apoyo_registration_draft_v1",
+
+  /** Cached barangay dropdown (registration). */
+  barangaysCache: "apoyo_barangays_v1",
 } as const;
 
 /** Per-service form draft key used by RequestInfo + per-service Req screens. */

@@ -1,0 +1,108 @@
+# Self-hosted face match + liveness for Apoyo registration.
+# Stack: CompreFace (ID vs selfie) + Python verifier (anti-spoof + multi-frame liveness).
+#
+# Quick start:
+#   cd deploy/face-verification
+#   cp env.example .env
+#   # Edit .env (postgres password, FACE_VERIFY_SERVICE_KEY)
+#   docker compose up -d --build
+#   # Open http://localhost:8000 → register → create "Verification" application → copy API key into .env COMPREFACE_API_KEY
+#   docker compose up -d --force-recreate apoyo-face-verifier
+#
+# Point Supabase secrets:
+#   FACE_VERIFY_SERVICE_URL=https://your-server:8090
+#   FACE_VERIFY_SERVICE_KEY=<same as .env>
+
+name: apoyo-face-verification
+
+volumes:
+  postgres-data:
+
+services:
+  compreface-postgres-db:
+    image: exadel/compreface-postgres-db:1.2.0
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${postgres_username}
+      POSTGRES_PASSWORD: ${postgres_password}
+      POSTGRES_DB: ${postgres_db}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  compreface-api:
+    image: exadel/compreface-api:1.2.0
+    restart: unless-stopped
+    depends_on:
+      - compreface-postgres-db
+    environment:
+      POSTGRES_USER: ${postgres_username}
+      POSTGRES_PASSWORD: ${postgres_password}
+      POSTGRES_URL: jdbc:postgresql://${postgres_domain}:${postgres_port}/${postgres_db}
+      SPRING_PROFILES_ACTIVE: dev
+      API_JAVA_OPTS: ${compreface_api_java_options}
+      SAVE_IMAGES_TO_DB: ${save_images_to_db}
+      MAX_FILE_SIZE: ${max_file_size}
+      MAX_REQUEST_SIZE: ${max_request_size}B
+      CONNECTION_TIMEOUT: ${connection_timeout:-10000}
+      READ_TIMEOUT: ${read_timeout:-60000}
+
+  compreface-admin:
+    image: exadel/compreface-admin:1.2.0
+    restart: unless-stopped
+    depends_on:
+      - compreface-postgres-db
+      - compreface-api
+    environment:
+      POSTGRES_USER: ${postgres_username}
+      POSTGRES_PASSWORD: ${postgres_password}
+      POSTGRES_URL: jdbc:postgresql://${postgres_domain}:${postgres_port}/${postgres_db}
+      SPRING_PROFILES_ACTIVE: dev
+      ENABLE_EMAIL_SERVER: ${enable_email_server}
+      ADMIN_JAVA_OPTS: ${compreface_admin_java_options}
+      MAX_FILE_SIZE: ${max_file_size}
+      MAX_REQUEST_SIZE: ${max_request_size}B
+
+  compreface-core:
+    image: exadel/compreface-core:1.2.0
+    restart: unless-stopped
+    environment:
+      ML_PORT: 3000
+      IMG_LENGTH_LIMIT: ${max_detect_size}
+      UWSGI_PROCESSES: ${uwsgi_processes:-2}
+      UWSGI_THREADS: ${uwsgi_threads:-1}
+
+  compreface-fe:
+    image: exadel/compreface-fe:1.2.0
+    restart: unless-stopped
+    ports:
+      - "8000:80"
+    depends_on:
+      - compreface-api
+      - compreface-admin
+      - compreface-core
+    environment:
+      CLIENT_MAX_BODY_SIZE: ${max_request_size}
+      PROXY_READ_TIMEOUT: ${read_timeout:-60000}ms
+      PROXY_CONNECT_TIMEOUT: ${connection_timeout:-10000}ms
+
+  apoyo-face-verifier:
+    build: ./verifier
+    restart: unless-stopped
+    ports:
+      - "${VERIFIER_HOST_PORT:-8090}:8080"
+    depends_on:
+      - compreface-api
+      - compreface-core
+    environment:
+      COMPREFACE_API_URL: ${COMPREFACE_API_URL:-http://compreface-api:8080}
+      COMPREFACE_API_KEY: ${COMPREFACE_API_KEY}
+      FACE_VERIFY_SERVICE_KEY: ${FACE_VERIFY_SERVICE_KEY}
+      SIMILARITY_THRESHOLD: ${SIMILARITY_THRESHOLD:-0.85}
+      LIVENESS_MIN_FRAMES: ${LIVENESS_MIN_FRAMES:-4}
+      FRAME_MIN_HAMMING_DISTANCE: ${FRAME_MIN_HAMMING_DISTANCE:-2}
+      ANTI_SPOOF_ENABLED: ${ANTI_SPOOF_ENABLED:-true}
+      BLINK_REQUIRED: ${BLINK_REQUIRED:-true}
+      BLINK_MIN_EAR_DELTA: ${BLINK_MIN_EAR_DELTA:-0.015}
+      POSE_MIN_YAW: ${POSE_MIN_YAW:-0.04}
+      VERIFY_TIMEOUT_SEC: ${VERIFY_TIMEOUT_SEC:-120}
+      ID_VERIFY_TIMEOUT_SEC: ${ID_VERIFY_TIMEOUT_SEC:-90}

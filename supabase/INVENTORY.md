@@ -10,7 +10,7 @@
 Evidence sources:
 - Generated types: `database.types.tmp.ts` (1527 lines, full public schema)
 - Local migrations: `supabase/migrations/` (35 files, 202603310001 -> 202605030001)
-- Local edge functions: `supabase/functions/{facial-verification,notifications,request-code-generator,storage-cleanup,_shared}`
+- Local edge functions: `supabase/functions/{facial-verification,id-document-verification,notifications,request-code-generator,storage-cleanup,_shared}`
 - Linked project metadata: `supabase/.temp/{project-ref,linked-project.json}`
 - Storage listed via `supabase storage ls --experimental`
 - Functions listed via `supabase functions list --project-ref yrlkynetbegvwmqaiuvr`
@@ -254,7 +254,8 @@ Notifications:
 | `notifications` | 4 | ACTIVE | yes | User-facing notifications API: `list`, `unread-count`, `mark-read`. Verifies bearer JWT, calls `get_latest_notifications_for_user` / `get_unread_notification_count_for_user` / `mark_request_notifications_read_for_user`. |
 | `admin-notifications` | 5 | ACTIVE | no | (no local source) Admin counterpart of `notifications`; backed by the `admin_notification` table and `get_latest_notifications_for_admin` family of RPCs. |
 | `admin-dashboard-analytics` | 8 | ACTIVE | no | (no local source) Aggregations for the admin dashboard. Pull with `supabase functions download admin-dashboard-analytics` to inspect. |
-| `facial-verification` | 7 | ACTIVE | yes | Compares two base64 face images via AWS Rekognition `CompareFacesCommand`. Threshold env `AWS_REKOGNITION_SIMILARITY_THRESHOLD` (default 85). Max 15 MB per image. |
+| `facial-verification` | 7+ | ACTIVE | yes | Proxies registration face verify to self-hosted verifier (`FACE_VERIFY_SERVICE_URL/verify`): liveness frames, pose labels, CompreFace ID-vs-selfie match. Secrets: `FACE_VERIFY_SERVICE_URL`, `FACE_VERIFY_SERVICE_KEY`. Max 15 MB per image. |
+| `id-document-verification` | — | ACTIVE | yes | Proxies registration ID OCR verify to self-hosted verifier (`FACE_VERIFY_SERVICE_URL/verify-id`): fuzzy match name, birth date, voter ID. Same secrets as `facial-verification`. Max 15 MB per image. |
 
 ---
 

@@ -1,7 +1,7 @@
 /**
  * Typed CRUD for `public.assistance_requests` (unified request rows).
  *
- * `request_attachments.request_table` is always `assistance_requests`.
+ * `request_attachments` rows link via `assistance_request_id` only.
  */
 
 import { supabase } from "./SupabaseClient";
@@ -98,6 +98,22 @@ export const ASSISTANCE_REQUEST_LIST_SELECT = [
   "assistance_services!inner(id, request_code_token)",
 ].join(",");
 
+/** Status tab listing — omits heavy `payload` JSON (detail screens fetch it separately). */
+export const ASSISTANCE_REQUEST_LIST_SELECT_SLIM = [
+  "id",
+  "user_id",
+  "service_id",
+  "status",
+  "request_code",
+  "submitted_at",
+  "case_study_date",
+  "additional_info",
+  "financial_request_type",
+  "created_at",
+  "updated_at",
+  "assistance_services!inner(id, request_code_token)",
+].join(",");
+
 type AssistanceRequestJoinedRow = {
   id: string;
   user_id: string;
@@ -108,7 +124,7 @@ type AssistanceRequestJoinedRow = {
   case_study_date: string | null;
   additional_info: string | null;
   financial_request_type: string | null;
-  payload: RequestsViewRow["payload"];
+  payload?: RequestsViewRow["payload"];
   created_at: string;
   updated_at: string;
   assistance_services:
@@ -138,7 +154,7 @@ function mapJoinedRowToRequestsView(row: AssistanceRequestJoinedRow): RequestsVi
     case_study_date: row.case_study_date,
     additional_info: row.additional_info,
     financial_request_type: row.financial_request_type ?? null,
-    payload: row.payload,
+    payload: row.payload ?? null,
     created_at: row.created_at,
     updated_at: row.updated_at,
     service_type: routeToken,
@@ -153,6 +169,8 @@ export type AssistanceRequestsListingParams = {
   statuses?: string[];
   /** Omit for no limit (full history). */
   limit?: number;
+  /** When false (default for status list), omits `payload` to reduce egress. */
+  includePayload?: boolean;
 };
 
 /**
@@ -161,9 +179,14 @@ export type AssistanceRequestsListingParams = {
 export async function fetchAssistanceRequestsListing(
   params: AssistanceRequestsListingParams = {}
 ): Promise<RequestsViewRow[]> {
+  const includePayload = params.includePayload ?? false;
+  const selectCols = includePayload
+    ? ASSISTANCE_REQUEST_LIST_SELECT
+    : ASSISTANCE_REQUEST_LIST_SELECT_SLIM;
+
   let q = supabase
     .from(ASSISTANCE_REQUESTS_TABLE)
-    .select(ASSISTANCE_REQUEST_LIST_SELECT)
+    .select(selectCols)
     .order("updated_at", { ascending: false });
 
   if (params.userId) q = q.eq("user_id", params.userId);
@@ -367,6 +390,7 @@ export async function listRequestsView(
     serviceIds: params.serviceIds,
     statuses: params.statuses,
     limit: params.limit ?? 100,
+    includePayload: true,
   });
 }
 

@@ -17,7 +17,8 @@
     "supabase:db:push": "npm run supabase -- db push --yes",
     "supabase:functions:deploy:cleanup": "npm run supabase -- functions deploy storage-cleanup --no-verify-jwt",
     "supabase:functions:deploy:notifications": "npm run supabase -- functions deploy notifications --no-verify-jwt",
-    "supabase:functions:deploy:facial-verification": "npm run supabase -- functions deploy facial-verification --no-verify-jwt"
+    "supabase:functions:deploy:facial-verification": "npm run supabase -- functions deploy facial-verification id-document-verification --no-verify-jwt",
+    "face-verification:up": "docker compose --env-file deploy/face-verification/.env -f deploy/face-verification/docker-compose.yml up -d --build"
   },
   "dependencies": {
     "@expo-google-fonts/instrument-sans": "^0.4.2",

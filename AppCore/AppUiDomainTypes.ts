@@ -22,5 +22,6 @@ export type ServiceStatus =
   | "Resubmitted"
   | "For Approval"
   | "Scheduled"
+  | "Case Study"
   | "Approved"
   | "Draft";

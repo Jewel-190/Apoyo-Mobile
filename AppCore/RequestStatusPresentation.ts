@@ -1,9 +1,8 @@
 /**
- * Status vocabulary and badge colors shared across mobile Status surfaces.
+ * Single source of truth for request status labels and colors (mobile UI).
  *
- * The DB stores lowercase canonical strings (e.g. "in progress",
- * "action required"). The mobile UI surfaces title-cased labels
- * (e.g. "In Progress", "Action Required").
+ * DB stores lowercase strings (e.g. "in progress", "action required").
+ * UI uses title-cased `ServiceStatus` labels and `REQUEST_STATUS_BADGE_THEMES`.
  */
 
 import type { ServiceStatus } from "./AppUiDomainTypes";
@@ -22,7 +21,7 @@ export const REQUEST_STATUS_DB_VALUES = [
 
 export type RequestStatusDb = (typeof REQUEST_STATUS_DB_VALUES)[number];
 
-export const REQUEST_STATUS_LABELS: Record<RequestStatusDb, string> = {
+export const REQUEST_STATUS_LABELS: Record<RequestStatusDb, ServiceStatus> = {
   draft: "Draft",
   pending: "Pending",
   "in progress": "In Progress",
@@ -34,74 +33,66 @@ export const REQUEST_STATUS_LABELS: Record<RequestStatusDb, string> = {
   approved: "Approved",
 };
 
-export type ServiceStatusUi =
-  | "Pending"
-  | "In Progress"
-  | "Action Required"
-  | "Resubmitted"
-  | "For Approval"
-  | "Scheduled"
-  | "Case Study"
-  | "Approved";
+/** @deprecated Use `ServiceStatus` — same union, includes Draft. */
+export type ServiceStatusUi = Exclude<ServiceStatus, "Draft">;
+
+/** Badge background + label color for list cards, detail headers, and pills. */
+export type StatusBadgeTheme = { bg: string; text: string };
 
 /**
- * Map any incoming status string to its UI label. Defaults to
- * "Pending" for unknown values so the UI never renders empty.
+ * Canonical status colors — import `statusBadgeTheme()` in UI; do not hardcode hex.
  */
-export function normalizeStatus(
-  status: string | null | undefined
-): ServiceStatusUi {
-  const key = String(status ?? "")
-    .trim()
-    .toLowerCase();
+export const REQUEST_STATUS_BADGE_THEMES: Record<ServiceStatus, StatusBadgeTheme> = {
+  Pending: { bg: "#E8C6FF", text: "#4A2E5B" },
+  "In Progress": { bg: "#B9E3FF", text: "#2B2B2B" },
+  "Action Required": { bg: "#FFD59E", text: "#2B2B2B" },
+  Resubmitted: { bg: "#FFE082", text: "#5C4A00" },
+  "For Approval": { bg: "#C8EDE9", text: "#0D5C58" },
+  Scheduled: { bg: "#D8E6FA", text: "#2F4F7A" },
+  "Case Study": { bg: "#EDE7F6", text: "#4527A0" },
+  Approved: { bg: "#C8F1C8", text: "#2B2B2B" },
+  Draft: { bg: "#D4D4D4", text: "#2B2B2B" },
+};
 
-  if (
-    [
-      "action required",
-      "action_required",
-      "requires_action",
-      "for_revision",
-      "resubmission_required",
-      "resubmission required",
-    ].includes(key)
-  ) {
-    return "Action Required";
-  }
+/** Timeline “View Details” chip under Action Required (derived from Action Required badge). */
+export type StatusActionLinkTheme = {
+  border: string;
+  background: string;
+  text: string;
+  icon: string;
+};
 
-  if (["resubmitted", "resubmission"].includes(key)) {
-    return "Resubmitted";
-  }
+const ACTION_REQUIRED_LINK_THEME: StatusActionLinkTheme = {
+  border: REQUEST_STATUS_BADGE_THEMES["Action Required"].bg,
+  background: "#FFF4E4",
+  text: "#D07C00",
+  icon: "#D07C00",
+};
 
-  if (["in progress", "in_progress"].includes(key)) {
-    return "In Progress";
-  }
+/** Accent colors for per-document status icons on Status details. */
+export const ATTACHMENT_STATUS_ACCENT = {
+  approved: "#7CCB53",
+  actionRequired: REQUEST_STATUS_BADGE_THEMES["Action Required"].bg,
+  resubmitted: REQUEST_STATUS_BADGE_THEMES.Resubmitted.text,
+} as const;
 
-  if (["case study", "case_study", "casestudy", "for case study"].includes(key)) {
-    return "Case Study";
-  }
+/** Timeline progress track (completed steps / connector line). */
+export const STATUS_TIMELINE_PROGRESS_ACCENT = {
+  completedDot: ATTACHMENT_STATUS_ACCENT.approved,
+  completedLine: "#92D66A",
+} as const;
 
-  if (["for approval", "for_approval"].includes(key)) {
-    return "For Approval";
-  }
-
-  if (key === "scheduled") return "Scheduled";
-
-  if (["approved", "complete", "done"].includes(key)) {
-    return "Approved";
-  }
-
-  if (key === "pending") return "Pending";
-
-  // Unknown / draft — default to Pending in user-facing surfaces.
-  return "Pending";
+/**
+ * Map any incoming status string to a UI label. Defaults to Pending.
+ */
+export function normalizeStatus(status: string | null | undefined): ServiceStatus {
+  return normalizeServiceStatus(status);
 }
 
-/**
- * Map a UI label back to the canonical DB literal. Round-trip safe for
- * statuses in REQUEST_STATUS_LABELS.
- */
-export function dbStatusForLabel(label: ServiceStatusUi): RequestStatusDb {
+export function dbStatusForLabel(label: ServiceStatus): RequestStatusDb {
   switch (label) {
+    case "Draft":
+      return "draft";
     case "Pending":
       return "pending";
     case "In Progress":
@@ -121,53 +112,97 @@ export function dbStatusForLabel(label: ServiceStatusUi): RequestStatusDb {
   }
 }
 
-/** Badge background + label color for list cards and detail headers. */
-export type StatusBadgeTheme = { bg: string; text: string };
-
-const STATUS_BADGE_THEMES: Record<ServiceStatus, StatusBadgeTheme> = {
-  Pending: { bg: "#E8C6FF", text: "#4A2E5B" },
-  "In Progress": { bg: "#B9E3FF", text: "#2B2B2B" },
-  "Action Required": { bg: "#FFD59E", text: "#2B2B2B" },
-  Resubmitted: { bg: "#FFE082", text: "#5C4A00" },
-  "For Approval": { bg: "#C8EDE9", text: "#0D5C58" },
-  Scheduled: { bg: "#D8E6FA", text: "#2F4F7A" },
-  Approved: { bg: "#C8F1C8", text: "#2B2B2B" },
-  Draft: { bg: "#D4D4D4", text: "#2B2B2B" },
-};
-
-/** Accent colors for attachment-level status icons (requirements checklist). */
-export const ATTACHMENT_STATUS_ACCENT = {
-  approved: "#7CCB53",
-  actionRequired: STATUS_BADGE_THEMES["Action Required"].bg,
-  resubmitted: STATUS_BADGE_THEMES.Resubmitted.text,
-} as const;
-
-/** Timeline “current step” dot — matches list/detail status badges. */
 export function statusTimelineDotTheme(status: ServiceStatus): StatusBadgeTheme {
   return statusBadgeTheme(status);
 }
 
+export function statusTimelineActionLinkTheme(): StatusActionLinkTheme {
+  return ACTION_REQUIRED_LINK_THEME;
+}
+
+function normalizeAttachmentStatusKey(raw?: string | null): string {
+  const s = (raw || "").toString().trim().toLowerCase();
+  if (!s) return "in progress";
+  if (s === "pending" || s === "submitted") return "in progress";
+  if (s === "in_progress" || s === "inprogress" || s === "processing") {
+    return "in progress";
+  }
+  if (s === "action_required") return "action required";
+  return s;
+}
+
+/** Ionicons + color for a `request_attachments.status` row on Status details. */
+export function attachmentStatusIcon(
+  statusRaw?: string | null
+): { name: "checkmark-circle" | "alert-circle" | "refresh-circle"; color: string } | null {
+  const s = normalizeAttachmentStatusKey(statusRaw);
+  if (s === "approved") {
+    return { name: "checkmark-circle", color: ATTACHMENT_STATUS_ACCENT.approved };
+  }
+  if (s === "action required") {
+    return { name: "alert-circle", color: ATTACHMENT_STATUS_ACCENT.actionRequired };
+  }
+  if (s === "resubmitted") {
+    return { name: "refresh-circle", color: ATTACHMENT_STATUS_ACCENT.resubmitted };
+  }
+  return null;
+}
+
 /**
- * Normalize raw DB/cache strings to `ServiceStatus` (includes Draft / Resubmitted).
+ * Normalize raw DB/cache strings to `ServiceStatus` (includes Draft / Resubmitted / Case Study).
  */
 export function normalizeServiceStatus(raw?: string | null): ServiceStatus {
   if (!raw) return "Pending";
-  const s = raw.toString().trim().toLowerCase().replace(/_/g, " ");
-  if (s === "submitted" || s === "pending") return "Pending";
-  if (s === "resubmitted") return "Resubmitted";
-  if (s === "in progress" || s === "inprogress" || s === "processing") {
+  const key = raw.toString().trim().toLowerCase().replace(/_/g, " ");
+
+  if (key === "draft") return "Draft";
+
+  if (
+    [
+      "action required",
+      "action",
+      "requires_action",
+      "for_revision",
+      "resubmission_required",
+      "resubmission required",
+    ].includes(key)
+  ) {
+    return "Action Required";
+  }
+
+  if (["resubmitted", "resubmission"].includes(key)) {
+    return "Resubmitted";
+  }
+
+  if (["in progress", "inprogress", "processing"].includes(key)) {
     return "In Progress";
   }
-  if (s === "action required" || s === "action") return "Action Required";
-  if (s === "for approval") return "For Approval";
-  if (s === "scheduled") return "Scheduled";
-  if (s === "approved" || s === "accepted") return "Approved";
-  if (s === "draft") return "Draft";
+
+  if (["case study", "casestudy", "for case study"].includes(key)) {
+    return "Case Study";
+  }
+
+  if (["for approval", "for_approval"].includes(key)) {
+    return "For Approval";
+  }
+
+  if (key === "scheduled") return "Scheduled";
+
+  if (["approved", "accepted", "complete", "done"].includes(key)) {
+    return "Approved";
+  }
+
+  if (key === "pending" || key === "submitted") return "Pending";
+
   return "Pending";
 }
 
+export function statusDisplayLabel(raw?: string | null): string {
+  return normalizeServiceStatus(raw);
+}
+
 export function statusBadgeTheme(status: ServiceStatus): StatusBadgeTheme {
-  return STATUS_BADGE_THEMES[status] ?? STATUS_BADGE_THEMES.Pending;
+  return REQUEST_STATUS_BADGE_THEMES[status] ?? REQUEST_STATUS_BADGE_THEMES.Pending;
 }
 
 export function statusBadgeThemeFromRaw(
@@ -176,25 +211,50 @@ export function statusBadgeThemeFromRaw(
   return statusBadgeTheme(normalizeServiceStatus(raw));
 }
 
-/** Background only — Status list cards. */
 export function statusBadgeBackground(status: ServiceStatus): string {
   return statusBadgeTheme(status).bg;
 }
 
-/** Label color only — Status list cards. */
 export function statusBadgeTextColor(status: ServiceStatus): string {
   return statusBadgeTheme(status).text;
 }
 
-/**
- * Header badge on Status details: match the Status list card the user opened
- * (`routedStatus` / cache). Use DB only when no routed status is available.
- */
 export function headerStatusForDetails(params: {
   routedStatus?: string | null;
   dbStatus?: string | null;
 }): ServiceStatus {
-  const routed = (params.routedStatus || "").trim();
-  if (routed) return normalizeServiceStatus(routed);
-  return normalizeServiceStatus(params.dbStatus);
+  const db = (params.dbStatus || "").trim();
+  if (db) return normalizeServiceStatus(db);
+  return normalizeServiceStatus(params.routedStatus);
+}
+
+export type StatusDetailsAttachmentState = {
+  status?: string | null;
+};
+
+/**
+ * Status details header chip. Uses the request row when possible, but when the
+ * row still says "action required" while the checklist shows resubmitted docs
+ * and nothing still requires action, show Resubmitted.
+ */
+export function resolveStatusDetailsHeaderStatus(params: {
+  requestStatus?: string | null;
+  attachments?: ReadonlyArray<StatusDetailsAttachmentState>;
+  routedStatus?: string | null;
+}): ServiceStatus {
+  const attachmentKeys = (params.attachments ?? []).map((a) =>
+    normalizeAttachmentStatusKey(a.status)
+  );
+  const hasOpenAction = attachmentKeys.includes("action required");
+  const hasResubmitted = attachmentKeys.includes("resubmitted");
+
+  const requestLabel = normalizeServiceStatus(params.requestStatus);
+  if (requestLabel === "Action Required" && !hasOpenAction && hasResubmitted) {
+    return "Resubmitted";
+  }
+
+  return headerStatusForDetails({
+    routedStatus: params.routedStatus,
+    dbStatus: params.requestStatus,
+  });
 }
