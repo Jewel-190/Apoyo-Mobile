@@ -24,6 +24,7 @@ import {
   resolveNativeFontFamily,
   resolveNativeItalicFontFamily,
 } from "./CmsTypography";
+import { FONT_SIZE_MIN } from "./Theme";
 
 export function hasHtmlMarkup(value: string | null | undefined): boolean {
   if (!value?.trim()) return false;
@@ -119,8 +120,10 @@ export function CmsRichText({
   const tagsStyles = useMemo((): Record<string, MixedStyleDeclaration> => {
     const base = StyleSheet.flatten(baseStyle) as TextStyle | undefined;
     const color = base?.color ?? "#D94B4B";
-    const fontSize = base?.fontSize ?? 11;
-    const lineHeight = base?.lineHeight ?? 16;
+    const rawSize = typeof base?.fontSize === "number" ? base.fontSize : FONT_SIZE_MIN;
+    const fontSize = Math.max(FONT_SIZE_MIN, rawSize);
+    const rawLine = typeof base?.lineHeight === "number" ? base.lineHeight : 20;
+    const lineHeight = Math.max(20, rawLine, Math.ceil(fontSize * 1.35));
 
     const inherited: MixedStyleDeclaration = {
       color,

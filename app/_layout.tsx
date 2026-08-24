@@ -1,8 +1,8 @@
-import { Stack } from "expo-router";
+import { Stack, usePathname } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import * as NavigationBar from "expo-navigation-bar";
 import { useEffect } from "react";
-import { Platform, AppState, View } from "react-native";
+import { Platform, AppState, View, StyleSheet } from "react-native";
 import { Inter_400Regular } from "@expo-google-fonts/inter/400Regular";
 import { Inter_400Regular_Italic } from "@expo-google-fonts/inter/400Regular_Italic";
 import { Inter_600SemiBold } from "@expo-google-fonts/inter/600SemiBold";
@@ -11,9 +11,16 @@ import { useFonts } from "expo-font";
 import * as SplashScreen from "expo-splash-screen";
 
 import { supabase } from "@/AppCore/SupabaseClient";
+import { readPinRecoveryPending } from "@/AppCore/ForgotPin";
 import { syncStatusApplicationsWithServer } from "@/AppCore/StatusApplicationsRepository";
 import { hydrateCatalogRuntimeFromCache } from "@/AppCore/UseAssistanceCatalog";
 import { NotificationsProvider } from "@/AppCore/NotificationsContext";
+import BottomNavBar, {
+  isMainTabPath,
+  tabMaskColor,
+} from "@/components/BottomNavBar";
+import { AppBackGate } from "@/components/AppBackGate";
+import { PinRecoveryGate } from "@/components/PinRecoveryGate";
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -34,6 +41,7 @@ export default function RootLayout() {
   useEffect(() => {
     void (async () => {
       await hydrateCatalogRuntimeFromCache();
+      if (await readPinRecoveryPending()) return;
       const { data } = await supabase.auth.getSession();
       const uid = data.session?.user?.id;
       if (uid) {
@@ -68,18 +76,87 @@ export default function RootLayout() {
 
   return (
     <NotificationsProvider>
+      <PinRecoveryGate />
+      <AppBackGate />
+      <RootChrome />
+    </NotificationsProvider>
+  );
+}
+
+const TAB_SCREEN_OPTIONS = {
+  animation: "fade" as const,
+  animationDuration: 160,
+  animationTypeForReplace: "push" as const,
+  gestureEnabled: false,
+};
+
+function RootChrome() {
+  const pathname = usePathname();
+  const showTabBar = isMainTabPath(pathname);
+
+  return (
+    <View style={styles.root}>
       <StatusBar style="light" backgroundColor="#008E8A" translucent={false} />
       <Stack
         screenOptions={{ headerShown: false }}
         initialRouteName="index"
       >
-        {/* Main navbar screens - instant transitions for seamless tab switching */}
         <Stack.Screen name="index" />
-        <Stack.Screen name="Home/Home" options={{ animation: "none" }} />
-        <Stack.Screen name="Status/Status" options={{ animation: "none" }} />
-        <Stack.Screen name="Notification/Notifications" options={{ animation: "none" }} />
-        <Stack.Screen name="Account/Account" options={{ animation: "none" }} />
+        <Stack.Screen name="Home/Home" options={TAB_SCREEN_OPTIONS} />
+        <Stack.Screen name="Status/Status" options={TAB_SCREEN_OPTIONS} />
+        <Stack.Screen name="Notification/Notifications" options={TAB_SCREEN_OPTIONS} />
+        <Stack.Screen name="Account/Account" options={TAB_SCREEN_OPTIONS} />
+        <Stack.Screen
+          name="phase1/legal/[slug]"
+          options={{
+            presentation: "transparentModal",
+            animation: "fade",
+            animationDuration: 220,
+            headerShown: false,
+            contentStyle: { backgroundColor: "transparent" },
+          }}
+        />
+        <Stack.Screen
+          name="Account/TermsAndConditions"
+          options={{
+            presentation: "transparentModal",
+            animation: "fade",
+            animationDuration: 220,
+            headerShown: false,
+            contentStyle: { backgroundColor: "transparent" },
+          }}
+        />
+        <Stack.Screen
+          name="Account/UserAcceptance"
+          options={{
+            presentation: "transparentModal",
+            animation: "fade",
+            animationDuration: 220,
+            headerShown: false,
+            contentStyle: { backgroundColor: "transparent" },
+          }}
+        />
+        <Stack.Screen
+          name="phase1/register"
+          options={{
+            animation: "fade",
+            animationDuration: 220,
+          }}
+        />
+        <Stack.Screen
+          name="phase1/forgot-pin"
+          options={{
+            animation: "fade",
+            animationDuration: 220,
+            gestureEnabled: false,
+          }}
+        />
       </Stack>
-    </NotificationsProvider>
+      {showTabBar ? <BottomNavBar maskColor={tabMaskColor(pathname)} /> : null}
+    </View>
   );
 }
+
+const styles = StyleSheet.create({
+  root: { flex: 1 },
+});

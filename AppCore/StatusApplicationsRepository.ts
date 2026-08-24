@@ -61,6 +61,7 @@ const REQUEST_STATUSES = [
   "for approval",
   "scheduled",
   "approved",
+  "declined",
   "submitted",
 ] as const;
 
@@ -121,11 +122,13 @@ export async function fetchStatusApplicationsFromServer(
     const id = isDraft ? `draft_${row.legacy_request_id}` : row.legacy_request_id;
 
     const svc = rt?.byServiceId[row.service_id];
-    const catSlug = (svc?.categorySlug ?? "uncategorized").trim().toLowerCase();
+    const snapshotTitle = String(row.service_name || "").trim();
+    const snapshotSlug = String(row.category_slug || "").trim().toLowerCase();
+    const catSlug = (snapshotSlug || svc?.categorySlug || "uncategorized").trim().toLowerCase();
     items.push(
       enrichStatusApplicationItem({
         id,
-        title: svc?.displayName ?? row.route_token,
+        title: snapshotTitle || svc?.displayName || row.route_token,
         description: isDraft ? "Continue your application" : "",
         status: status as ServiceStatus,
         category: catSlug as Category,

@@ -21,6 +21,9 @@ export type ServiceRequestRecordRow = {
   legacy_created_at: string | null;
   legacy_updated_at: string | null;
   synced_at: string;
+  service_name?: string | null;
+  assistance_name?: string | null;
+  category_slug?: string | null;
 };
 
 export async function listServiceRequestRecordsForUser(
@@ -48,5 +51,8 @@ export async function listServiceRequestRecordsForUser(
     legacy_created_at: row.created_at,
     legacy_updated_at: row.updated_at,
     synced_at: row.updated_at ?? row.created_at ?? new Date().toISOString(),
+    service_name: row.service_name ?? "",
+    assistance_name: row.assistance_name ?? "",
+    category_slug: row.category_slug ?? "",
   }));
 }

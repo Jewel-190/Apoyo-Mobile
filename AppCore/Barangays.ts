@@ -14,6 +14,35 @@ let barangaysMemory: BarangayOption[] | null = null;
 let barangaysFetchedAtMs = 0;
 let barangaysInflight: Promise<BarangayOption[]> | null = null;
 
+/**
+ * Signup stores `{house}, {street}, {barangay}, Dasmariñas, Cavite`.
+ * Do not use the second-to-last comma part — that is the city, not the barangay.
+ */
+export function barangayFromUserAddress(address: string | null | undefined): string {
+  const parts = (address ?? "")
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (parts.length === 0) return "";
+
+  const cityIdx = parts.findIndex((part) =>
+    /^dasmari[ñn]as$/i.test(part)
+  );
+  if (cityIdx >= 1) return parts[cityIdx - 1] ?? "";
+  if (parts.length >= 3) return parts[2] ?? "";
+  return "";
+}
+
+/** Prefer `users.barangay` (admin/mobile snapshot); fall back to the address string. */
+export function displayUserBarangay(row: {
+  barangay?: string | null;
+  address?: string | null;
+}): string {
+  const stored = (row.barangay ?? "").trim();
+  if (stored) return stored;
+  return barangayFromUserAddress(row.address);
+}
+
 /** Active barangays from `public.barangays` (id + name), ordered by name. */
 export async function fetchBarangays(
   options?: { force?: boolean }
@@ -61,6 +90,7 @@ export async function fetchBarangays(
     const { data, error } = await supabase
       .from("barangays")
       .select("id, name")
+      .eq("is_active", true)
       .order("name", { ascending: true });
 
     if (error) {

@@ -106,25 +106,49 @@ export async function markRequestNotificationsRead(requestId: string): Promise<v
   if (error) throw error;
 }
 
-/** Resolves `service_id` for a set of request ids (used for card theming). */
+/** Resolves catalog display metadata for a set of request ids. */
 export async function fetchServiceIdsByRequestId(
   requestIds: string[]
 ): Promise<Record<string, string>> {
+  const meta = await fetchRequestDisplayMetaByRequestId(requestIds);
+  const map: Record<string, string> = {};
+  for (const [id, row] of Object.entries(meta)) {
+    map[id] = row.serviceId;
+  }
+  return map;
+}
+
+export type RequestDisplayMeta = {
+  serviceId: string;
+  serviceName: string;
+  assistanceName: string;
+  categorySlug: string;
+};
+
+export async function fetchRequestDisplayMetaByRequestId(
+  requestIds: string[]
+): Promise<Record<string, RequestDisplayMeta>> {
   const ids = Array.from(new Set(requestIds.filter(Boolean)));
   if (!ids.length) return {};
 
   const { data, error } = await supabase
     .from("assistance_requests")
-    .select("id,service_id")
+    .select("id,service_id,service_name,assistance_name,category_slug")
     .in("id", ids);
 
   if (error) return {};
 
-  const map: Record<string, string> = {};
+  const map: Record<string, RequestDisplayMeta> = {};
   for (const row of data ?? []) {
     const id = (row as { id?: string }).id;
     const serviceId = (row as { service_id?: string }).service_id;
-    if (id && serviceId) map[id] = serviceId;
+    if (!id || !serviceId) continue;
+    map[id] = {
+      serviceId,
+      serviceName: String((row as { service_name?: string }).service_name || "").trim(),
+      assistanceName: String((row as { assistance_name?: string }).assistance_name || "").trim(),
+      categorySlug: String((row as { category_slug?: string }).category_slug || "").trim(),
+    };
   }
   return map;
 }

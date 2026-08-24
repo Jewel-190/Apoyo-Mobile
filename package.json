@@ -6,7 +6,6 @@
     "start": "cross-env EXPO_ROUTER_APP_ROOT=./app expo start",
     "start:lan": "cross-env EXPO_ROUTER_APP_ROOT=./app expo start --lan",
     "start:tunnel": "cross-env EXPO_ROUTER_APP_ROOT=./app expo start --tunnel",
-    "reset-project": "node ./scripts/reset-project.js",
     "android": "cross-env EXPO_ROUTER_APP_ROOT=./app expo start --android",
     "ios": "cross-env EXPO_ROUTER_APP_ROOT=./app expo start --ios",
     "web": "cross-env EXPO_ROUTER_APP_ROOT=./app expo start --web",

@@ -19,9 +19,9 @@ Migration `202605090001_safe_facade.sql` is the boundary between
 should be safe-by-default (additive, with `if not exists` /
 `if exists`, no destructive changes to existing columns or RLS).
 
-Destructive migrations live in `_phase10/` until they pass the
-pre-flight checklist documented in
-[../../REFACTOR.md](../../REFACTOR.md) §9 and are explicitly promoted
+Destructive migrations live in `_phase10/` until they pass a
+pre-flight checklist (additive migrations first; confirm no live
+dependents; backup / repair as needed) and are explicitly promoted
 into this folder.
 
 ## Applying

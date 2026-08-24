@@ -13,7 +13,7 @@ export const STORAGE_KEYS = {
   /** Cached profile shown on Home/Account screens. */
   userCache: "apoyo_user_cache",
 
-  /** PersonalInformation screen — split fields. */
+  /** Cached profile fields. */
   userName: "apoyo_user_name",
   userPhone: "apoyo_user_phone",
   userEmail: "apoyo_user_email",
@@ -35,6 +35,21 @@ export const STORAGE_KEYS = {
 
   /** Cached barangay dropdown (registration). */
   barangaysCache: "apoyo_barangays_v1",
+
+  /** Cached CMS legal pages (`public.settings` system/legal). */
+  legalSettingsCache: "apoyo_legal_settings_v1",
+
+  /** Cached interview briefing (`public.settings` admin/interview-scheduling). */
+  interviewSchedulingCache: "apoyo_interview_scheduling_v1",
+
+  /** Cached About → Official channels (`web` public.get → about.channels). */
+  officialChannelsCache: "apoyo_official_channels_v1",
+
+  /** Local consent record for Terms + User Acceptance before register. */
+  legalAcceptanceV1: "apoyo_legal_acceptance_v1",
+
+  /** Recovery session: email verified via OTP, new MPIN not saved yet. */
+  pinRecoveryPending: "apoyo_pin_recovery_pending_v1",
 } as const;
 
 /** Per-service form draft key used by RequestInfo + per-service Req screens. */

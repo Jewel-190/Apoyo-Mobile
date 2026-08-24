@@ -20,7 +20,7 @@ import {
   TextInput,
   View,
 } from "react-native";
-import BottomNavBar, { NAV_TOTAL_HEIGHT } from "../../components/BottomNavBar";
+import { NAV_TOTAL_HEIGHT } from "../../components/BottomNavBar";
 import type { HomeDetailsPage } from "@/AppCore/AssistanceCatalogFromApi";
 import { categoryCardTrimGradient } from "@/AppCore/ServiceCatalogDisplay";
 import { resolveServiceId } from "@/AppCore/CatalogLookupRuntime";
@@ -52,6 +52,8 @@ let lastUserProfileFetchAtMs = 0;
 const ROUTE_REQUEST = "/Home/request/RequestInfo";
 
 const PROFILE_PNG = require("../../assets/images/ProfileIcon.png");
+const DASMA_CITY_LOGO = require("../../assets/images/Dasmariñas Logo.png");
+const APOYO_MARK = require("../../assets/images/apoyologo.png");
 
 type Service = {
   id: string;
@@ -198,9 +200,11 @@ export default function Assistance() {
       setAvatarUrl(null);
     }
 
+    const cachedRaw = await AsyncStorage.getItem(CACHE_USER);
+    const previous = cachedRaw ? JSON.parse(cachedRaw) : {};
     await AsyncStorage.setItem(
       CACHE_USER,
-      JSON.stringify({ ...data, id: user.id })
+      JSON.stringify({ ...previous, ...data, id: user.id })
     );
   }, []);
 
@@ -316,6 +320,18 @@ export default function Assistance() {
 
       <View style={styles.header}>
         <View style={styles.headerTopRow}>
+          <View style={styles.headerBrandRow}>
+            <Image
+              source={DASMA_CITY_LOGO}
+              style={styles.headerCityLogo}
+              resizeMode="contain"
+            />
+            <Image
+              source={APOYO_MARK}
+              style={styles.headerApoyoLogo}
+              resizeMode="contain"
+            />
+          </View>
           <View style={styles.searchPill}>
             <Ionicons name="search" size={18} color="#9AA6A6" style={styles.searchIcon} />
             <TextInput
@@ -360,7 +376,7 @@ export default function Assistance() {
               />
             )}
           </View>
-          <View style={{ flex: 1 }}>
+          <View style={styles.greetTextWrap}>
             <Text style={styles.hiText}>
               Hi, <Text style={styles.hiName}>{displayName}</Text>
             </Text>
@@ -516,18 +532,24 @@ export default function Assistance() {
                           />
                         )}
                       </View>
-                      <Text style={styles.cardTitle}>{s.title}</Text>
-                      {hasVisibleCmsContent(s.descHtml) ? (
-                        <CmsRichText
-                          html={s.descHtml}
-                          fontFamily={s.descriptionFontFamily}
-                          baseStyle={styles.cardDesc}
-                          textAlign="left"
-                          contentWidth={CARD_DESC_WIDTH}
-                        />
-                      ) : s.desc ? (
-                        <Text style={styles.cardDesc}>{s.desc}</Text>
-                      ) : null}
+                      <Text style={styles.cardTitle} numberOfLines={2}>
+                        {s.title}
+                      </Text>
+                      <View style={styles.cardDescSlot}>
+                        {hasVisibleCmsContent(s.descHtml) ? (
+                          <CmsRichText
+                            html={s.descHtml}
+                            fontFamily={s.descriptionFontFamily}
+                            baseStyle={styles.cardDesc}
+                            textAlign="left"
+                            contentWidth={CARD_DESC_WIDTH}
+                          />
+                        ) : s.desc ? (
+                          <Text style={styles.cardDesc} numberOfLines={3}>
+                            {s.desc}
+                          </Text>
+                        ) : null}
+                      </View>
                     </View>
                   </View>
                 )}
@@ -536,8 +558,6 @@ export default function Assistance() {
           </View>
         </ScrollView>
       </View>
-
-      <BottomNavBar activeTab="home" maskColor="transparent" />
 
       {/* Draft Confirmation Dialog */}
       <Modal
@@ -625,6 +645,7 @@ function ChipGradient({
 
 const CARD_GAP = 10;
 const CARD_DESC_WIDTH = (width - 40) / 2 - 28;
+const CARD_HEIGHT = 192;
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: TEAL },
@@ -633,7 +654,25 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: Platform.OS === "android" ? 10 : 0,
   },
-  headerTopRow: { flexDirection: "row", alignItems: "center" },
+  headerTopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  headerBrandRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 1,
+    flexShrink: 0,
+  },
+  headerCityLogo: {
+    width: 42,
+    height: 42,
+  },
+  headerApoyoLogo: {
+    width: 38,
+    height: 38,
+  },
   searchPill: {
     flex: 1,
     height: 40,
@@ -705,7 +744,12 @@ const styles = StyleSheet.create({
     paddingVertical: 12.5,
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "flex-start",
     gap: 10,
+  },
+  greetTextWrap: {
+    flexShrink: 1,
+    alignItems: "flex-start",
   },
   profileCircle: {
     width: 64,
@@ -729,14 +773,16 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontFamily: FONT,
     fontWeight: "600",
+    textAlign: "left",
   },
   hiName: { fontFamily: FONT, fontWeight: "700" },
   hiSubText: {
     marginTop: 2,
     color: "#D4F3F2",
-    fontSize: 12,
+    fontSize: 14,
     fontFamily: FONT,
     fontWeight: "600",
+    textAlign: "left",
   },
   panel: {
     flex: 1,
@@ -759,7 +805,7 @@ const styles = StyleSheet.create({
   },
   subtitle: {
     marginTop: 4,
-    fontSize: 12,
+    fontSize: 14,
     fontFamily: FONT,
     fontWeight: "600",
     color: TEXT_MUTED,
@@ -781,7 +827,7 @@ const styles = StyleSheet.create({
   },
   servicesHeaderSubtitle: {
     marginTop: 4,
-    fontSize: 12,
+    fontSize: 14,
     fontFamily: FONT,
     fontWeight: "600",
     color: TEXT_MUTED,
@@ -789,14 +835,13 @@ const styles = StyleSheet.create({
   chipsRow: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 16,
-    paddingRight: 20,
-    paddingVertical: 0,
+    paddingHorizontal: 10,
+    paddingRight: 22,
+    paddingVertical: 3,
   },
   chipsScroll: {
-    marginTop: 4,
-    marginBottom: 4,
-    height: 45,
+    marginTop: 6,
+    marginBottom: 6,
   },
   chipItem: {
     marginRight: 10,
@@ -836,7 +881,7 @@ const styles = StyleSheet.create({
   },
 
   chipText: {
-    fontSize: 12,
+    fontSize: 14,
     fontFamily: FONT,
     fontWeight: "700",
     textAlign: "center",
@@ -872,7 +917,7 @@ const styles = StyleSheet.create({
   catalogRetryText: {
     fontFamily: FONT,
     fontWeight: "700",
-    fontSize: 13,
+    fontSize: 14,
     color: "#FFFFFF",
   },
   cardWrap: {
@@ -881,6 +926,7 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
   card: {
+    height: CARD_HEIGHT,
     backgroundColor: "#FFFFFF",
     borderRadius: 18,
     overflow: "hidden",
@@ -893,23 +939,28 @@ const styles = StyleSheet.create({
   cardPressed: { transform: [{ scale: 0.985 }], opacity: 0.96 },
   cardDisabled: { opacity: 0.72 },
   cardTopLine: { height: 4, width: "100%" },
-  cardInner: { padding: 14, minHeight: 166 },
+  cardInner: { flex: 1, padding: 14 },
   cardIconRow: { height: 38, justifyContent: "center", marginBottom: 12 },
   servicePng: { width: 34, height: 34 },
   cardTitle: {
     fontSize: 14,
+    lineHeight: 20,
     fontFamily: FONT,
     fontWeight: "700",
     color: TEXT_DARK,
     marginTop: 2,
   },
+  cardDescSlot: {
+    marginTop: 2,
+    flex: 1,
+    overflow: "hidden",
+  },
   cardDesc: {
-    marginTop: 8,
-    fontSize: 11,
+    fontSize: 14,
     fontFamily: FONT,
     fontWeight: "600",
     color: TEXT_MUTED,
-    lineHeight: 14,
+    lineHeight: 20,
   },
   // Draft dialog styles
   draftOverlay: {
@@ -951,7 +1002,7 @@ const styles = StyleSheet.create({
   draftNote: {
     fontFamily: FONT,
     fontWeight: "600",
-    fontSize: 12,
+    fontSize: 14,
     color: TEAL,
     textAlign: "center",
     marginBottom: 20,

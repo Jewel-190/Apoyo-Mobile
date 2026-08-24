@@ -48,9 +48,12 @@ import {
   type RegistrationDraftV1,
 } from "@/AppCore/RegistrationDraft";
 import { supabase } from "@/AppCore/SupabaseClient";
+import { shouldGateRegistration } from "@/AppCore/LegalAcceptance";
+import { legalPageRoute } from "@/AppCore/LegalSettings";
 
 // Imports & constants: React, navigation, storage, RN components and shared constants
-const { width: SCREEN_W } = Dimensions.get("window");
+const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get("window");
+const IS_COMPACT_SCREEN = SCREEN_H < 740;
 
 const TEAL = "#008E8A";
 const EMAIL_RESEND_COOLDOWN_SEC = 60;
@@ -666,6 +669,7 @@ export default function Register() {
   const [mpin, setMpin] = useState("");
   const [registrationAttemptToken, setRegistrationAttemptToken] = useState("");
   const [draftHydrated, setDraftHydrated] = useState(false);
+  const [legalAllowed, setLegalAllowed] = useState(false);
   const [emailSentAt, setEmailSentAt] = useState<number | null>(null);
   const pendingBarangayIdRef = useRef<string | null>(null);
   const persistDraftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -695,6 +699,22 @@ export default function Register() {
   useEffect(() => {
     void loadBarangays();
   }, [loadBarangays]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const gated = await shouldGateRegistration();
+      if (cancelled) return;
+      if (gated) {
+        router.replace(legalPageRoute("terms-and-conditions"));
+        return;
+      }
+      setLegalAllowed(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [router]);
 
   const [idImageUri, setIdImageUri] = useState<string | null>(null);
   const [idImageBase64, setIdImageBase64] = useState<string | null>(null);
@@ -1545,11 +1565,24 @@ export default function Register() {
       return false;
     }
 
+    const barangayName = selectedBarangay?.name?.trim() || "";
+    if (barangayName) {
+      const { error: barangayError } = await supabase
+        .from("users")
+        .update({ barangay: barangayName })
+        .eq("id", user.id);
+      if (__DEV__ && barangayError) {
+        console.log("Barangay persist error:", barangayError);
+      }
+    }
+
     // Cache user data for instant loading on Home/Account screens
     await AsyncStorage.setItem("apoyo_user_cache", JSON.stringify({
       first_name: firstName.trim(),
       contact_number: fullMobile,
       email: profileEmail,
+      barangay: barangayName,
+      address: composedAddress,
     }));
 
     if (__DEV__) {
@@ -1845,11 +1878,13 @@ export default function Register() {
 
   const progressStep = step;
 
-  if (!draftHydrated) {
+  if (!draftHydrated || !legalAllowed) {
     return (
       <SafeAreaView style={[styles.safe, styles.draftHydrateRoot]}>
         <ActivityIndicator size="large" color={TEAL} />
-        <Text style={styles.draftHydrateText}>Restoring your registration…</Text>
+        {draftHydrated ? null : (
+          <Text style={styles.draftHydrateText}>Restoring your registration…</Text>
+        )}
       </SafeAreaView>
     );
   }
@@ -1992,12 +2027,22 @@ export default function Register() {
                     By tapping <Text style={styles.termsBold}>Next</Text>, you agree with the
                   </Text>
                   <View style={styles.termsLinksRow}>
-                    <TouchableOpacity activeOpacity={0.8} onPress={() => {}}>
+                    <TouchableOpacity
+                      activeOpacity={0.8}
+                      onPress={() =>
+                        router.push(legalPageRoute("terms-and-conditions", "view"))
+                      }
+                    >
                       <Text style={styles.link}>Terms and Conditions</Text>
                     </TouchableOpacity>
                     <Text style={styles.termsText}> and </Text>
-                    <TouchableOpacity activeOpacity={0.8} onPress={() => {}}>
-                      <Text style={styles.link}>Privacy Notice</Text>
+                    <TouchableOpacity
+                      activeOpacity={0.8}
+                      onPress={() =>
+                        router.push(legalPageRoute("user-acceptance", "view"))
+                      }
+                    >
+                      <Text style={styles.link}>User Acceptance</Text>
                     </TouchableOpacity>
                   </View>
                 </View>
@@ -2403,112 +2448,139 @@ export default function Register() {
 
           {/* --- Step 3: Valid ID upload --- */}
           {step === 3 && (
-            <>
-              <Text style={styles.title}>Upload your ID</Text>
-              <Text style={styles.subtitle}>
-                Any government-issued ID is accepted. We read the text on your ID and check that it matches the name and details you registered with.
-              </Text>
-              {attempted && !idImageBase64 ? (
-                <Text style={styles.fillIn}>Upload your ID photo</Text>
-              ) : null}
-
-              <View style={styles.rowTopCompact}>
-                <Text style={styles.label}>ID image</Text>
-              </View>
-
-              <View
-                style={[
-                  styles.idUploadCard,
-                  attempted && !idImageBase64 && styles.inputErrorBorder,
-                ]}
+            <View style={styles.idStepRoot}>
+              <ScrollView
+                style={styles.idStepScroll}
+                contentContainerStyle={styles.idStepScrollContent}
+                keyboardShouldPersistTaps="handled"
+                showsVerticalScrollIndicator={false}
+                nestedScrollEnabled
               >
-                {idImageUri ? (
-                  <>
-                    <View style={styles.idPreviewWrap}>
-                      <Image source={{ uri: idImageUri }} style={styles.idPreview} resizeMode="contain" />
-                    </View>
-                    <View style={styles.idChangePhotoRow}>
-                      <TouchableOpacity
-                        activeOpacity={0.85}
-                        onPress={pickIdFromGallery}
-                        style={styles.idChangePhotoHalf}
-                      >
-                        <Ionicons name="images-outline" size={18} color={TEAL} />
-                        <Text style={styles.idChangePhotoHalfText}>Gallery</Text>
-                      </TouchableOpacity>
-                      <View style={styles.idChangePhotoDivider} />
-                      <TouchableOpacity
-                        activeOpacity={0.85}
-                        onPress={takeIdPhoto}
-                        style={styles.idChangePhotoHalf}
-                      >
-                        <Ionicons name="camera-outline" size={18} color={TEAL} />
-                        <Text style={styles.idChangePhotoHalfText}>Camera</Text>
-                      </TouchableOpacity>
-                    </View>
-                  </>
-                ) : (
-                  <View style={styles.idUploadEmpty}>
-                    <View style={styles.idUploadIconCircle}>
-                      <Ionicons name="id-card-outline" size={28} color={TEAL} />
-                    </View>
-                    <Text style={styles.idUploadTitle}>Add your ID photo</Text>
-                    <Text style={styles.idUploadSubtitle}>
-                      Any clear ID photo · full card visible · no glare
-                    </Text>
-                    <View style={styles.idSourceRow}>
-                      <TouchableOpacity
-                        activeOpacity={0.85}
-                        onPress={pickIdFromGallery}
-                        style={styles.idSourceBtnOutline}
-                      >
-                        <Ionicons name="images-outline" size={20} color={TEAL} />
-                        <Text style={styles.idSourceBtnOutlineText}>Gallery</Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        activeOpacity={0.85}
-                        onPress={takeIdPhoto}
-                        style={styles.idSourceBtnSolid}
-                      >
-                        <Ionicons name="camera-outline" size={20} color="#fff" />
-                        <Text style={styles.idSourceBtnSolidText}>Camera</Text>
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-                )}
-              </View>
-
-              <View style={[styles.infoBox, styles.idInfoBox]}>
-                <Text style={styles.infoText}>
-                  We match your first and last name, plus birth date or voter ID when visible. Minor spelling differences are OK.
+                <Text style={styles.title}>Upload your ID</Text>
+                <Text style={styles.subtitle}>
+                  Any government-issued ID is accepted. We read the text on your ID and check that it matches the name and details you registered with.
                 </Text>
-              </View>
+                {attempted && !idImageBase64 ? (
+                  <Text style={styles.fillIn}>Upload your ID photo</Text>
+                ) : null}
 
-              {idVerifyChecks.length > 0 ? (
-                <View style={styles.idVerifyResultsCard}>
-                  <Text style={styles.idVerifyResultsTitle}>ID check results</Text>
-                  {idVerifyChecks.map((check) => (
-                    <View key={check.field} style={styles.idVerifyResultRow}>
-                      <Ionicons
-                        name={check.matched ? "checkmark-circle" : "close-circle"}
-                        size={18}
-                        color={check.matched ? "#2E7D32" : "#C62828"}
-                      />
-                      <View style={styles.idVerifyResultTextWrap}>
-                        <Text style={styles.idVerifyResultLabel}>{check.label}</Text>
-                        {check.expected ? (
-                          <Text style={styles.idVerifyResultExpected}>{check.expected}</Text>
-                        ) : null}
+                <View style={styles.idImageLabelRow}>
+                  <Text style={styles.label}>ID image</Text>
+                </View>
+
+                <View
+                  style={[
+                    styles.idUploadCard,
+                    attempted && !idImageBase64 && styles.inputErrorBorder,
+                  ]}
+                >
+                  {idImageUri ? (
+                    <>
+                      <View style={styles.idPreviewWrap}>
+                        <Image
+                          source={{ uri: idImageUri }}
+                          style={styles.idPreview}
+                          resizeMode="contain"
+                        />
+                      </View>
+                      <View style={styles.idChangePhotoRow}>
+                        <TouchableOpacity
+                          activeOpacity={0.85}
+                          onPress={pickIdFromGallery}
+                          style={styles.idChangePhotoHalf}
+                        >
+                          <Ionicons name="images-outline" size={18} color={TEAL} />
+                          <Text style={styles.idChangePhotoHalfText}>Gallery</Text>
+                        </TouchableOpacity>
+                        <View style={styles.idChangePhotoDivider} />
+                        <TouchableOpacity
+                          activeOpacity={0.85}
+                          onPress={takeIdPhoto}
+                          style={styles.idChangePhotoHalf}
+                        >
+                          <Ionicons name="camera-outline" size={18} color={TEAL} />
+                          <Text style={styles.idChangePhotoHalfText}>Camera</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </>
+                  ) : (
+                    <View style={styles.idUploadEmpty}>
+                      <View style={styles.idUploadIconCircle}>
+                        <Ionicons name="id-card-outline" size={28} color={TEAL} />
+                      </View>
+                      <Text style={styles.idUploadTitle}>Add your ID photo</Text>
+                      <Text style={styles.idUploadSubtitle}>
+                        Any clear ID photo · full card visible · no glare
+                      </Text>
+                      <View style={styles.idSourceRow}>
+                        <TouchableOpacity
+                          activeOpacity={0.85}
+                          onPress={pickIdFromGallery}
+                          style={styles.idSourceBtnOutline}
+                        >
+                          <Ionicons name="images-outline" size={20} color={TEAL} />
+                          <Text style={styles.idSourceBtnOutlineText}>Gallery</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          activeOpacity={0.85}
+                          onPress={takeIdPhoto}
+                          style={styles.idSourceBtnSolid}
+                        >
+                          <Ionicons name="camera-outline" size={20} color="#fff" />
+                          <Text style={styles.idSourceBtnSolidText}>Camera</Text>
+                        </TouchableOpacity>
                       </View>
                     </View>
-                  ))}
+                  )}
                 </View>
-              ) : null}
 
-              {idVerifyError ? <Text style={styles.error}>{idVerifyError}</Text> : null}
+                <View style={[styles.infoBox, styles.idInfoBox]}>
+                  <Text style={styles.infoText}>
+                    We match your first and last name, plus birth date or voter ID when visible. Minor spelling differences are OK.
+                  </Text>
+                </View>
 
-              <View style={{ flex: 1 }} />
-              <View style={styles.primaryFooterRow}>
+                {idVerifyChecks.length > 0 ? (
+                  <View style={styles.idVerifyResultsCard}>
+                    <Text style={styles.idVerifyResultsTitle}>ID check results</Text>
+                    <ScrollView
+                      style={styles.idVerifyResultsScroll}
+                      contentContainerStyle={styles.idVerifyResultsScrollContent}
+                      nestedScrollEnabled
+                      showsVerticalScrollIndicator
+                    >
+                      {idVerifyChecks.map((check) => (
+                        <View key={check.field} style={styles.idVerifyResultRow}>
+                          <Ionicons
+                            name={check.matched ? "checkmark-circle" : "close-circle"}
+                            size={18}
+                            color={check.matched ? "#2E7D32" : "#C62828"}
+                          />
+                          <View style={styles.idVerifyResultTextWrap}>
+                            <Text style={styles.idVerifyResultLabel}>{check.label}</Text>
+                            {check.expected ? (
+                              <Text style={styles.idVerifyResultExpected}>{check.expected}</Text>
+                            ) : null}
+                          </View>
+                        </View>
+                      ))}
+                    </ScrollView>
+                  </View>
+                ) : null}
+
+                {idVerifyError ? <Text style={styles.error}>{idVerifyError}</Text> : null}
+
+                {idVerifying ? (
+                  <View style={styles.idVerifyingHint}>
+                    <ActivityIndicator size="small" color={SUB} />
+                    <Text style={styles.idVerifyingHintText}>
+                      Checking your ID — this can take a few seconds. Please wait.
+                    </Text>
+                  </View>
+                ) : null}
+              </ScrollView>
+
+              <View style={[styles.primaryFooterRow, styles.idStepFooter]}>
                 <TouchableOpacity
                   activeOpacity={0.85}
                   onPress={goRegisterBack}
@@ -2531,28 +2603,57 @@ export default function Register() {
                   </Text>
                 </TouchableOpacity>
               </View>
-            </>
+            </View>
           )}
 
           {/* --- Step 4: Live face verification (ID match + liveness) --- */}
           {step === 4 && (
-            <>
-              <Text style={styles.title}>Verify your face</Text>
-              <Text style={styles.subtitle}>
-                We capture 4 live photos at different angles to match your face to your ID.
-              </Text>
+            <View style={styles.faceStepRoot}>
+              <ScrollView
+                style={styles.faceStepScroll}
+                contentContainerStyle={styles.faceStepScrollContent}
+                keyboardShouldPersistTaps="handled"
+                showsVerticalScrollIndicator={false}
+              >
+                <Text style={styles.title}>Verify your face</Text>
+                <Text style={styles.faceStepSubtitle}>
+                  We capture 4 live photos at different angles to match your face to your ID.
+                </Text>
 
-              <View style={styles.livenessTipsCard}>
-                <Text style={styles.livenessTipsTitle}>How it works</Text>
-                <Text style={styles.livenessTipsLine}>• Photo 1 — look straight at the camera</Text>
-                <Text style={styles.livenessTipsLine}>• Photo 2 — turn your head left</Text>
-                <Text style={styles.livenessTipsLine}>• Photo 3 — turn your head right</Text>
-                <Text style={styles.livenessTipsLine}>• Photo 4 — look straight and blink once</Text>
-                <Text style={styles.livenessTipsLine}>• Each photo starts after a 5-second countdown</Text>
-              </View>
+                <View style={styles.livenessTipsCard}>
+                  <Text style={styles.livenessTipsTitle}>How it works</Text>
+                  <View style={styles.livenessTipsList}>
+                    <View style={styles.livenessTipsRow}>
+                      <View style={styles.livenessTipsNumWrap}>
+                        <Text style={styles.livenessTipsNum}>1</Text>
+                      </View>
+                      <Text style={styles.livenessTipsLine}>Look straight at the camera</Text>
+                    </View>
+                    <View style={styles.livenessTipsRow}>
+                      <View style={styles.livenessTipsNumWrap}>
+                        <Text style={styles.livenessTipsNum}>2</Text>
+                      </View>
+                      <Text style={styles.livenessTipsLine}>Turn your head left</Text>
+                    </View>
+                    <View style={styles.livenessTipsRow}>
+                      <View style={styles.livenessTipsNumWrap}>
+                        <Text style={styles.livenessTipsNum}>3</Text>
+                      </View>
+                      <Text style={styles.livenessTipsLine}>Turn your head right</Text>
+                    </View>
+                    <View style={styles.livenessTipsRow}>
+                      <View style={styles.livenessTipsNumWrap}>
+                        <Text style={styles.livenessTipsNum}>4</Text>
+                      </View>
+                      <Text style={styles.livenessTipsLine}>Look straight and blink once</Text>
+                    </View>
+                  </View>
+                  <Text style={styles.livenessTipsNote}>
+                    Each photo starts after a 5-second countdown
+                  </Text>
+                </View>
 
-              {!camPermission?.granted ? (
-                <>
+                {!camPermission?.granted ? (
                   <View style={styles.cameraPermissionCard}>
                     <View style={styles.cameraPermissionIconWrap}>
                       <Ionicons name="camera-outline" size={36} color={TEAL} />
@@ -2562,101 +2663,97 @@ export default function Register() {
                       Apoyo uses the camera only for this one-time identity check. You can change this anytime in your device settings.
                     </Text>
                   </View>
-                  <View style={{ flex: 1 }} />
-                  <View style={styles.primaryFooterRow}>
-                    <TouchableOpacity
-                      activeOpacity={0.85}
-                      onPress={goRegisterBack}
-                      style={styles.backBtn}
-                    >
-                      <Text style={styles.backBtnText}>Back</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      activeOpacity={0.9}
-                      onPress={() => void requestCamPermission()}
-                      style={[styles.nextBtn, styles.primaryBtnFlexible]}
-                    >
-                      <Text style={styles.nextText}>Allow camera access</Text>
-                    </TouchableOpacity>
-                  </View>
-                </>
-              ) : (
-                <>
-                  <View style={styles.rowTopCompact}>
-                    <Text style={styles.label}>Live preview</Text>
-                  </View>
-                  <View style={styles.cameraFrame}>
-                    <CameraView
-                      ref={cameraRef}
-                      facing="front"
-                      style={StyleSheet.absoluteFill}
-                      onCameraReady={() => setCameraReady(true)}
-                    />
-                    {!cameraReady ? (
-                      <View style={styles.cameraLoadingOverlay}>
-                        <ActivityIndicator size="large" color="#fff" />
-                        <Text style={styles.cameraOverlayText}>Starting camera…</Text>
-                      </View>
-                    ) : null}
-                    {facialVerifying ? (
-                      <View style={styles.cameraOverlay}>
-                        {captureCountdown !== null ? (
-                          <Text style={styles.captureCountdownText}>{captureCountdown}</Text>
-                        ) : (
+                ) : (
+                  <>
+                    <View style={styles.facePreviewLabelRow}>
+                      <Text style={styles.label}>Live preview</Text>
+                    </View>
+                    <View style={styles.cameraFrame}>
+                      <CameraView
+                        ref={cameraRef}
+                        facing="front"
+                        style={StyleSheet.absoluteFill}
+                        onCameraReady={() => setCameraReady(true)}
+                      />
+                      {!cameraReady ? (
+                        <View style={styles.cameraLoadingOverlay}>
                           <ActivityIndicator size="large" color="#fff" />
-                        )}
-                        <Text style={styles.cameraOverlayText}>
-                          {captureCountdown !== null
-                            ? `Get ready — photo ${capturePoseIndex} of ${FACIAL_CAPTURE_STEPS.length}`
-                            : livenessCaptureHint ||
-                              (livenessPhase === "capturing"
-                                ? "Capturing live frames…"
-                                : "Verifying face & liveness… (may take up to a minute)")}
-                        </Text>
-                      </View>
-                    ) : null}
-                  </View>
-                  <Text style={styles.helper}>
-                    {livenessPhase === "capturing"
-                      ? livenessCaptureHint ||
-                        `Follow the prompts — ${FACIAL_CAPTURE_STEPS.length} photos, ${FACIAL_CAPTURE_COUNTDOWN_SEC}s apart.`
-                      : "Tap Start when your face is centered in the preview."}
-                  </Text>
-                  {facialError ? <Text style={styles.error}>{facialError}</Text> : null}
-                  <View style={{ flex: 1 }} />
-                  <View style={styles.primaryFooterRow}>
-                    <TouchableOpacity
-                      activeOpacity={0.85}
-                      onPress={goRegisterBack}
-                      disabled={facialVerifying}
-                      style={[styles.backBtn, facialVerifying && styles.backBtnDisabled]}
-                    >
-                      <Text style={styles.backBtnText}>Back</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      activeOpacity={0.9}
-                      onPress={() => void runFacialVerification()}
-                      disabled={facialVerifying || !cameraReady}
-                      style={[
-                        styles.nextBtn,
-                        styles.primaryBtnFlexible,
-                        (facialVerifying || !cameraReady) && styles.nextDisabled,
-                      ]}
-                    >
-                      <Text style={styles.nextText}>
-                        {facialVerifying
-                          ? livenessPhase === "capturing"
-                            ? captureCountdown !== null
-                              ? `Starting in ${captureCountdown}…`
-                              : `Photo ${capturePoseIndex}/${FACIAL_CAPTURE_STEPS.length}…`
-                            : "Verifying…"
-                          : "Start face verification"}
-                      </Text>
-                    </TouchableOpacity>
-                  </View>
-                </>
-              )}
-            </>
+                          <Text style={styles.cameraOverlayText}>Starting camera…</Text>
+                        </View>
+                      ) : null}
+                      {facialVerifying ? (
+                        <View style={styles.cameraOverlay}>
+                          {captureCountdown !== null ? (
+                            <Text style={styles.captureCountdownText}>{captureCountdown}</Text>
+                          ) : (
+                            <ActivityIndicator size="large" color="#fff" />
+                          )}
+                          <Text style={styles.cameraOverlayText}>
+                            {captureCountdown !== null
+                              ? `Get ready — photo ${capturePoseIndex} of ${FACIAL_CAPTURE_STEPS.length}`
+                              : livenessCaptureHint ||
+                                (livenessPhase === "capturing"
+                                  ? "Capturing live frames…"
+                                  : "Verifying face & liveness… (may take up to a minute)")}
+                          </Text>
+                        </View>
+                      ) : null}
+                    </View>
+                    <Text style={styles.faceHelper}>
+                      {livenessPhase === "capturing"
+                        ? livenessCaptureHint ||
+                          `Follow the prompts — ${FACIAL_CAPTURE_STEPS.length} photos, ${FACIAL_CAPTURE_COUNTDOWN_SEC}s apart.`
+                        : "Tap Start when your face is centered in the preview."}
+                    </Text>
+                    {facialError ? <Text style={styles.error}>{facialError}</Text> : null}
+                  </>
+                )}
+              </ScrollView>
+
+              <View style={[styles.primaryFooterRow, styles.faceStepFooter]}>
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={goRegisterBack}
+                  disabled={!!camPermission?.granted && facialVerifying}
+                  style={[
+                    styles.backBtn,
+                    !!camPermission?.granted && facialVerifying && styles.backBtnDisabled,
+                  ]}
+                >
+                  <Text style={styles.backBtnText}>Back</Text>
+                </TouchableOpacity>
+                {!camPermission?.granted ? (
+                  <TouchableOpacity
+                    activeOpacity={0.9}
+                    onPress={() => void requestCamPermission()}
+                    style={[styles.nextBtn, styles.primaryBtnFlexible]}
+                  >
+                    <Text style={styles.nextText}>Allow camera access</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <TouchableOpacity
+                    activeOpacity={0.9}
+                    onPress={() => void runFacialVerification()}
+                    disabled={facialVerifying || !cameraReady}
+                    style={[
+                      styles.nextBtn,
+                      styles.primaryBtnFlexible,
+                      (facialVerifying || !cameraReady) && styles.nextDisabled,
+                    ]}
+                  >
+                    <Text style={styles.nextText}>
+                      {facialVerifying
+                        ? livenessPhase === "capturing"
+                          ? captureCountdown !== null
+                            ? `Starting in ${captureCountdown}…`
+                            : `Photo ${capturePoseIndex}/${FACIAL_CAPTURE_STEPS.length}…`
+                          : "Verifying…"
+                        : "Start face verification"}
+                    </Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            </View>
           )}
 
           {/* --- Step 5: Create MPIN --- */}
@@ -2813,6 +2910,26 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
 
+  idStepRoot: {
+    flex: 1,
+    minHeight: 0,
+  },
+  idStepScroll: {
+    flex: 1,
+    minHeight: 0,
+  },
+  idStepScrollContent: {
+    paddingBottom: 12,
+    flexGrow: 1,
+  },
+  idImageLabelRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 14,
+    marginBottom: 8,
+  },
+
   idUploadCard: {
     marginTop: 0,
     borderWidth: 1,
@@ -2822,7 +2939,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
   },
   idUploadEmpty: {
-    minHeight: 240,
+    minHeight: 220,
     paddingVertical: 22,
     paddingHorizontal: 16,
     alignItems: "center",
@@ -2892,20 +3009,22 @@ const styles = StyleSheet.create({
     color: SUB,
     fontFamily: FONT,
     fontWeight: "500",
-    fontSize: 13,
+    fontSize: 14,
     textAlign: "center",
     lineHeight: 18,
     paddingHorizontal: 12,
   },
   idPreviewWrap: {
     width: "100%",
-    aspectRatio: 16 / 10,
+    height: 180,
     backgroundColor: "#F7F7F7",
     overflow: "hidden",
-    position: "relative",
+    alignItems: "center",
+    justifyContent: "center",
   },
   idPreview: {
-    ...StyleSheet.absoluteFillObject,
+    width: "100%",
+    height: "100%",
   },
   idChangePhotoRow: {
     flexDirection: "row",
@@ -2935,23 +3054,37 @@ const styles = StyleSheet.create({
     marginVertical: 10,
   },
   idInfoBox: {
-    marginTop: 14,
+    marginTop: 12,
     marginBottom: 0,
   },
   idVerifyResultsCard: {
-    marginTop: 14,
+    marginTop: 10,
     borderWidth: 1,
     borderColor: BORDER,
     borderRadius: 12,
-    padding: 14,
+    padding: 8,
     backgroundColor: "#FAFAFA",
-    gap: 10,
+    maxHeight: 180,
   },
   idVerifyResultsTitle: {
     fontFamily: FONT,
     fontWeight: "700",
     fontSize: 14,
     color: "#1A1A1A",
+    marginBottom: 6,
+  },
+  idVerifyResultsScroll: {
+    maxHeight: 130,
+    borderWidth: 1,
+    borderColor: "#E5E5E5",
+    borderRadius: 10,
+    backgroundColor: "#FFFFFF",
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+  },
+  idVerifyResultsScrollContent: {
+    gap: 8,
+    paddingBottom: 2,
   },
   idVerifyResultRow: {
     flexDirection: "row",
@@ -2965,13 +3098,30 @@ const styles = StyleSheet.create({
   idVerifyResultLabel: {
     fontFamily: FONT,
     fontWeight: "600",
-    fontSize: 13,
+    fontSize: 14,
     color: "#1A1A1A",
   },
   idVerifyResultExpected: {
     fontFamily: FONT,
-    fontSize: 12,
+    fontSize: 14,
     color: "#666",
+  },
+  idVerifyingHint: {
+    marginTop: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    paddingHorizontal: 8,
+  },
+  idVerifyingHintText: {
+    flexShrink: 1,
+    color: SUB,
+    fontFamily: FONT,
+    fontWeight: "500",
+    fontSize: 14,
+    lineHeight: 18,
+    textAlign: "left",
   },
   captureCountdownText: {
     color: "#fff",
@@ -2982,28 +3132,97 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   livenessTipsCard: {
-    marginTop: 14,
-    borderWidth: 1,
-    borderColor: "#E6E6E6",
+    marginTop: 10,
+    borderWidth: 1.5,
+    borderColor: TEAL,
     borderRadius: 12,
-    backgroundColor: "#FAFAFA",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    gap: 6,
+    backgroundColor: "rgba(0,142,138,0.10)",
+    paddingHorizontal: IS_COMPACT_SCREEN ? 12 : 14,
+    paddingVertical: IS_COMPACT_SCREEN ? 10 : 14,
+    gap: IS_COMPACT_SCREEN ? 8 : 10,
   },
   livenessTipsTitle: {
     fontFamily: FONT,
-    fontWeight: "700",
-    fontSize: 13,
+    fontWeight: "800",
+    fontSize: IS_COMPACT_SCREEN ? 14 : 15,
     color: TEAL,
-    marginBottom: 4,
+  },
+  livenessTipsList: {
+    gap: IS_COMPACT_SCREEN ? 6 : 8,
+  },
+  livenessTipsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  livenessTipsNumWrap: {
+    width: 24,
+    height: 24,
+    borderRadius: 999,
+    backgroundColor: TEAL,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  livenessTipsNum: {
+    color: "#fff",
+    fontFamily: FONT,
+    fontWeight: "800",
+    fontSize: 14,
+    lineHeight: 20,
   },
   livenessTipsLine: {
+    flex: 1,
+    fontFamily: FONT,
+    fontWeight: "700",
+    fontSize: IS_COMPACT_SCREEN ? 14 : 15,
+    lineHeight: IS_COMPACT_SCREEN ? 19 : 21,
+    color: DARK,
+  },
+  livenessTipsNote: {
+    fontFamily: FONT,
+    fontWeight: "600",
+    fontSize: 14,
+    lineHeight: 20,
+    color: TEAL,
+  },
+
+  faceStepRoot: {
+    flex: 1,
+    minHeight: 0,
+  },
+  faceStepScroll: {
+    flex: 1,
+    minHeight: 0,
+  },
+  faceStepScrollContent: {
+    paddingBottom: 12,
+    flexGrow: 1,
+  },
+  faceStepSubtitle: {
+    marginTop: 6,
+    fontSize: IS_COMPACT_SCREEN ? 14 : 16,
+    lineHeight: IS_COMPACT_SCREEN ? 19 : 22,
+    color: SUB,
+    fontFamily: FONT,
+    fontWeight: "600",
+  },
+  facePreviewLabelRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 12,
+    marginBottom: 6,
+  },
+  faceHelper: {
+    marginTop: 10,
+    color: SUB,
     fontFamily: FONT,
     fontWeight: "500",
-    fontSize: 13,
-    lineHeight: 19,
-    color: SUB,
+    fontSize: 14,
+    lineHeight: 18,
+  },
+  faceStepFooter: {
+    paddingTop: 10,
   },
 
   cameraPermissionCard: {
@@ -3044,8 +3263,14 @@ const styles = StyleSheet.create({
   },
 
   cameraFrame: {
-    marginTop: 10,
-    height: Math.min(340, Math.round(SCREEN_W * 1.05)),
+    marginTop: 4,
+    height: Math.max(
+      180,
+      Math.min(
+        IS_COMPACT_SCREEN ? 220 : 300,
+        Math.round(SCREEN_H * (IS_COMPACT_SCREEN ? 0.26 : 0.32))
+      )
+    ),
     borderRadius: 12,
     overflow: "hidden",
     backgroundColor: "#1a1a1a",
@@ -3120,7 +3345,7 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     fontFamily: FONT,
     fontWeight: "700",
-    fontSize: 13,
+    fontSize: 14,
     letterSpacing: 0.6,
     textTransform: "uppercase",
     color: TEAL,
@@ -3143,7 +3368,7 @@ const styles = StyleSheet.create({
   previewRowLabel: {
     fontFamily: FONT,
     fontWeight: "600",
-    fontSize: 12,
+    fontSize: 14,
     color: SUB,
     marginBottom: 6,
     letterSpacing: 0.2,
@@ -3210,14 +3435,14 @@ const styles = StyleSheet.create({
   checkbox: { width: 22, height: 22, borderRadius: 4, borderWidth: 1, borderColor: BORDER, alignItems: "center", justifyContent: "center", backgroundColor: "#fff" },
   checkboxChecked: { borderColor: TEAL },
   checkboxInner: { width: 12, height: 12, borderRadius: 2, backgroundColor: TEAL },
-  checkText: { color: SUB, fontFamily: FONT, fontWeight: "500", fontSize: 13 },
+  checkText: { color: SUB, fontFamily: FONT, fontWeight: "500", fontSize: 14 },
   fieldOptionalTip: {
     marginTop: 6,
-    fontSize: 12,
+    fontSize: 14,
     color: SUB,
     fontFamily: FONT,
     fontWeight: "500",
-    lineHeight: 17,
+    lineHeight: 20,
   },
 
   error: { marginTop: 8, color: RED, fontFamily: FONT, fontWeight: "500" },
@@ -3230,20 +3455,23 @@ const styles = StyleSheet.create({
     fontFamily: FONT,
     fontWeight: "600",
     fontSize: 14,
-    lineHeight: 15,
+    lineHeight: 20,
     textAlign: "right",
   },
 
   termsBox: { marginTop: 10, alignItems: "center" },
-  termsText: { color: SUB, fontFamily: FONT, fontWeight: "500", fontSize: 13, textAlign: "center" },
+  termsText: { color: SUB, fontFamily: FONT, fontWeight: "500", fontSize: 14, textAlign: "center" },
   termsBold: { color: SUB, fontFamily: FONT, fontWeight: "600" },
   termsLinksRow: { flexDirection: "row", alignItems: "center", marginTop: 2.5, flexWrap: "wrap", justifyContent: "center" },
-  link: { color: TEAL, fontFamily: FONT, fontWeight: "600", fontSize: 13 },
+  link: { color: TEAL, fontFamily: FONT, fontWeight: "600", fontSize: 14 },
 
   primaryFooterRow: {
     flexDirection: "row",
     alignItems: "stretch",
     gap: 10,
+  },
+  idStepFooter: {
+    paddingTop: 10,
   },
   backBtn: {
     width: Math.max(76, Math.min(92, Math.round(SCREEN_W * 0.21))),
@@ -3303,7 +3531,7 @@ const styles = StyleSheet.create({
     fontFamily: FONT,
     fontWeight: "600",
     color: SUB,
-    fontSize: 13,
+    fontSize: 14,
   },
   birthDateActionSolid: {
     height: 40,
@@ -3317,7 +3545,7 @@ const styles = StyleSheet.create({
     fontFamily: FONT,
     fontWeight: "600",
     color: "#fff",
-    fontSize: 13,
+    fontSize: 14,
   },
 
   sexModalItem: {
@@ -3510,7 +3738,7 @@ const styles = StyleSheet.create({
     marginTop: 4,
     fontFamily: FONT,
     fontWeight: "500",
-    fontSize: 13,
+    fontSize: 14,
     lineHeight: 18,
     color: SUB,
   },
@@ -3544,7 +3772,7 @@ const styles = StyleSheet.create({
   },
 
   infoBox: { marginTop: 26, borderWidth: 1.5, borderColor: TEAL, backgroundColor: "rgba(0,142,138,0.12)", borderRadius: 10, padding: 14 },
-  infoText: { color: TEAL, fontFamily: FONT, fontWeight: "600", fontSize: 13, lineHeight: 18, textAlign: "center" },
+  infoText: { color: TEAL, fontFamily: FONT, fontWeight: "600", fontSize: 14, lineHeight: 18, textAlign: "center" },
   infoBold: { fontFamily: FONT, fontWeight: "800", color: TEAL },
 
   hiddenInput: { position: "absolute", opacity: 0, width: 1, height: 1 },

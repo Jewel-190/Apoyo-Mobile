@@ -1,14 +1,15 @@
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { LinearGradient } from "expo-linear-gradient";
 import { Image as ExpoImage } from "expo-image";
 import * as ImagePicker from "expo-image-picker";
+import { useFocusEffect } from "@react-navigation/native";
 import { useRouter } from "expo-router";
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  Modal,
+  BackHandler,
+  Platform,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -17,17 +18,48 @@ import {
   Text,
   View,
 } from "react-native";
-import BottomNavBar, { NAV_TOTAL_HEIGHT } from "../../components/BottomNavBar";
+import { NAV_TOTAL_HEIGHT } from "../../components/BottomNavBar";
+import { ROUTES } from "@/AppCore/AppRoutePaths";
+import { signOutLocalSession } from "@/AppCore/AppLogout";
+import { formatRegisteredVoterId } from "@/AppCore/RegisteredVoterId";
 import { supabase } from "@/AppCore/SupabaseClient";
+import {
+  ACCOUNT_FONT,
+  ACCOUNT_MUTED,
+  ACCOUNT_TEAL,
+  ACCOUNT_TEXT,
+  AccountConfirmModal,
+  AccountGradient,
+  AccountMenuCard,
+  AccountSectionLabel,
+  AccountSubpage,
+} from "@/components/AccountUi";
 
-const TEAL = "#0B8F8B";
-const TEXT_DARK = "#2B2B2B";
-const MUTED = "#6B7A7A";
-const FONT = "SF Pro Rounded";
-
-const ROUTE_SETTINGS = "/Account/Settings";
+const TEAL = ACCOUNT_TEAL;
+const TEXT_DARK = ACCOUNT_TEXT;
+const MUTED = ACCOUNT_MUTED;
+const FONT = ACCOUNT_FONT;
 
 const CACHE_USER = "apoyo_user_cache";
+
+function formatUserFullName(row: {
+  first_name?: string | null;
+  middle_name?: string | null;
+  last_name?: string | null;
+  suffix?: string | null;
+}): string {
+  const parts = [row.first_name, row.middle_name, row.last_name]
+    .map((part) => (part ?? "").trim())
+    .filter(Boolean);
+  const suffix = (row.suffix ?? "").trim();
+  return suffix ? `${parts.join(" ")} ${suffix}`.trim() : parts.join(" ");
+}
+
+function formatVin(value: string | null | undefined): string {
+  const raw = (value ?? "").trim();
+  if (!raw) return "";
+  return formatRegisteredVoterId(raw);
+}
 
 type MenuItem = {
   icon: keyof typeof Ionicons.glyphMap;
@@ -43,25 +75,36 @@ export default function Account() {
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
+  const [vin, setVin] = useState("");
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
 
   const [showLogoutModal, setShowLogoutModal] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [showAvatarModal, setShowAvatarModal] = useState(false);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const [showingSettings, setShowingSettings] = useState(false);
 
   const handleLogout = async () => {
     setShowLogoutModal(false);
     setLoggingOut(true);
-    
-    // Show "Logging out" for 1 second
+
     setTimeout(async () => {
-      await AsyncStorage.removeItem(CACHE_USER); // Clear cached user data
-      await supabase.auth.signOut();
+      await signOutLocalSession();
       setLoggingOut(false);
-      router.replace("/phase1/login");
+      router.replace(ROUTES.login);
     }, 1000);
   };
+
+  useFocusEffect(
+    useCallback(() => {
+      if (Platform.OS !== "android" || !showingSettings) return undefined;
+      const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+        setShowingSettings(false);
+        return true;
+      });
+      return () => sub.remove();
+    }, [showingSettings])
+  );
 
   useEffect(() => {
     (async () => {
@@ -69,9 +112,13 @@ export default function Account() {
       const cached = await AsyncStorage.getItem(CACHE_USER);
       if (cached) {
         const parsed = JSON.parse(cached);
-        if (parsed.first_name) setName(parsed.first_name);
+        const cachedName = formatUserFullName(parsed);
+        if (cachedName) setName(cachedName);
+        else if (parsed.first_name) setName(parsed.first_name);
         if (parsed.contact_number) setPhone(parsed.contact_number);
         if (parsed.email) setEmail(parsed.email);
+        const cachedVin = formatVin(parsed.voter_id_number);
+        if (cachedVin) setVin(cachedVin);
         if (parsed.avatar_url) {
           setAvatarUrl(parsed.avatar_url);
           // Prefetch image into memory for instant display
@@ -84,14 +131,16 @@ export default function Account() {
       if (user) {
         const { data } = await supabase
           .from("users")
-          .select("first_name, middle_name, last_name, contact_number, email, avatar_url")
+          .select("first_name, middle_name, last_name, suffix, contact_number, email, avatar_url, voter_id_number, barangay")
           .eq("id", user.id)
           .single();
         
         if (data) {
-          if (data.first_name) setName(data.first_name);
+          const fullName = formatUserFullName(data);
+          if (fullName) setName(fullName);
           if (data.contact_number) setPhone(data.contact_number);
           if (data.email) setEmail(data.email);
+          setVin(formatVin(data.voter_id_number));
           if (data.avatar_url) {
             setAvatarUrl(data.avatar_url);
             // Prefetch fresh avatar URL
@@ -99,8 +148,12 @@ export default function Account() {
           } else {
             setAvatarUrl(null);
           }
-          // Update cached profile for quick subsequent loads
-          await AsyncStorage.setItem(CACHE_USER, JSON.stringify(data));
+          const cachedRaw = await AsyncStorage.getItem(CACHE_USER);
+          const previous = cachedRaw ? JSON.parse(cachedRaw) : {};
+          await AsyncStorage.setItem(
+            CACHE_USER,
+            JSON.stringify({ ...previous, ...data })
+          );
         }
       }
     })();
@@ -181,29 +234,39 @@ export default function Account() {
 
   const menuItems: MenuItem[] = [
     {
-      icon: "help-circle",
-      iconColor: "#E34B4B",
-      iconBg: "#FDE8E8",
-      label: "FAQs",
+      icon: "person-circle",
+      iconColor: "#0B8F8B",
+      iconBg: "#DFF3F2",
+      label: "Manage account",
+      onPress: () => router.push(ROUTES.manageAccount),
     },
     {
-      icon: "information-circle",
-      iconColor: "#F0A11A",
-      iconBg: "#FFF4DD",
-      label: "About Apoyo",
+      icon: "document-text",
+      iconColor: "#E8A817",
+      iconBg: "#FFF3D0",
+      label: "Terms and Conditions",
+      onPress: () => router.push(ROUTES.termsAndConditions),
+    },
+    {
+      icon: "shield-checkmark",
+      iconColor: "#6BBF5B",
+      iconBg: "#E6F7E2",
+      label: "User Acceptance",
+      onPress: () => router.push(ROUTES.userAcceptance),
     },
     {
       icon: "megaphone",
       iconColor: "#B36AF3",
       iconBg: "#F3E8FF",
       label: "Contact Us",
+      onPress: () => router.push(ROUTES.contactUs),
     },
     {
       icon: "settings",
       iconColor: "#6B7A7A",
       iconBg: "#EEF2F2",
       label: "Settings",
-      onPress: () => router.push(ROUTE_SETTINGS as any),
+      onPress: () => setShowingSettings(true),
     },
     {
       icon: "log-out",
@@ -214,6 +277,38 @@ export default function Account() {
     },
   ];
 
+  const settingsItems: MenuItem[] = [
+    {
+      icon: "notifications",
+      iconColor: "#E8A817",
+      iconBg: "#FFF3D0",
+      label: "Notification Settings",
+      onPress: () => router.push(ROUTES.notificationSettings),
+    },
+    {
+      icon: "lock-closed",
+      iconColor: "#4A5252",
+      iconBg: "#E4EAEA",
+      label: "Change PIN",
+      onPress: () => router.push(ROUTES.changePin),
+    },
+  ];
+
+  if (showingSettings) {
+    return (
+      <AccountSubpage
+        title="Settings"
+        scroll
+        onBack={() => setShowingSettings(false)}
+      >
+        <AccountSectionLabel>PRIVACY AND SECURITY</AccountSectionLabel>
+        {settingsItems.map((item) => (
+          <AccountMenuCard key={item.label} {...item} />
+        ))}
+      </AccountSubpage>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.safe}>
       <StatusBar barStyle="dark-content" />
@@ -222,12 +317,7 @@ export default function Account() {
         <Text style={styles.headerTitle}>Account</Text>
       </View>
 
-      <LinearGradient
-        colors={["#0B8F8B", "#6FB8B5", "#D4F3F2"]}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 0 }}
-        style={styles.gradientDivider}
-      />
+      <AccountGradient />
 
       <ScrollView
         showsVerticalScrollIndicator={false}
@@ -269,107 +359,34 @@ export default function Account() {
             <Text style={styles.hiText}>
               Hi, <Text style={styles.hiName}>{name}</Text>
             </Text>
-            <Text style={styles.profileSubText}>Manage your account settings</Text>
             <Text style={styles.profileDetail}>{phone}</Text>
             <Text style={styles.profileDetail}>{email}</Text>
+            {vin ? <Text style={styles.profileDetail}>{vin}</Text> : null}
           </View>
         </View>
 
         <View style={styles.menuWrap}>
-          {menuItems.map((item, idx) => (
-            <Pressable
-              key={idx}
-              onPress={item.onPress ?? (() => Alert.alert(item.label))}
-              style={({ pressed }) => [
-                styles.menuCard,
-                pressed && { opacity: 0.92, transform: [{ scale: 0.995 }] },
-              ]}
-            >
-              <View style={styles.menuLeft}>
-                <View
-                  style={[styles.iconBubble, { backgroundColor: item.iconBg }]}
-                >
-                  <Ionicons name={item.icon} size={20} color={item.iconColor} />
-                </View>
-                <Text style={styles.menuLabel}>{item.label}</Text>
-              </View>
-              <Ionicons name="chevron-forward" size={20} color="#B0BABA" />
-            </Pressable>
+          {menuItems.map((item) => (
+            <AccountMenuCard key={item.label} {...item} />
           ))}
         </View>
       </ScrollView>
 
-      <BottomNavBar activeTab="account" />
+      <AccountConfirmModal
+        visible={showLogoutModal || loggingOut}
+        title="Do you want to Log out?"
+        busy={loggingOut}
+        busyText="Logging out please wait..."
+        onConfirm={handleLogout}
+        onCancel={() => setShowLogoutModal(false)}
+      />
 
-      {/* Logout Modal */}
-      <Modal transparent visible={showLogoutModal || loggingOut} animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={styles.logoutCard}>
-            {loggingOut ? (
-              <Text style={styles.loggingOutText}>Logging out please wait...</Text>
-            ) : (
-              <>
-                <Text style={styles.logoutTitle}>Do you want to Log out?</Text>
-                <View style={styles.logoutBtnRow}>
-                  <Pressable
-                    style={({ pressed }) => [
-                      styles.logoutBtn,
-                      styles.logoutBtnYes,
-                      pressed && { opacity: 0.9 },
-                    ]}
-                    onPress={handleLogout}
-                  >
-                    <Text style={styles.logoutBtnYesText}>Yes</Text>
-                  </Pressable>
-                  <Pressable
-                    style={({ pressed }) => [
-                      styles.logoutBtn,
-                      styles.logoutBtnNo,
-                      pressed && { opacity: 0.9 },
-                    ]}
-                    onPress={() => setShowLogoutModal(false)}
-                  >
-                    <Text style={styles.logoutBtnNoText}>No</Text>
-                  </Pressable>
-                </View>
-              </>
-            )}
-          </View>
-        </View>
-      </Modal>
-
-      {/* Avatar Upload Modal */}
-      <Modal transparent visible={showAvatarModal} animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={styles.logoutCard}>
-            <Text style={styles.logoutTitle}>
-              {avatarUrl ? "Change your avatar?" : "Upload an avatar?"}
-            </Text>
-            <View style={styles.logoutBtnRow}>
-              <Pressable
-                style={({ pressed }) => [
-                  styles.logoutBtn,
-                  styles.logoutBtnYes,
-                  pressed && { opacity: 0.9 },
-                ]}
-                onPress={handleAvatarUpload}
-              >
-                <Text style={styles.logoutBtnYesText}>Yes</Text>
-              </Pressable>
-              <Pressable
-                style={({ pressed }) => [
-                  styles.logoutBtn,
-                  styles.logoutBtnNo,
-                  pressed && { opacity: 0.9 },
-                ]}
-                onPress={() => setShowAvatarModal(false)}
-              >
-                <Text style={styles.logoutBtnNoText}>No</Text>
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      </Modal>
+      <AccountConfirmModal
+        visible={showAvatarModal}
+        title={avatarUrl ? "Change your avatar?" : "Upload an avatar?"}
+        onConfirm={handleAvatarUpload}
+        onCancel={() => setShowAvatarModal(false)}
+      />
     </SafeAreaView>
   );
 }
@@ -388,11 +405,6 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     fontSize: 22,
     color: TEXT_DARK,
-  },
-
-  gradientDivider: {
-    height: 3,
-    width: "100%",
   },
 
   scrollContent: {
@@ -463,147 +475,16 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: TEAL,
   },
-  profileSubText: {
-    marginTop: 2,
-    fontFamily: FONT,
-    fontWeight: "600",
-    fontSize: 12,
-    color: MUTED,
-  },
   profileDetail: {
     marginTop: 3,
     fontFamily: FONT,
     fontWeight: "400",
-    fontSize: 13,
+    fontSize: 14,
     color: MUTED,
   },
 
   menuWrap: {
     paddingHorizontal: 16,
     paddingTop: 10,
-  },
-  menuCard: {
-    height: 62,
-    backgroundColor: "#FFFFFF",
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: "#E6EEEE",
-    paddingHorizontal: 16,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 14,
-    shadowColor: "#000",
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 3 },
-    elevation: 2,
-  },
-  menuLeft: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 14,
-  },
-  iconBubble: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  menuLabel: {
-    fontFamily: FONT,
-    fontWeight: "600",
-    fontSize: 14,
-    color: TEAL,
-  },
-
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.25)",
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 18,
-  },
-  logoutCard: {
-    width: "100%",
-    height: 150,
-    backgroundColor: "#FFFFFF",
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: "#E6EEEE",
-    paddingHorizontal: 20,
-    paddingTop: 28,
-    paddingBottom: 20,
-    alignItems: "center",
-    justifyContent: "center",
-    shadowColor: "#000",
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 3 },
-    elevation: 2,
-  },
-  logoutTitle: {
-    fontFamily: FONT,
-    fontWeight: "700",
-    fontSize: 18,
-    color: TEAL,
-    textAlign: "center",
-    marginBottom: 20,
-  },
-  logoutBtnRow: {
-    flexDirection: "row",
-    gap: 12,
-    width: "100%",
-  },
-  logoutBtn: {
-    flex: 1,
-    height: 48,
-    borderRadius: 24,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  logoutBtnYes: {
-    backgroundColor: TEAL,
-  },
-  logoutBtnNo: {
-    backgroundColor: "#EDEDED",
-  },
-  logoutBtnYesText: {
-    fontFamily: FONT,
-    fontWeight: "700",
-    fontSize: 15,
-    color: "#FFFFFF",
-  },
-  logoutBtnNoText: {
-    fontFamily: FONT,
-    fontWeight: "700",
-    fontSize: 15,
-    color: TEAL,
-  },
-  loggingOutCard: {
-    width: "100%",
-    maxWidth: 340,
-    minHeight: 160,
-    backgroundColor: "#FFFFFF",
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: "#E6EEEE",
-    paddingHorizontal: 20,
-    paddingVertical: 28,
-    alignItems: "center",
-    justifyContent: "center",
-    shadowColor: "#000",
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 3 },
-    elevation: 2,
-  },
-  loggingOutText: {
-    fontFamily: FONT,
-    fontWeight: "600",
-    fontSize: 16,
-    color: TEAL,
-    textAlign: "center",
   },
 });

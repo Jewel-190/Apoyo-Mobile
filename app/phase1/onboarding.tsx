@@ -90,13 +90,18 @@ export default function Onboarding() {
         <View style={styles.blobLeft} />
         <View style={styles.blobRight} />
 
-        {/* ✅ NEW IMAGE ABOVE APOYO */}
-        <Image
-          // Put the image in: ../../assets/images/Group 174.png
-          source={require("../../assets/images/Dasma.png")}
-          style={styles.headerSeal}
-          resizeMode="contain"
-        />
+        <View style={styles.headerBrandRow}>
+          <Image
+            source={require("../../assets/images/Dasmariñas Logo.png")}
+            style={styles.headerCityLogo}
+            resizeMode="contain"
+          />
+          <Image
+            source={require("../../assets/images/Dasmariñas Banner.png")}
+            style={styles.headerSeal}
+            resizeMode="contain"
+          />
+        </View>
 
         {/* Apoyo logo */}
         <Image
@@ -190,13 +195,25 @@ const styles = StyleSheet.create({
     opacity: 0.35,
   },
 
-  /* ✅ NEW IMAGE STYLE */
-  headerSeal: {
-    width: width * 0.78,
-    height: 46,
-    marginTop: 8,
-    marginBottom: 4,
+  headerBrandRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
     alignSelf: "center",
+    marginTop: 20,
+    marginBottom: 10,
+    marginHorizontal: 20,
+    paddingHorizontal: 8,
+  },
+  headerCityLogo: {
+    width: 64,
+    height: 64,
+    marginRight: 12,
+  },
+  headerSeal: {
+    width: width * 0.48,
+    height: 36,
+    marginLeft: 4,
   },
 
   logo: {

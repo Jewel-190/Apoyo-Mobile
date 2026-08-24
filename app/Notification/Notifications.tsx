@@ -14,7 +14,6 @@ import {
   Text,
   View,
 } from "react-native";
-import BottomNavBar from "../../components/BottomNavBar";
 import type { Category } from "@/AppCore/AppUiDomainTypes";
 import { resolveServiceId } from "@/AppCore/CatalogLookupRuntime";
 import { getService } from "@/AppCore/AssistanceServiceDefinitions";
@@ -57,7 +56,10 @@ function titleFromServiceKey(serviceKey: string): string {
   return clean.replace(/\b\w/g, (m) => m.toUpperCase());
 }
 
-function resolveServiceMeta(serviceKey: string | null | undefined): {
+function resolveServiceMeta(
+  serviceKey: string | null | undefined,
+  snapshot?: { serviceName?: string; categorySlug?: string } | null
+): {
   serviceKey: string | null;
   category: Category;
   requestTitle: string;
@@ -65,27 +67,29 @@ function resolveServiceMeta(serviceKey: string | null | undefined): {
   const raw = (serviceKey || "").toString().trim();
   const sid = resolveServiceId(raw);
   const svc = sid ? getService(sid) : null;
+  const snapshotTitle = String(snapshot?.serviceName || "").trim();
+  const snapshotSlug = String(snapshot?.categorySlug || "").trim().toLowerCase();
 
   if (svc) {
     return {
       serviceKey: svc.id,
-      category: svc.category,
-      requestTitle: svc.label || titleFromServiceKey(svc.routeToken),
+      category: (snapshotSlug || svc.category) as Category,
+      requestTitle: snapshotTitle || svc.label || titleFromServiceKey(svc.routeToken),
     };
   }
 
   if (sid) {
     return {
       serviceKey: sid,
-      category: "medical",
-      requestTitle: titleFromServiceKey(sid),
+      category: (snapshotSlug || "medical") as Category,
+      requestTitle: snapshotTitle || titleFromServiceKey(sid),
     };
   }
 
   return {
     serviceKey: null,
     category: "medical",
-    requestTitle: "Assistance Request",
+    requestTitle: snapshotTitle || "Assistance Request",
   };
 }
 
@@ -128,7 +132,10 @@ function opensApprovedAssistanceMonitoring(
     value === "for approval" ||
     value === "scheduled" ||
     value === "approved" ||
-    value === "accepted"
+    value === "accepted" ||
+    value === "declined" ||
+    value === "denied" ||
+    value === "rejected"
   );
 }
 
@@ -163,6 +170,7 @@ function buildNotificationCopy(
 function normalizeNotifications(
   rows: NotificationApiRow[],
   serviceKeyByRequestId: Record<string, string>,
+  requestMetaByRequestId: Record<string, { serviceName?: string; categorySlug?: string }>,
   accentHexByServiceKey: Record<string, string>
 ): NotifItem[] {
   if (!Array.isArray(rows)) return [];
@@ -174,7 +182,7 @@ function normalizeNotifications(
       if (!requestId) return null;
 
       const serviceKey = serviceKeyByRequestId[requestId];
-      const meta = resolveServiceMeta(serviceKey);
+      const meta = resolveServiceMeta(serviceKey, requestMetaByRequestId[requestId]);
       const accentHex = meta.serviceKey
         ? accentHexByServiceKey[meta.serviceKey] ?? defaultAccentHex()
         : defaultAccentHex();
@@ -220,6 +228,7 @@ export default function Notifications() {
   const {
     items: rawRows,
     serviceKeyByRequestId,
+    requestMetaByRequestId,
     loading: isLoading,
     refresh,
     markRead,
@@ -241,8 +250,8 @@ export default function Notifications() {
 
   const items = useMemo(
     () =>
-      normalizeNotifications(rawRows, serviceKeyByRequestId, accentHexByServiceKey),
-    [rawRows, serviceKeyByRequestId, accentHexByServiceKey]
+      normalizeNotifications(rawRows, serviceKeyByRequestId, requestMetaByRequestId, accentHexByServiceKey),
+    [rawRows, serviceKeyByRequestId, requestMetaByRequestId, accentHexByServiceKey]
   );
 
   const hasResults = useMemo(() => items.length > 0, [items]);
@@ -381,8 +390,6 @@ export default function Notifications() {
           </>
         )}
       </ScrollView>
-
-      <BottomNavBar activeTab="notification" maskColor="transparent" />
     </SafeAreaView>
   );
 }
@@ -432,7 +439,7 @@ const styles = StyleSheet.create({
   loadingText: {
     fontFamily: FONT,
     fontWeight: "500",
-    fontSize: 12,
+    fontSize: 14,
     color: MUTED,
   },
 
@@ -478,8 +485,8 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   unreadBadge: {
-    width: 16,
-    height: 16,
+    width: 20,
+    height: 20,
     borderRadius: 99,
     backgroundColor: "#E13B3B",
     alignItems: "center",
@@ -490,21 +497,21 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
     fontFamily: FONT,
     fontWeight: "800",
-    fontSize: 11,
-    lineHeight: 12,
+    fontSize: 14,
+    lineHeight: 16,
   },
   cardDate: {
     fontFamily: FONT,
     fontWeight: "600",
-    fontSize: 12,
+    fontSize: 14,
     color: MUTED,
     marginTop: 1,
   },
   cardBody: {
     fontFamily: FONT,
     fontWeight: "400",
-    fontSize: 12,
-    lineHeight: 17,
+    fontSize: 14,
+    lineHeight: 20,
     color: "#3A3A3A",
   },
 
@@ -513,7 +520,7 @@ const styles = StyleSheet.create({
     textAlign: "center",
     fontFamily: FONT,
     fontWeight: "600",
-    fontSize: 13,
+    fontSize: 14,
     color: MUTED,
   },
 
@@ -529,10 +536,10 @@ const styles = StyleSheet.create({
     marginTop: 6,
     fontFamily: FONT,
     fontWeight: "400",
-    fontSize: 12,
+    fontSize: 14,
     color: MUTED,
     textAlign: "center",
     paddingHorizontal: 24,
-    lineHeight: 17,
+    lineHeight: 20,
   },
 });

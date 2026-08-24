@@ -1,7 +1,8 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
+  BackHandler,
   Dimensions,
   Image,
   KeyboardAvoidingView,
@@ -14,8 +15,11 @@ import {
   View,
 } from "react-native";
 import { supabase } from "@/AppCore/SupabaseClient";
+import { ROUTES } from "@/AppCore/AppRoutePaths";
+import { legalPageRoute } from "@/AppCore/LegalSettings";
 
 const { width: SCREEN_W } = Dimensions.get("window");
+const SCREEN = Dimensions.get("screen");
 
 const TEAL = "#008E8A";
 const BORDER = "#CFCFCF";
@@ -26,6 +30,7 @@ const RED = "#E23B3B";
 const FONT = Platform.select({ ios: "SF Pro Rounded", android: "System" })!;
 
 export default function Login() {
+  const params = useLocalSearchParams<{ email?: string }>();
   // step: 0=email/mobile entry, 1=enter PIN
   const [step, setStep] = useState(0);
   const [useMobile, setUseMobile] = useState(true);
@@ -36,6 +41,27 @@ export default function Login() {
   const [isLogging, setIsLogging] = useState(false);
   
   const pinInputRef = useRef<TextInput | null>(null);
+
+  useEffect(() => {
+    const fromParam = String(params.email ?? "").trim();
+    if (!fromParam) return;
+    setEmail(fromParam);
+    setUseMobile(false);
+    setStep(1);
+    setPin("");
+    setLoginError("");
+  }, [params.email]);
+
+  useEffect(() => {
+    if (Platform.OS !== "android" || step !== 1) return;
+    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+      setStep(0);
+      setPin("");
+      setLoginError("");
+      return true;
+    });
+    return () => sub.remove();
+  }, [step]);
 
   useEffect(() => {
     const { data } = supabase.auth.onAuthStateChange((event, session) => {
@@ -123,7 +149,9 @@ export default function Login() {
       if (data.user?.id) {
         const { data: userData } = await supabase
           .from("users")
-          .select("first_name, contact_number, email")
+          .select(
+            "first_name, middle_name, last_name, suffix, sex, birth_date, email, contact_number, address, barangay, voter_id_number, avatar_url, created_at, registered_voter_id"
+          )
           .eq("id", data.user.id)
           .single();
         
@@ -148,15 +176,35 @@ export default function Login() {
   const dotSize = Math.max(20, Math.min(28, Math.floor(boxSize * 0.55)));
 
   return (
-    <SafeAreaView style={styles.safe}>
-      <KeyboardAvoidingView
-        style={styles.safe}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-      >
+    <View style={styles.root}>
+      <Image
+        source={require("../../assets/images/City Hall.png")}
+        style={styles.backdrop}
+        resizeMode="cover"
+      />
+      <View style={styles.backdropScrim} pointerEvents="none" />
+      <SafeAreaView style={styles.safe}>
+        <KeyboardAvoidingView
+          style={styles.safe}
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+        >
         <View style={styles.container}>
           {/* --- Step 0: Email Entry --- */}
           {step === 0 && (
             <>
+              <View style={styles.headerBrandRow}>
+                <Image
+                  source={require("../../assets/images/Dasmariñas Logo.png")}
+                  style={styles.headerCityLogo}
+                  resizeMode="contain"
+                />
+                <Image
+                  source={require("../../assets/images/Dasmariñas Banner.png")}
+                  style={styles.headerSeal}
+                  resizeMode="contain"
+                />
+              </View>
+
               <View style={styles.brand}>
                 <Image
                   source={require("../../assets/images/apoyo2.png")}
@@ -165,76 +213,76 @@ export default function Login() {
                 />
               </View>
 
-              <Text style={styles.title}>Hello, Welcome!</Text>
-              <Text style={styles.subtitle}>Login to Apoyo</Text>
+              <View style={styles.loginBottomBlock}>
+                <Text style={styles.title}>Hello, Welcome!</Text>
+                <Text style={styles.subtitle}>Login to Apoyo</Text>
 
-              {useMobile ? (
-                <View style={{ marginTop: 18 }}>
-                  <View style={styles.inputWrapMobile}>
-                    <View style={styles.prefix}>
-                      <Text style={styles.prefixText}>+63</Text>
+                {useMobile ? (
+                  <View style={{ marginTop: 18 }}>
+                    <View style={styles.inputWrapMobile}>
+                      <View style={styles.prefix}>
+                        <Text style={styles.prefixText}>+63</Text>
+                      </View>
+                      <TextInput
+                        value={mobile}
+                        onChangeText={(v) => setMobile(v.replace(/[^\d]/g, "").slice(0, 10))}
+                        keyboardType="number-pad"
+                        placeholder="9XXXXXXXXX"
+                        placeholderTextColor="#B3B3B3"
+                        maxLength={10}
+                        style={styles.inputMobile}
+                      />
                     </View>
-                    <TextInput
-                      value={mobile}
-                      onChangeText={(v) => setMobile(v.replace(/[^\d]/g, "").slice(0, 10))}
-                      keyboardType="number-pad"
-                      placeholder="9XXXXXXXXX"
-                      placeholderTextColor="#B3B3B3"
-                      maxLength={10}
-                      style={styles.inputMobile}
-                    />
+                    {!!mobileError && <Text style={styles.error}>{mobileError}</Text>}
                   </View>
-                  {!!mobileError && <Text style={styles.error}>{mobileError}</Text>}
-                </View>
-              ) : (
-                <View style={{ marginTop: 18 }}>
-                  <View style={styles.inputWrap}>
-                    <TextInput
-                      value={email}
-                      onChangeText={setEmail}
-                      keyboardType="email-address"
-                      autoCapitalize="none"
-                      placeholder="Email Address"
-                      placeholderTextColor="#B3B3B3"
-                      style={styles.inputFull}
-                    />
+                ) : (
+                  <View style={{ marginTop: 18 }}>
+                    <View style={styles.inputWrap}>
+                      <TextInput
+                        value={email}
+                        onChangeText={setEmail}
+                        keyboardType="email-address"
+                        autoCapitalize="none"
+                        placeholder="Email Address"
+                        placeholderTextColor="#B3B3B3"
+                        style={styles.inputFull}
+                      />
+                    </View>
+                    {!!emailError && <Text style={styles.error}>{emailError}</Text>}
                   </View>
-                  {!!emailError && <Text style={styles.error}>{emailError}</Text>}
-                </View>
-              )}
+                )}
 
-              {!!loginError && <Text style={styles.error}>{loginError}</Text>}
+                {!!loginError && <Text style={styles.error}>{loginError}</Text>}
 
-              <TouchableOpacity onPress={onToggle} style={{ marginTop: 14 }}>
-                <Text style={styles.toggleText}>
-                  {useMobile ? "Login via Email" : "Login via Mobile Number"}
-                </Text>
-              </TouchableOpacity>
+                <TouchableOpacity onPress={onToggle} style={{ marginTop: 14 }}>
+                  <Text style={styles.toggleText}>
+                    {useMobile ? "Login via Email" : "Login via Mobile Number"}
+                  </Text>
+                </TouchableOpacity>
 
-              <View style={{ flex: 1 }} />
+                <TouchableOpacity
+                  onPress={onNext}
+                  activeOpacity={0.85}
+                  disabled={!canProceed}
+                  style={[styles.loginBtn, !canProceed && styles.loginBtnDisabled]}
+                >
+                  <Text style={styles.loginBtnText}>Next</Text>
+                </TouchableOpacity>
 
-              <TouchableOpacity
-                onPress={onNext}
-                activeOpacity={0.85}
-                disabled={!canProceed}
-                style={[styles.loginBtn, !canProceed && styles.loginBtnDisabled]}
-              >
-                <Text style={styles.loginBtnText}>Next</Text>
-              </TouchableOpacity>
+                <View style={styles.divider} />
 
-              <View style={styles.divider} />
+                <Text style={styles.bottomText}>Don't have Apoyo account yet?</Text>
 
-              <Text style={styles.bottomText}>Don't have Apoyo account yet?</Text>
+                <TouchableOpacity
+                  onPress={() => router.push(legalPageRoute("terms-and-conditions"))}
+                  activeOpacity={0.85}
+                  style={styles.createBtn}
+                >
+                  <Text style={styles.createBtnText}>Create account</Text>
+                </TouchableOpacity>
 
-              <TouchableOpacity
-                onPress={() => router.push("/phase1/register")}
-                activeOpacity={0.85}
-                style={styles.createBtn}
-              >
-                <Text style={styles.createBtnText}>Create account</Text>
-              </TouchableOpacity>
-
-              <View style={{ height: 10 }} />
+                <View style={{ height: 10 }} />
+              </View>
             </>
           )}
 
@@ -276,6 +324,21 @@ export default function Login() {
 
               {!!loginError && <Text style={styles.error}>{loginError}</Text>}
 
+              <TouchableOpacity
+                activeOpacity={0.85}
+                onPress={() => {
+                  setPin("");
+                  setLoginError("");
+                  router.push({
+                    pathname: ROUTES.forgotPin,
+                    params: { email: email.trim() },
+                  });
+                }}
+                style={{ alignSelf: "flex-end", marginTop: 10, paddingRight: 4 }}
+              >
+                <Text style={styles.forgotLink}>Forgot MPIN?</Text>
+              </TouchableOpacity>
+
               <View style={{ flex: 1 }} />
 
               <TouchableOpacity
@@ -301,15 +364,57 @@ export default function Login() {
         </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: "#fff" },
-  container: { flex: 1, paddingHorizontal: 22, paddingTop: 20 },
+  root: { flex: 1, backgroundColor: "#fff", overflow: "hidden" },
+  backdrop: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    width: SCREEN.width,
+    height: SCREEN.height,
+  },
+  backdropScrim: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    width: SCREEN.width,
+    height: SCREEN.height,
+    backgroundColor: "rgba(255,255,255,0.95)",
+  },
+  safe: { flex: 1, backgroundColor: "transparent" },
+  container: { flex: 1, paddingHorizontal: 22, paddingTop: 12 },
 
-  brand: { alignSelf: "flex-start" },
+  headerBrandRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    alignSelf: "center",
+    marginTop: 8,
+    marginBottom: 10,
+    marginHorizontal: 20,
+    paddingHorizontal: 8,
+  },
+  headerCityLogo: {
+    width: 64,
+    height: 64,
+    marginRight: 12,
+  },
+  headerSeal: {
+    width: SCREEN_W * 0.48,
+    height: 36,
+    marginLeft: 4,
+  },
+
+  brand: { alignSelf: "center" },
   brandLogo: { width: SCREEN_W * 0.42, height: 60, marginTop: 10, marginBottom: 8 },
+
+  loginBottomBlock: {
+    marginTop: "auto",
+  },
 
   title: { marginTop: 22, fontSize: 32, color: DARK, fontFamily: FONT, fontWeight: "700" },
   subtitle: { marginTop: 6, fontSize: 16, color: SUB, fontFamily: FONT, fontWeight: "500" },
@@ -339,6 +444,7 @@ const styles = StyleSheet.create({
   rowTop: { flexDirection: "row", alignItems: "center", justifyContent: "center", marginTop: 34, marginBottom: 10 },
   label: { fontFamily: FONT, fontWeight: "700", color: DARK, fontSize: 15 },
   clear: { fontFamily: FONT, fontWeight: "700", color: "#7D7D7D", fontSize: 14 },
+  forgotLink: { fontFamily: FONT, fontWeight: "700", color: TEAL, fontSize: 14 },
 
   hiddenInput: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, opacity: 0 },
 

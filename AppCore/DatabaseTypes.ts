@@ -334,7 +334,10 @@ export type Database = {
       assistance_requests: {
         Row: {
           additional_info: string | null
+          assistance_name: string
           case_study_date: string | null
+          category_id: string | null
+          category_slug: string
           created_at: string
           financial_request_type: string | null
           id: string
@@ -342,14 +345,18 @@ export type Database = {
           payload_version: number
           request_code: string | null
           service_id: string
+          service_name: string
           status: string
           submitted_at: string | null
           updated_at: string
-          user_id: string
+          user_id: string | null
         }
         Insert: {
           additional_info?: string | null
+          assistance_name?: string
           case_study_date?: string | null
+          category_id?: string | null
+          category_slug?: string
           created_at?: string
           financial_request_type?: string | null
           id?: string
@@ -357,6 +364,7 @@ export type Database = {
           payload_version?: number
           request_code?: string | null
           service_id: string
+          service_name?: string
           status?: string
           submitted_at?: string | null
           updated_at?: string
@@ -364,7 +372,10 @@ export type Database = {
         }
         Update: {
           additional_info?: string | null
+          assistance_name?: string
           case_study_date?: string | null
+          category_id?: string | null
+          category_slug?: string
           created_at?: string
           financial_request_type?: string | null
           id?: string
@@ -372,10 +383,11 @@ export type Database = {
           payload_version?: number
           request_code?: string | null
           service_id?: string
+          service_name?: string
           status?: string
           submitted_at?: string | null
           updated_at?: string
-          user_id?: string
+          user_id?: string | null
         }
         Relationships: [
           {
@@ -390,14 +402,17 @@ export type Database = {
       barangays: {
         Row: {
           id: string
+          is_active: boolean
           name: string
         }
         Insert: {
           id?: string
+          is_active?: boolean
           name: string
         }
         Update: {
           id?: string
+          is_active?: boolean
           name?: string
         }
         Relationships: []
@@ -406,6 +421,7 @@ export type Database = {
         Row: {
           age: number
           barangay_id: string
+          barangay_name: string | null
           birth_date: string
           created_at: string
           first_name: string
@@ -420,6 +436,7 @@ export type Database = {
         Insert: {
           age: number
           barangay_id: string
+          barangay_name?: string | null
           birth_date: string
           created_at?: string
           first_name: string
@@ -434,6 +451,7 @@ export type Database = {
         Update: {
           age?: number
           barangay_id?: string
+          barangay_name?: string | null
           birth_date?: string
           created_at?: string
           first_name?: string
@@ -1322,6 +1340,57 @@ export type Database = {
           },
         ]
       }
+      settings: {
+        Row: {
+          created_at: string
+          created_by: string | null
+          description: string | null
+          id: string
+          is_active: boolean
+          is_secret: boolean
+          key: string
+          metadata: Json
+          scope: string
+          updated_at: string
+          updated_by: string | null
+          value: Json
+          version: number
+          visibility: string
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string | null
+          description?: string | null
+          id?: string
+          is_active?: boolean
+          is_secret?: boolean
+          key: string
+          metadata?: Json
+          scope: string
+          updated_at?: string
+          updated_by?: string | null
+          value?: Json
+          version?: number
+          visibility?: string
+        }
+        Update: {
+          created_at?: string
+          created_by?: string | null
+          description?: string | null
+          id?: string
+          is_active?: boolean
+          is_secret?: boolean
+          key?: string
+          metadata?: Json
+          scope?: string
+          updated_at?: string
+          updated_by?: string | null
+          value?: Json
+          version?: number
+          visibility?: string
+        }
+        Relationships: []
+      }
       treatment_requests: {
         Row: {
           additional_info: string | null
@@ -1543,6 +1612,7 @@ export type Database = {
         Row: {
           address: string | null
           avatar_url: string | null
+          barangay: string
           birth_date: string | null
           contact_number: string
           created_at: string | null
@@ -1554,12 +1624,12 @@ export type Database = {
           registered_voter_id: string | null
           sex: string | null
           suffix: string | null
-          verified: boolean | null
           voter_id_number: string | null
         }
         Insert: {
           address?: string | null
           avatar_url?: string | null
+          barangay?: string
           birth_date?: string | null
           contact_number: string
           created_at?: string | null
@@ -1571,12 +1641,12 @@ export type Database = {
           registered_voter_id?: string | null
           sex?: string | null
           suffix?: string | null
-          verified?: boolean | null
           voter_id_number?: string | null
         }
         Update: {
           address?: string | null
           avatar_url?: string | null
+          barangay?: string
           birth_date?: string | null
           contact_number?: string
           created_at?: string | null
@@ -1588,7 +1658,6 @@ export type Database = {
           registered_voter_id?: string | null
           sex?: string | null
           suffix?: string | null
-          verified?: boolean | null
           voter_id_number?: string | null
         }
         Relationships: [
@@ -1606,6 +1675,10 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      admin_can_access_user_profile: {
+        Args: { p_user_id: string }
+        Returns: boolean
+      }
       admin_request_op: {
         Args: {
           op: string

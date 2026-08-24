@@ -80,4 +80,12 @@ coverage/
 build/
 expo-env.d.ts
 
+# Scratch / one-off SQL dumps from local debugging
+.tmp_*
+*.tmp.sql
+
+# Face-verification tunnel binary (re-downloaded by start-tunnel.ps1)
+deploy/face-verification/cloudflared.exe
+**/cloudflared.exe
+
 # Native folders are intentionally tracked in this repository.

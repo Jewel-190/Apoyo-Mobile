@@ -253,21 +253,21 @@ const successUiStyles = StyleSheet.create({
   },
   desc: {
     fontFamily: SUCCESS_FONT,
-    fontSize: 13,
+    fontSize: 14,
     lineHeight: 18,
     color: TEXT,
     textAlign: "center",
     marginBottom: 10,
   },
   linkish: { color: BLUE, fontFamily: SUCCESS_FONT, fontWeight: "400" },
-  appId: { marginTop: 10, fontFamily: SUCCESS_FONT, fontSize: 12, color: TEXT },
+  appId: { marginTop: 10, fontFamily: SUCCESS_FONT, fontSize: 14, color: TEXT },
   loadingCodeRow: {
     marginTop: 10,
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
   },
-  loadingCodeText: { fontFamily: SUCCESS_FONT, fontSize: 12, color: TEXT },
+  loadingCodeText: { fontFamily: SUCCESS_FONT, fontSize: 14, color: TEXT },
   card: {
     width: "100%",
     marginTop: 20,
@@ -295,7 +295,7 @@ const successUiStyles = StyleSheet.create({
     marginTop: 16,
     marginLeft: 16,
     fontFamily: SUCCESS_FONT,
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: "400",
     color: TEXT,
   },
@@ -304,16 +304,16 @@ const successUiStyles = StyleSheet.create({
   dot: {
     width: 12,
     fontFamily: SUCCESS_FONT,
-    fontSize: 13,
-    lineHeight: 15,
+    fontSize: 14,
+    lineHeight: 20,
     color: TEXT,
     marginTop: 1,
   },
   bulletText: {
     flex: 1,
     fontFamily: SUCCESS_FONT,
-    fontSize: 11.5,
-    lineHeight: 16,
+    fontSize: 14,
+    lineHeight: 20,
     color: TEXT,
   },
   statusLink: { color: BLUE, fontFamily: SUCCESS_FONT, fontWeight: "400" },
@@ -330,7 +330,7 @@ const successUiStyles = StyleSheet.create({
     shadowOffset: { width: 0, height: 6 },
     elevation: 6,
   },
-  btnText: { fontFamily: SUCCESS_FONT, fontSize: 13, fontWeight: "400", color: "#fff" },
+  btnText: { fontFamily: SUCCESS_FONT, fontSize: 14, fontWeight: "400", color: "#fff" },
 });
 
 export type SubmissionSuccessPageProps = {

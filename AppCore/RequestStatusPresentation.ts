@@ -17,6 +17,7 @@ export const REQUEST_STATUS_DB_VALUES = [
   "scheduled",
   "case study",
   "approved",
+  "declined",
 ] as const;
 
 export type RequestStatusDb = (typeof REQUEST_STATUS_DB_VALUES)[number];
@@ -31,6 +32,7 @@ export const REQUEST_STATUS_LABELS: Record<RequestStatusDb, ServiceStatus> = {
   scheduled: "Scheduled",
   "case study": "Case Study",
   approved: "Approved",
+  declined: "Declined",
 };
 
 /** @deprecated Use `ServiceStatus` — same union, includes Draft. */
@@ -51,6 +53,7 @@ export const REQUEST_STATUS_BADGE_THEMES: Record<ServiceStatus, StatusBadgeTheme
   Scheduled: { bg: "#D8E6FA", text: "#2F4F7A" },
   "Case Study": { bg: "#EDE7F6", text: "#4527A0" },
   Approved: { bg: "#C8F1C8", text: "#2B2B2B" },
+  Declined: { bg: "#F8D0D0", text: "#7A2E2E" },
   Draft: { bg: "#D4D4D4", text: "#2B2B2B" },
 };
 
@@ -109,6 +112,8 @@ export function dbStatusForLabel(label: ServiceStatus): RequestStatusDb {
       return "case study";
     case "Approved":
       return "approved";
+    case "Declined":
+      return "declined";
   }
 }
 
@@ -190,6 +195,10 @@ export function normalizeServiceStatus(raw?: string | null): ServiceStatus {
 
   if (["approved", "accepted", "complete", "done"].includes(key)) {
     return "Approved";
+  }
+
+  if (["declined", "denied", "rejected"].includes(key)) {
+    return "Declined";
   }
 
   if (key === "pending" || key === "submitted") return "Pending";

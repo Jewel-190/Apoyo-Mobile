@@ -21,11 +21,12 @@ import React, {
 
 import { supabase } from "./SupabaseClient";
 import {
-  fetchServiceIdsByRequestId,
+  fetchRequestDisplayMetaByRequestId,
   listNotifications,
   markRequestNotificationsRead as markReadRemote,
   subscribeToUserNotifications,
   type NotificationItem,
+  type RequestDisplayMeta,
   type UserNotificationRealtimeRow,
 } from "./UserNotificationsQuery";
 
@@ -34,6 +35,7 @@ const NOTIFICATION_LIMIT = 80;
 type NotificationsContextValue = {
   items: NotificationItem[];
   serviceKeyByRequestId: Record<string, string>;
+  requestMetaByRequestId: Record<string, RequestDisplayMeta>;
   unreadCount: number;
   hasUnread: boolean;
   loading: boolean;
@@ -74,25 +76,32 @@ export function NotificationsProvider({ children }: { children: React.ReactNode 
   const [serviceKeyByRequestId, setServiceKeyByRequestId] = useState<
     Record<string, string>
   >({});
+  const [requestMetaByRequestId, setRequestMetaByRequestId] = useState<
+    Record<string, RequestDisplayMeta>
+  >({});
   const [loading, setLoading] = useState(true);
   const userIdRef = useRef<string | null>(null);
   const unsubscribeRef = useRef<(() => void) | null>(null);
-  // Mirror of serviceKeyByRequestId so callbacks stay referentially stable and
-  // don't retrigger the init effect (which previously caused a load/render loop).
   const serviceKeysRef = useRef<Record<string, string>>({});
 
-  const applyServiceKeys = useCallback((map: Record<string, string>) => {
+  const applyServiceKeys = useCallback((map: Record<string, RequestDisplayMeta>) => {
     if (!Object.keys(map).length) return;
+    const ids: Record<string, string> = {};
+    for (const [id, meta] of Object.entries(map)) {
+      ids[id] = meta.serviceId;
+    }
     setServiceKeyByRequestId((prev) => {
-      const next = { ...prev, ...map };
+      const next = { ...prev, ...ids };
       serviceKeysRef.current = next;
       return next;
     });
+    setRequestMetaByRequestId((prev) => ({ ...prev, ...map }));
   }, []);
 
   const resetServiceKeys = useCallback(() => {
     serviceKeysRef.current = {};
     setServiceKeyByRequestId({});
+    setRequestMetaByRequestId({});
   }, []);
 
   const ensureServiceKeys = useCallback(
@@ -101,7 +110,7 @@ export function NotificationsProvider({ children }: { children: React.ReactNode 
         (id) => id && !serviceKeysRef.current[id]
       );
       if (!missing.length) return;
-      const map = await fetchServiceIdsByRequestId(missing);
+      const map = await fetchRequestDisplayMetaByRequestId(missing);
       applyServiceKeys(map);
     },
     [applyServiceKeys]
@@ -226,13 +235,14 @@ export function NotificationsProvider({ children }: { children: React.ReactNode 
     () => ({
       items,
       serviceKeyByRequestId,
+      requestMetaByRequestId,
       unreadCount,
       hasUnread: unreadCount > 0,
       loading,
       refresh,
       markRead,
     }),
-    [items, serviceKeyByRequestId, unreadCount, loading, refresh, markRead]
+    [items, serviceKeyByRequestId, requestMetaByRequestId, unreadCount, loading, refresh, markRead]
   );
 
   return (

@@ -86,6 +86,9 @@ export const ASSISTANCE_REQUEST_LIST_SELECT = [
   "id",
   "user_id",
   "service_id",
+  "service_name",
+  "assistance_name",
+  "category_slug",
   "status",
   "request_code",
   "submitted_at",
@@ -95,7 +98,7 @@ export const ASSISTANCE_REQUEST_LIST_SELECT = [
   "payload",
   "created_at",
   "updated_at",
-  "assistance_services!inner(id, request_code_token)",
+  "assistance_services(id, request_code_token)",
 ].join(",");
 
 /** Status tab listing — omits heavy `payload` JSON (detail screens fetch it separately). */
@@ -103,6 +106,9 @@ export const ASSISTANCE_REQUEST_LIST_SELECT_SLIM = [
   "id",
   "user_id",
   "service_id",
+  "service_name",
+  "assistance_name",
+  "category_slug",
   "status",
   "request_code",
   "submitted_at",
@@ -111,13 +117,16 @@ export const ASSISTANCE_REQUEST_LIST_SELECT_SLIM = [
   "financial_request_type",
   "created_at",
   "updated_at",
-  "assistance_services!inner(id, request_code_token)",
+  "assistance_services(id, request_code_token)",
 ].join(",");
 
 type AssistanceRequestJoinedRow = {
   id: string;
   user_id: string;
   service_id: string;
+  service_name?: string | null;
+  assistance_name?: string | null;
+  category_slug?: string | null;
   status: string;
   request_code: string | null;
   submitted_at: string | null;
@@ -129,7 +138,8 @@ type AssistanceRequestJoinedRow = {
   updated_at: string;
   assistance_services:
     | { id: string; request_code_token: string | null }
-    | { id: string; request_code_token: string | null }[];
+    | { id: string; request_code_token: string | null }[]
+    | null;
 };
 
 function unwrapService(
@@ -159,6 +169,9 @@ function mapJoinedRowToRequestsView(row: AssistanceRequestJoinedRow): RequestsVi
     updated_at: row.updated_at,
     service_type: routeToken,
     request_table: ASSISTANCE_REQUESTS_TABLE,
+    service_name: row.service_name ?? "",
+    assistance_name: row.assistance_name ?? "",
+    category_slug: row.category_slug ?? "",
   };
 }
 
@@ -174,7 +187,8 @@ export type AssistanceRequestsListingParams = {
 };
 
 /**
- * Lists assistance requests with catalog join (ensures service row exists).
+ * Lists assistance requests with an optional catalog join for route tokens.
+ * Historical rows stay listed even if the live catalog service is archived.
  */
 export async function fetchAssistanceRequestsListing(
   params: AssistanceRequestsListingParams = {}

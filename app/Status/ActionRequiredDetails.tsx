@@ -737,7 +737,7 @@ const styles = StyleSheet.create({
   loadingText: {
     fontFamily: FONT,
     fontWeight: "500",
-    fontSize: 12,
+    fontSize: 14,
     color: TEXT_MUTED,
   },
 
@@ -765,22 +765,22 @@ const styles = StyleSheet.create({
     marginTop: 6,
     fontFamily: FONT,
     fontWeight: "400",
-    fontSize: 12,
-    lineHeight: 17,
+    fontSize: 14,
+    lineHeight: 20,
     color: TEXT_DARK,
   },
   noticeSub: {
     marginTop: 8,
     fontFamily: FONT,
     fontWeight: "600",
-    fontSize: 11,
+    fontSize: 14,
     color: TEXT_MUTED,
   },
   noticePendingSub: {
     marginTop: 8,
     fontFamily: FONT,
     fontWeight: "700",
-    fontSize: 11,
+    fontSize: 14,
     color: "#A12E2E",
   },
 
@@ -795,14 +795,14 @@ const styles = StyleSheet.create({
   emptyTitle: {
     fontFamily: FONT,
     fontWeight: "700",
-    fontSize: 12.5,
+    fontSize: 14,
     color: TEXT_DARK,
   },
   emptySub: {
     marginTop: 4,
     fontFamily: FONT,
     fontWeight: "400",
-    fontSize: 11,
+    fontSize: 14,
     color: TEXT_MUTED,
     textAlign: "center",
   },
@@ -830,7 +830,7 @@ const styles = StyleSheet.create({
   fieldLabel: {
     fontFamily: FONT,
     fontWeight: "800",
-    fontSize: 12.5,
+    fontSize: 14,
     color: TEXT_DARK,
   },
   pendingBadge: {
@@ -847,7 +847,7 @@ const styles = StyleSheet.create({
   pendingBadgeText: {
     fontFamily: FONT,
     fontWeight: "700",
-    fontSize: 10,
+    fontSize: 14,
     color: "#E45454",
   },
   statusPill: {
@@ -862,7 +862,7 @@ const styles = StyleSheet.create({
   statusPillText: {
     fontFamily: FONT,
     fontWeight: "700",
-    fontSize: 10,
+    fontSize: 14,
   },
   readyBadge: {
     flexDirection: "row",
@@ -878,19 +878,19 @@ const styles = StyleSheet.create({
   readyBadgeText: {
     fontFamily: FONT,
     fontWeight: "700",
-    fontSize: 10,
+    fontSize: 14,
     color: "#2F9E44",
   },
   reasonText: {
     fontFamily: FONT,
     fontWeight: "500",
-    fontSize: 11,
+    fontSize: 14,
     color: "#A12E2E",
   },
   additionalReasonText: {
     fontFamily: FONT,
     fontWeight: "400",
-    fontSize: 10.8,
+    fontSize: 14,
     color: TEXT_MUTED,
   },
 
@@ -928,14 +928,14 @@ const styles = StyleSheet.create({
   fileName: {
     fontFamily: FONT,
     fontWeight: "700",
-    fontSize: 12,
+    fontSize: 14,
     color: TEXT_DARK,
   },
   fileMeta: {
     marginTop: 2,
     fontFamily: FONT,
     fontWeight: "400",
-    fontSize: 10.5,
+    fontSize: 14,
     color: TEXT_MUTED,
   },
   previewChip: {
@@ -949,7 +949,7 @@ const styles = StyleSheet.create({
   previewChipText: {
     fontFamily: FONT,
     fontWeight: "700",
-    fontSize: 10,
+    fontSize: 14,
     color: TEAL,
   },
 
@@ -977,7 +977,7 @@ const styles = StyleSheet.create({
   updateBtnText: {
     fontFamily: FONT,
     fontWeight: "700",
-    fontSize: 13,
+    fontSize: 14,
     color: "#FFFFFF",
   },
 

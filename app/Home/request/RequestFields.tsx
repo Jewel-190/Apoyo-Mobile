@@ -133,7 +133,7 @@ const networkBannerStyles = StyleSheet.create({
   text: {
     color: COLORS.white,
     fontFamily: FONT_FAMILY_ROUNDED,
-    fontSize: 12,
+    fontSize: 14,
     textAlign: "center",
   },
 });
@@ -492,19 +492,19 @@ const attachmentSlotStyles = StyleSheet.create({
   },
   fileName: {
     fontFamily: FONT_FAMILY_ROUNDED,
-    fontSize: 12,
+    fontSize: 14,
     color: COLORS.textMuted,
     marginTop: 2,
   },
   helper: {
     fontFamily: FONT_FAMILY_ROUNDED,
-    fontSize: 11,
+    fontSize: 14,
     color: COLORS.textMuted,
     marginTop: 2,
   },
   uploadingHint: {
     fontFamily: FONT_FAMILY_ROUNDED,
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: "600",
     color: COLORS.teal,
     marginTop: 3,
@@ -519,7 +519,7 @@ const attachmentSlotStyles = StyleSheet.create({
   },
   kind: {
     fontFamily: FONT_FAMILY_ROUNDED,
-    fontSize: 10,
+    fontSize: 14,
     fontWeight: "700",
     color: COLORS.textMuted,
     marginLeft: 8,
@@ -654,7 +654,7 @@ const tipsDropdownStyles = StyleSheet.create({
   },
   headText: {
     fontFamily: FONT_FAMILY_ROUNDED,
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: "600",
     color: COLORS.textDark,
   },
@@ -680,15 +680,15 @@ const tipsDropdownStyles = StyleSheet.create({
   tipTitle: {
     flex: 1,
     fontFamily: FONT_FAMILY_ROUNDED,
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: "700",
     color: COLORS.textDark,
   },
   tipTxt: {
     marginTop: 6,
     fontFamily: FONT_FAMILY_ROUNDED,
-    fontSize: 11.5,
-    lineHeight: 17,
+    fontSize: 14,
+    lineHeight: 20,
     color: COLORS.textMuted,
   },
 });
@@ -818,7 +818,7 @@ const formShellStyles = StyleSheet.create({
   },
   headerSubtitle: {
     fontFamily: FONT_FAMILY_ROUNDED,
-    fontSize: 12,
+    fontSize: 14,
     color: "rgba(255,255,255,0.85)",
     marginTop: 2,
   },
@@ -2042,7 +2042,7 @@ const requestScreenStyles = StyleSheet.create({
   },
   choiceCardTitle: {
     fontFamily: FONT_FAMILY_ROUNDED,
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: "700",
     color: COLORS.teal,
     marginBottom: 8,
@@ -2056,10 +2056,10 @@ const requestScreenStyles = StyleSheet.create({
   },
   choiceLabel: {
     fontFamily: FONT_FAMILY_ROUNDED,
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: "400",
     color: "#9AA6A6",
-    lineHeight: 17,
+    lineHeight: 20,
   },
   choiceValue: {
     marginTop: 4,
@@ -2086,16 +2086,16 @@ const requestScreenStyles = StyleSheet.create({
     marginTop: 6,
     fontFamily: FONT_FAMILY_ROUNDED,
     fontWeight: "600",
-    fontSize: 12,
-    lineHeight: 17,
+    fontSize: 14,
+    lineHeight: 20,
     color: COLORS.textMuted,
   },
   sectionHintTight: {
     marginTop: 4,
     fontFamily: FONT_FAMILY_ROUNDED,
     fontWeight: "600",
-    fontSize: 12,
-    lineHeight: 17,
+    fontSize: 14,
+    lineHeight: 20,
     color: COLORS.textMuted,
   },
   optionalPill: {
@@ -2106,7 +2106,7 @@ const requestScreenStyles = StyleSheet.create({
     overflow: "hidden",
     fontFamily: FONT_FAMILY_ROUNDED,
     fontWeight: "600",
-    fontSize: 10,
+    fontSize: 14,
     color: COLORS.teal,
     backgroundColor: FIELD_BG,
     borderWidth: 1,
@@ -2123,7 +2123,7 @@ const requestScreenStyles = StyleSheet.create({
     backgroundColor: FIELD_BG,
     fontFamily: FONT_FAMILY_ROUNDED,
     fontWeight: "600",
-    fontSize: 13,
+    fontSize: 14,
     color: TEXT_DARK,
     lineHeight: 18,
   },

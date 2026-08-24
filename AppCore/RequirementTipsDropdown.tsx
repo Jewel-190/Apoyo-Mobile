@@ -150,7 +150,7 @@ const styles = StyleSheet.create({
   },
   headText: {
     fontFamily: FONT_FAMILY_ROUNDED,
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: "600",
     color: COLORS.textDark,
   },
@@ -176,14 +176,14 @@ const styles = StyleSheet.create({
   tipTitle: {
     flex: 1,
     fontFamily: FONT_FAMILY_ROUNDED,
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: "700",
     color: COLORS.textDark,
   },
   tipTxt: {
     marginTop: 8,
     fontFamily: FONT_FAMILY_ROUNDED,
-    fontSize: 12,
+    fontSize: 14,
     lineHeight: 18,
     color: COLORS.textMuted,
   },

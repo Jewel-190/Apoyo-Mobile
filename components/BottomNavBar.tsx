@@ -22,6 +22,17 @@ export const NAV_TOTAL_HEIGHT = NAV_BAR_HEIGHT + IOS_SAFE_EXTRA;
 
 export type TabKey = "home" | "status" | "notification" | "account";
 
+export function isMainTabPath(pathname: string): boolean {
+  const current = normalizePath(pathname);
+  return TABS.some((t) => normalizePath(t.route) === current);
+}
+
+export function tabMaskColor(pathname: string): string {
+  return normalizePath(pathname) === normalizePath(ROUTE_ACCOUNT)
+    ? "#FFFFFF"
+    : "transparent";
+}
+
 function normalizePath(path: string): string {
   return path.replace(/\/+$/, "").trim().toLowerCase() || "/";
 }
@@ -57,7 +68,11 @@ type Props = {
   maskColor?: string;
 };
 
-export default function BottomNavBar({ activeTab, onBeforeNavigate, maskColor = "#FFFFFF" }: Props) {
+export default React.memo(function BottomNavBar({
+  activeTab,
+  onBeforeNavigate,
+  maskColor = "#FFFFFF",
+}: Props) {
   const router = useRouter();
   const pathname = usePathname();
   const lastNavAtRef = useRef(0);
@@ -111,7 +126,7 @@ export default function BottomNavBar({ activeTab, onBeforeNavigate, maskColor = 
       </View>
     </>
   );
-}
+});
 
 function TabButton({
   label,
@@ -162,7 +177,7 @@ function TabButton({
                 style={styles.glassSheen}
               />
               <Ionicons name={icon} size={20} color="#FFFFFF" />
-              <Text style={styles.tabTextInsidePill}>{label}</Text>
+              <Text numberOfLines={1} style={styles.tabTextInsidePill}>{label}</Text>
             </View>
           ) : (
             <>
@@ -172,6 +187,7 @@ function TabButton({
                 color={pressed ? "rgba(191,224,222,0.75)" : TAB_INACTIVE}
               />
               <Text
+                numberOfLines={1}
                 style={[
                   styles.tabText,
                   styles.tabTextInactive,
@@ -220,9 +236,9 @@ const styles = StyleSheet.create({
     elevation: 10,
   },
   tabBtn: {
+    flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    width: 76,
     height: 58,
   },
   tabBtnDisabled: {
@@ -231,9 +247,9 @@ const styles = StyleSheet.create({
   tabUnreadBadge: {
     position: "absolute",
     top: 2,
-    left: 14,
-    width: 16,
-    height: 16,
+    left: 10,
+    width: 20,
+    height: 20,
     borderRadius: 99,
     backgroundColor: "#E13B3B",
     alignItems: "center",
@@ -244,12 +260,13 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
     fontFamily: FONT,
     fontWeight: "800",
-    fontSize: 11,
-    lineHeight: 12,
+    fontSize: 14,
+    lineHeight: 16,
   },
   tabActivePillBig: {
-    width: 66,
-    height: 48,
+    alignSelf: "stretch",
+    marginHorizontal: 2,
+    height: 52,
     borderRadius: 12,
     backgroundColor: ACTIVE_PILL,
     alignItems: "center",
@@ -275,11 +292,12 @@ const styles = StyleSheet.create({
     borderRadius: 12,
   },
   tabTextInsidePill: {
-    fontSize: 9.5,
+    fontSize: 14,
     fontFamily: FONT,
     fontWeight: "700",
     color: "#FFFFFF",
+    letterSpacing: -0.3,
   },
-  tabText: { fontSize: 9.5, fontFamily: FONT, fontWeight: "700" },
+  tabText: { fontSize: 14, fontFamily: FONT, fontWeight: "700", letterSpacing: -0.3 },
   tabTextInactive: { color: TAB_INACTIVE },
 });

@@ -47,4 +47,7 @@ export type RequestsViewRow = RequestRowSkeleton & {
   service_type: string;
   request_table: string;
   financial_request_type: string | null;
+  service_name?: string | null;
+  assistance_name?: string | null;
+  category_slug?: string | null;
 };

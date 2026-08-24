@@ -15,6 +15,14 @@
 
 name: apoyo-face-verification
 
+# Cap every container's log file so JSON logs can't silently grow to many GB.
+# (Docker's default json-file driver is unbounded.)
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 volumes:
   postgres-data:
 
@@ -22,6 +30,7 @@ services:
   compreface-postgres-db:
     image: exadel/compreface-postgres-db:1.2.0
     restart: unless-stopped
+    logging: *default-logging
     environment:
       POSTGRES_USER: ${postgres_username}
       POSTGRES_PASSWORD: ${postgres_password}
@@ -32,6 +41,7 @@ services:
   compreface-api:
     image: exadel/compreface-api:1.2.0
     restart: unless-stopped
+    logging: *default-logging
     depends_on:
       - compreface-postgres-db
     environment:
@@ -49,6 +59,7 @@ services:
   compreface-admin:
     image: exadel/compreface-admin:1.2.0
     restart: unless-stopped
+    logging: *default-logging
     depends_on:
       - compreface-postgres-db
       - compreface-api
@@ -65,6 +76,7 @@ services:
   compreface-core:
     image: exadel/compreface-core:1.2.0
     restart: unless-stopped
+    logging: *default-logging
     environment:
       ML_PORT: 3000
       IMG_LENGTH_LIMIT: ${max_detect_size}
@@ -74,6 +86,7 @@ services:
   compreface-fe:
     image: exadel/compreface-fe:1.2.0
     restart: unless-stopped
+    logging: *default-logging
     ports:
       - "8000:80"
     depends_on:
@@ -88,6 +101,7 @@ services:
   apoyo-face-verifier:
     build: ./verifier
     restart: unless-stopped
+    logging: *default-logging
     ports:
       - "${VERIFIER_HOST_PORT:-8090}:8080"
     depends_on:

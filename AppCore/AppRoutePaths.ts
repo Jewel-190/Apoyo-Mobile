@@ -13,6 +13,8 @@ export const ROUTES = {
   onboarding: "/phase1/onboarding",
   login: "/phase1/login",
   register: "/phase1/register",
+  legalTerms: "/phase1/legal/terms-and-conditions",
+  legalUserAcceptance: "/phase1/legal/user-acceptance",
 
   home: "/Home/Home",
   requestInfo: "/Home/request/RequestInfo",
@@ -23,12 +25,15 @@ export const ROUTES = {
   actionRequiredDetails: "/Status/ActionRequiredDetails",
 
   notifications: "/Notification/Notifications",
-  notificationSettings: "/Notification/NotificationSettings",
 
   account: "/Account/Account",
-  settings: "/Account/Settings",
-  accountSettings: "/Account/AccountSettings",
-  personalInformation: "/Account/PersonalInformation",
+  manageAccount: "/Account/ManageAccount",
+  termsAndConditions: "/Account/TermsAndConditions",
+  userAcceptance: "/Account/UserAcceptance",
+  contactUs: "/Account/ContactUs",
+  notificationSettings: "/Account/Settings/NotificationSettings",
+  changePin: "/Account/Settings/ChangePin",
+  forgotPin: "/phase1/forgot-pin",
 } as const;
 
 export type AppRoute = (typeof ROUTES)[keyof typeof ROUTES];

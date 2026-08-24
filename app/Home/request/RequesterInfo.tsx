@@ -48,7 +48,8 @@ const DISABLED_TEXT = "#B8CACA";
 const FIELD_BG = "#EAFBFB";
 const FIELD_BORDER = "#0B8F8B";
 
-const DASMA_LOGO = require("../../../assets/images/Dasma.png");
+const DASMA_CITY_LOGO = require("../../../assets/images/Dasmariñas Logo.png");
+const DASMA_BANNER = require("../../../assets/images/Dasmariñas Banner.png");
 
 type FormState = {
   name: string;
@@ -191,7 +192,7 @@ export default function RequesterInfo() {
     address: "",
   });
 
-  // If true, requester fields are populated from verified `users` profile and locked
+  // If true, requester fields are populated from the signed-in `users` profile and locked
   const [profileLocked, setProfileLocked] = useState(false);
   const [isProfileLoading, setIsProfileLoading] = useState(true);
   const [profileLoadError, setProfileLoadError] = useState<string | null>(null);
@@ -403,7 +404,12 @@ export default function RequesterInfo() {
         >
           <View style={styles.logoRow}>
             <Image
-              source={DASMA_LOGO}
+              source={DASMA_CITY_LOGO}
+              style={styles.cityLogoImg}
+              resizeMode="contain"
+            />
+            <Image
+              source={DASMA_BANNER}
               style={styles.logoImg}
               resizeMode="contain"
             />
@@ -507,7 +513,7 @@ export default function RequesterInfo() {
             </View>
           )}
           {!isProfileLoading && profileLoadError && (
-            <Text style={{ marginTop: 6, color: DANGER, fontSize: 12 }}>{profileLoadError}</Text>
+            <Text style={{ marginTop: 6, color: DANGER, fontSize: 14 }}>{profileLoadError}</Text>
           )}
           {showAddressErr && (
             <Text style={styles.errText}>
@@ -641,17 +647,26 @@ const styles = StyleSheet.create({
 
   content: { paddingHorizontal: 16, paddingTop: 10, paddingBottom: 10 },
 
-  logoRow: { alignItems: "center", marginTop: 6, marginBottom: 6 },
-  logoImg: { width: 170, height: 60 },
+  logoRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 6,
+    marginBottom: 6,
+    gap: 8,
+  },
+  cityLogoImg: { width: 56, height: 56 },
+  logoImg: { width: 172, height: 52 },
 
   serviceHeadline: {
     textAlign: "center",
     fontFamily: FONT,
-    fontWeight: "600",
-    fontSize: 14,
-    color: "#5A6A6A",
-    marginBottom: 4,
-    paddingHorizontal: 12,
+    fontWeight: "800",
+    fontSize: 17.5,
+    color: "#075E5B",
+    marginTop: 10,
+    paddingHorizontal: 10,
+    letterSpacing: 0.2,
   },
 
   header: {
@@ -666,7 +681,7 @@ const styles = StyleSheet.create({
     marginTop: 12,
     fontFamily: FONT,
     fontWeight: "600",
-    fontSize: 12,
+    fontSize: 14,
     color: TEXT_DARK,
   },
 
@@ -680,7 +695,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     fontFamily: FONT,
     fontWeight: "600",
-    fontSize: 13,
+    fontSize: 14,
     color: TEXT_DARK,
   },
   inputErr: { borderColor: DANGER, backgroundColor: "#FFF1F1" },
@@ -688,7 +703,7 @@ const styles = StyleSheet.create({
     marginTop: 6,
     fontFamily: FONT,
     fontWeight: "600",
-    fontSize: 11.5,
+    fontSize: 14,
     color: DANGER,
   },
 
@@ -778,7 +793,7 @@ const styles = StyleSheet.create({
   modalBody: {
     fontFamily: FONT,
     fontWeight: "400",
-    fontSize: 12.5,
+    fontSize: 14,
     color: "#2E3A3A",
     lineHeight: 18,
   },
@@ -805,7 +820,7 @@ const styles = StyleSheet.create({
     flex: 1,
     fontFamily: FONT,
     fontWeight: "400",
-    fontSize: 12.5,
+    fontSize: 14,
     color: "#2E3A3A",
     lineHeight: 18,
   },
@@ -826,7 +841,7 @@ const styles = StyleSheet.create({
   },
   loaderText: {
     fontFamily: FONT,
-    fontSize: 12,
+    fontSize: 14,
     color: "#9AA6A6",
   },
 });

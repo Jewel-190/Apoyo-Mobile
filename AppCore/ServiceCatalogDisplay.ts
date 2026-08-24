@@ -32,19 +32,23 @@ export function categoryCardTrimGradientForItem(item: ApplicationItem): [string,
   return categoryCardTrimGradient(resolveApplicationCategorySlug(item));
 }
 
-/** Fills display name + category from catalog when cache loaded before runtime. */
+/** Fills display name + category from catalog only when the request has no snapshot. */
 export function enrichStatusApplicationItem(item: ApplicationItem): ApplicationItem {
   const rt = getCatalogLookupRuntime();
   if (!item.service || !rt) return item;
 
   const sid = resolveServiceId(item.service) ?? item.service;
   const svc = rt.byServiceId[sid];
+  const existingTitle = String(item.title || "").trim();
+  const existingSlug = String(item.categorySlug || item.category || "").trim().toLowerCase();
+  const titleLooksLikeId =
+    !existingTitle || existingTitle === sid || isServiceUuid(existingTitle);
+
   if (!svc) return item;
 
   const catSlug = (
+    (existingSlug && existingSlug !== "uncategorized" ? existingSlug : "") ||
     svc.categorySlug ||
-    item.categorySlug ||
-    item.category ||
     "uncategorized"
   )
     .trim()
@@ -52,7 +56,7 @@ export function enrichStatusApplicationItem(item: ApplicationItem): ApplicationI
 
   return {
     ...item,
-    title: svc.displayName,
+    title: titleLooksLikeId ? svc.displayName || existingTitle : existingTitle,
     categorySlug: catSlug,
     category: catSlug as ApplicationItem["category"],
   };

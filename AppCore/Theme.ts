@@ -57,3 +57,6 @@ export const FONT_FAMILY: string = Platform.select({
 
 /** Legacy iOS-only family for screens that explicitly want SF Pro Rounded. */
 export const FONT_FAMILY_ROUNDED = "SF Pro Rounded";
+
+/** Minimum readable body/UI text size. Do not use a smaller `fontSize` in screens. */
+export const FONT_SIZE_MIN = 14;

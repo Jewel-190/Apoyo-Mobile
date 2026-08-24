@@ -42,7 +42,7 @@ import {
 } from "@/AppCore/AssistanceStatusApplicationsCache";
 import type { Category, ServiceStatus } from "@/AppCore/AppUiDomainTypes";
 import { statusBadgeTheme } from "@/AppCore/RequestStatusPresentation";
-import BottomNavBar, { NAV_TOTAL_HEIGHT } from "../../components/BottomNavBar";
+import { NAV_TOTAL_HEIGHT } from "../../components/BottomNavBar";
 
 const FONT = "SF Pro Rounded";
 
@@ -64,6 +64,7 @@ type FilterKey =
   | "scheduled"
   /** Final DB `approved`; no chip — only listed under All. */
   | "approvedFinal"
+  | "declined"
   | "draft";
 
 function statusToFilter(status: ServiceStatus): Exclude<FilterKey, "all"> {
@@ -84,6 +85,8 @@ function statusToFilter(status: ServiceStatus): Exclude<FilterKey, "all"> {
       return "forApproval";
     case "Approved":
       return "approvedFinal";
+    case "Declined":
+      return "declined";
     case "Draft":
       return "draft";
   }
@@ -130,21 +133,31 @@ function ServiceCardIcon({
 
   if (iconUrl) {
     return (
-      <ExpoImage
-        source={{ uri: iconUrl }}
-        style={styles.icon}
-        contentFit="contain"
-        cachePolicy="memory-disk"
-        recyclingKey={iconUrl}
-      />
+      <View style={styles.iconWrap}>
+        <ExpoImage
+          source={{ uri: iconUrl }}
+          style={styles.iconImage}
+          contentFit="contain"
+          cachePolicy="memory-disk"
+          recyclingKey={iconUrl}
+        />
+      </View>
     );
   }
 
   if (!catalogReady && !iconUrl) {
-    return <ActivityIndicator size="small" color="#6E7E7E" style={styles.icon} />;
+    return (
+      <View style={styles.iconWrap}>
+        <ActivityIndicator size="small" color="#6E7E7E" />
+      </View>
+    );
   }
 
-  return <Ionicons name="layers-outline" size={28} color="#6E7E7E" />;
+  return (
+    <View style={styles.iconWrap}>
+      <Ionicons name="layers-outline" size={26} color="#6E7E7E" />
+    </View>
+  );
 }
 
 function cardRequestId(item: ApplicationItem) {
@@ -346,7 +359,8 @@ export default function Status() {
         item.status === "For Approval" ||
         item.status === "Scheduled" ||
         item.status === "Case Study" ||
-        item.status === "Approved"
+        item.status === "Approved" ||
+        item.status === "Declined"
       ) {
         router.push({
           pathname: "/Home/ApprovedAssistance",
@@ -439,6 +453,12 @@ export default function Status() {
             label="Scheduled"
             icon="calendar-outline"
             onPress={() => setActiveFilter("scheduled")}
+          />
+          <Chip
+            active={activeFilter === "declined"}
+            label="Declined"
+            icon="close-circle-outline"
+            onPress={() => setActiveFilter("declined")}
           />
           <Chip
             active={activeFilter === "draft"}
@@ -536,7 +556,7 @@ export default function Status() {
                     </Text>
                     <Text style={styles.cardMeta} numberOfLines={1}>
                       {a.status !== "Draft"
-                        ? "Request ID: " + cardRequestId(a)
+                        ? cardRequestId(a)
                         : "Continue your application"}
                     </Text>
 
@@ -614,8 +634,6 @@ export default function Status() {
           </Pressable>
         </Pressable>
       </Modal>
-
-      <BottomNavBar activeTab="status" maskColor="transparent" />
     </SafeAreaView>
   );
 }
@@ -705,7 +723,7 @@ const styles = StyleSheet.create({
   chipText: {
     fontFamily: FONT,
     fontWeight: "700",
-    fontSize: 12,
+    fontSize: 14,
     color: "#222",
   },
 
@@ -803,26 +821,36 @@ const styles = StyleSheet.create({
     marginTop: 4,
     marginBottom: 10,
   },
-  icon: { width: 38, height: 38, resizeMode: "contain" },
+  iconWrap: {
+    width: 38,
+    height: 38,
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+  },
+  iconImage: {
+    width: "100%",
+    height: "100%",
+  },
 
   badge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10 },
   badgeText: {
     fontFamily: FONT,
     fontWeight: "700",
-    fontSize: 10,
+    fontSize: 14,
   },
 
   cardTitle: {
     fontFamily: FONT,
     fontWeight: "700",
-    fontSize: 13,
+    fontSize: 14,
     color: TEXT_DARK,
     marginBottom: 6,
   },
   cardMeta: {
     fontFamily: FONT,
     fontWeight: "600",
-    fontSize: 9.5,
+    fontSize: 14,
     color: "#6A6A6A",
     marginBottom: 6,
   },
@@ -873,7 +901,7 @@ const styles = StyleSheet.create({
   modalTitle: {
     fontFamily: FONT,
     fontWeight: "700",
-    fontSize: 13,
+    fontSize: 14,
     color: TEXT_DARK,
     textAlign: "center",
     lineHeight: 18,
@@ -882,10 +910,10 @@ const styles = StyleSheet.create({
     marginTop: 8,
     fontFamily: FONT,
     fontWeight: "400",
-    fontSize: 12,
+    fontSize: 14,
     color: "#6E7E7E",
     textAlign: "center",
-    lineHeight: 17,
+    lineHeight: 20,
   },
   modalBtns: { flexDirection: "row", gap: 12, marginTop: 14 },
   cancelBtn: {
@@ -899,7 +927,7 @@ const styles = StyleSheet.create({
   cancelText: {
     fontFamily: FONT,
     fontWeight: "700",
-    fontSize: 12.5,
+    fontSize: 14,
     color: "#FFFFFF",
   },
   removeBtn: {
@@ -913,7 +941,7 @@ const styles = StyleSheet.create({
   removeText: {
     fontFamily: FONT,
     fontWeight: "700",
-    fontSize: 12.5,
+    fontSize: 14,
     color: "#FFFFFF",
   },
 
@@ -927,7 +955,7 @@ const styles = StyleSheet.create({
   loadingText: {
     fontFamily: FONT,
     fontWeight: "600",
-    fontSize: 12,
+    fontSize: 14,
     color: "#5F5F5F",
   },
 
@@ -949,8 +977,8 @@ const styles = StyleSheet.create({
     textAlign: "center",
     fontFamily: FONT,
     fontWeight: "400",
-    fontSize: 11.5,
-    lineHeight: 16,
+    fontSize: 14,
+    lineHeight: 20,
     color: "#666",
   },
 });
