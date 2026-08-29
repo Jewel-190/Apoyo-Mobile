@@ -359,6 +359,24 @@ export async function updateRequest(params: {
   if (error) throw error;
 }
 
+/** Applicant-only: delete a draft row. Submitted requests are kept. */
+export async function deleteOwnDraftRequest(requestId: string): Promise<void> {
+  const id = requestId.trim();
+  if (!id) throw new Error("Missing request id");
+
+  const { data, error } = await supabase
+    .from(ASSISTANCE_REQUESTS_TABLE)
+    .delete()
+    .eq("id", id as never)
+    .eq("status", "draft")
+    .select("id");
+
+  if (error) throw error;
+  if (!data?.length) {
+    throw new Error("Only draft requests can be deleted.");
+  }
+}
+
 export type GetRequestResult<TRow = RequestRowSkeleton> = {
   row: TRow | null;
   requestTable: RequestTableName;

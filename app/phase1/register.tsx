@@ -1,5 +1,5 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useRouter } from "expo-router";
+import { usePathname, useRouter } from "expo-router";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -39,6 +39,7 @@ import {
   verifyRegisteredVoterForRegistration,
 } from "@/AppCore/RegisteredVoterVerification";
 import { STORAGE_KEYS } from "@/AppCore/ClientStorageKeys";
+import { FACE_VERIFY_CLIENT_TIMEOUT_MS } from "@/AppCore/FaceVerificationTimeouts";
 import {
   clearRegistrationDraft,
   readRegistrationDraft,
@@ -50,6 +51,17 @@ import {
 import { supabase } from "@/AppCore/SupabaseClient";
 import { shouldGateRegistration } from "@/AppCore/LegalAcceptance";
 import { legalPageRoute } from "@/AppCore/LegalSettings";
+import * as ExpoLinking from "expo-linking";
+import {
+  discardSessionAfterSignup,
+  isCompleteSignupOtp,
+  normalizeSignupOtp,
+  readConfirmedRegistrationSession,
+  sendRegistrationVerificationEmail,
+  SIGNUP_OTP_MAX_LEN,
+  signOutAfterRegistration,
+  verifyRegistrationEmailOtp,
+} from "@/AppCore/RegistrationAuth";
 
 // Imports & constants: React, navigation, storage, RN components and shared constants
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get("window");
@@ -259,137 +271,6 @@ async function openEmailApp() {
   }
 }
 
-type AuthLikeError = {
-  message?: string;
-  status?: number;
-  code?: string;
-  name?: string;
-};
-
-function extractAuthErrorFields(raw: unknown): AuthLikeError {
-  if (!raw || typeof raw !== "object") {
-    return { message: String(raw ?? "") };
-  }
-  const err = raw as Record<string, unknown>;
-  return {
-    message: typeof err.message === "string" ? err.message : undefined,
-    status: typeof err.status === "number" ? err.status : undefined,
-    code: typeof err.code === "string" ? err.code : undefined,
-    name: typeof err.name === "string" ? err.name : undefined,
-  };
-}
-
-function mapVerificationEmailSendError(raw: unknown): string {
-  const err = extractAuthErrorFields(raw);
-  const msg = (err.message ?? "").toLowerCase();
-  const code = (err.code ?? "").toLowerCase();
-
-  if (
-    err.status === 429 ||
-    code === "over_email_send_rate_limit" ||
-    code.includes("rate") ||
-    msg.includes("rate limit") ||
-    msg.includes("too many requests") ||
-    msg.includes("email rate limit")
-  ) {
-    return "Too many verification emails were sent. Please wait a few minutes, then tap Resend.";
-  }
-
-  if (
-    code === "email_address_invalid" ||
-    code === "invalid_email" ||
-    msg.includes("invalid email") ||
-    msg.includes("unable to validate email")
-  ) {
-    return "That email address doesn't look valid. Check the spelling and try again.";
-  }
-
-  if (
-    code === "user_already_registered" ||
-    code === "email_exists" ||
-    msg.includes("already registered") ||
-    msg.includes("already been registered") ||
-    msg.includes("user already registered")
-  ) {
-    return "This email is already registered. Try logging in instead.";
-  }
-
-  if (code === "weak_password" || msg.includes("password should be at least")) {
-    return "Your MPIN couldn't be accepted for signup. Go back and set your MPIN again.";
-  }
-
-  if (code === "signup_disabled" || msg.includes("signups not allowed")) {
-    return "New sign-ups are temporarily disabled. Please try again later.";
-  }
-
-  if (err.status === 500 || err.status === 502 || err.status === 503) {
-    return "Our email service is temporarily unavailable. Please try again in a few minutes.";
-  }
-
-  if (err.status === 403) {
-    return "Verification email couldn't be sent due to a permission issue. Contact support if this continues.";
-  }
-
-  if (err.status === 422) {
-    return err.message
-      ? `Couldn't send verification email: ${err.message}`
-      : "The email request was rejected. Check your email address and try again.";
-  }
-
-  if (msg.includes("network") || msg.includes("fetch") || msg.includes("failed to fetch")) {
-    return "Couldn't reach the server. Check your internet connection and try again.";
-  }
-
-  if (msg.includes("smtp") || msg.includes("mail")) {
-    return err.message
-      ? `Email delivery failed: ${err.message}`
-      : "Email delivery failed. Please try again shortly.";
-  }
-
-  if (__DEV__ && err.message) {
-    const details = [err.code, err.status ? String(err.status) : ""].filter(Boolean).join(" · ");
-    return details
-      ? `Couldn't send verification email (${details}): ${err.message}`
-      : `Couldn't send verification email: ${err.message}`;
-  }
-
-  if (err.message) {
-    return `Couldn't send verification email: ${err.message}`;
-  }
-
-  return "Couldn't send the verification email. Check your connection and try again.";
-}
-
-/* ---------- Supabase helpers (prep only) ---------- */
-// Sends a verification email. Handles both new users and existing unverified users.
-async function sendVerificationEmail(email: string, pin: string) {
-  try {
-    // First, try to sign up (creates user if doesn't exist)
-    const { data, error } = await supabase.auth.signUp({
-      email,
-      password: pin, // Use the 6-digit PIN as the password
-    });
-
-    // Check if user already exists (identities array is empty for existing users)
-    if (data?.user && data.user.identities?.length === 0) {
-      // User exists - try to resend confirmation email
-      if (__DEV__) {
-        console.log("User exists, attempting to resend confirmation...");
-      }
-      const resendResult = await supabase.auth.resend({
-        type: "signup",
-        email,
-      });
-      return { data: resendResult.data, error: resendResult.error };
-    }
-
-    return { data, error };
-  } catch (err) {
-    return { data: null, error: err };
-  }
-}
-
-// Get the current authenticated user (if any)
 async function getCurrentUser() {
   try {
     const res = await supabase.auth.getUser();
@@ -399,38 +280,8 @@ async function getCurrentUser() {
   }
 }
 
-// Check whether the current user's email is confirmed
-// Prefer an existing session; otherwise sign in once confirmation is expected.
-async function isEmailConfirmed(email: string, pin: string) {
-  try {
-    const normalizedEmail = email.trim().toLowerCase();
-    const { user: sessionUser } = await getCurrentUser();
-    if (
-      sessionUser?.email_confirmed_at &&
-      sessionUser.email?.toLowerCase() === normalizedEmail
-    ) {
-      return { confirmed: true, user: sessionUser, error: null };
-    }
-
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email,
-      password: pin,
-    });
-    
-    if (error) {
-      // "Email not confirmed" means user exists but hasn't verified
-      if (error.message.includes("Email not confirmed")) {
-        return { confirmed: false, user: null, error: null };
-      }
-      // Other errors
-      return { confirmed: false, user: null, error };
-    }
-    
-    // Success - email is confirmed and session is created
-    return { confirmed: true, user: data.user, error: null };
-  } catch (err) {
-    return { confirmed: false, user: null, error: err };
-  }
+function registrationEmailRedirectTo() {
+  return ExpoLinking.createURL("auth-callback");
 }
 
 // Insert a profile row into public.users linked to auth.users via user_id.
@@ -601,6 +452,9 @@ function mapFinalizeRegistrationError(raw: unknown): string {
   if (lower.includes("invalid registration attempt")) {
     return "Registration session expired. Please restart registration.";
   }
+  if (lower.includes("email is not confirmed")) {
+    return "Please enter the verification code from your email first.";
+  }
   if (lower.includes("unauthorized")) {
     return "Unable to verify your session. Please try again.";
   }
@@ -642,6 +496,9 @@ async function checkEmailExists(email: string) {
 // Register: multi-step registration root component controlling the whole flow
 export default function Register() {
   const router = useRouter();
+  const pathname = usePathname();
+  const pathnameRef = useRef(pathname);
+  pathnameRef.current = pathname;
 
   // step: 0=register,1=additional-info,2=mobile,3=id-upload,4=facial-verify,5=mpin,6=re-mpin,7=verify-email,8=success
   const [step, setStep] = useState<number>(0);
@@ -700,13 +557,18 @@ export default function Register() {
     void loadBarangays();
   }, [loadBarangays]);
 
+  const legalRedirectedRef = useRef(false);
+
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       const gated = await shouldGateRegistration();
       if (cancelled) return;
       if (gated) {
-        router.replace(legalPageRoute("terms-and-conditions"));
+        if (legalRedirectedRef.current) return;
+        if (pathnameRef.current.includes("/phase1/legal")) return;
+        legalRedirectedRef.current = true;
+        router.replace("/phase1/legal/terms-and-conditions");
         return;
       }
       setLegalAllowed(true);
@@ -730,6 +592,7 @@ export default function Register() {
   const [cameraReady, setCameraReady] = useState(false);
   const [camPermission, requestCamPermission] = useCameraPermissions();
   const cameraRef = useRef<React.ComponentRef<typeof CameraView> | null>(null);
+  const facialWarmupStartedRef = useRef(false);
 
   const [emailExistsError, setEmailExistsError] = useState("");
   const [voterRegistryError, setVoterRegistryError] = useState("");
@@ -1004,6 +867,10 @@ export default function Register() {
   const [didAttemptInitialVerificationEmail, setDidAttemptInitialVerificationEmail] = useState(false);
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileError, setProfileError] = useState("");
+  const [emailOtp, setEmailOtp] = useState("");
+  const [otpVerifying, setOtpVerifying] = useState(false);
+  const ignoreSignupSessionRef = useRef(false);
+  const otpVerifyInFlightRef = useRef(false);
 
   const isEmailVerifyStep = step === 7;
 
@@ -1012,7 +879,7 @@ export default function Register() {
     if (emailSendError) return "send_failed" as const;
     if (profileSaving) return "saving" as const;
     if (emailVerified) return "verified" as const;
-    if (emailChecking) return "checking" as const;
+    if (emailChecking || otpVerifying) return "checking" as const;
     if (didAttemptInitialVerificationEmail) return "waiting" as const;
     return "sending" as const;
   }, [
@@ -1021,6 +888,7 @@ export default function Register() {
     profileSaving,
     emailVerified,
     emailChecking,
+    otpVerifying,
     didAttemptInitialVerificationEmail,
   ]);
 
@@ -1065,37 +933,30 @@ export default function Register() {
     };
 
     const checkVerified = async () => {
-      if (!active || profileFinalizeInFlightRef.current) return;
+      if (!active || profileFinalizeInFlightRef.current || ignoreSignupSessionRef.current) {
+        return;
+      }
       setEmailChecking(true);
-      const res = await isEmailConfirmed(email.trim(), mpin || pin);
+      const res = await readConfirmedRegistrationSession(email.trim());
       if (!active) return;
-      if (res.error) {
-        setEmailVerifyError("Unable to check verification yet.");
-        setEmailVerified(false);
-      } else {
-        setEmailVerifyError("");
-        setEmailVerified(res.confirmed);
-
-        if (res.confirmed) {
-          await finalizeIfConfirmed();
-          return;
-        }
+      setEmailVerifyError("");
+      setEmailVerified(res.confirmed);
+      if (res.confirmed) {
+        await finalizeIfConfirmed();
+        return;
       }
       setEmailChecking(false);
     };
 
     const { data: authListener } = supabase.auth.onAuthStateChange(
       (event, session) => {
-        if (!active || profileFinalizeInFlightRef.current) return;
+        if (!active || profileFinalizeInFlightRef.current || ignoreSignupSessionRef.current) {
+          return;
+        }
         const confirmed =
           !!session?.user?.email_confirmed_at &&
           session.user.email?.toLowerCase() === email.trim().toLowerCase();
-        if (
-          confirmed &&
-          (event === "SIGNED_IN" ||
-            event === "USER_UPDATED" ||
-            event === "TOKEN_REFRESHED")
-        ) {
+        if (confirmed && (event === "SIGNED_IN" || event === "USER_UPDATED")) {
           setEmailVerified(true);
           setEmailVerifyError("");
           void finalizeIfConfirmed();
@@ -1105,14 +966,12 @@ export default function Register() {
 
     runEmailVerificationCheckRef.current = checkVerified;
     void checkVerified();
-    const intervalId = setInterval(checkVerified, 12_000);
     return () => {
       active = false;
       runEmailVerificationCheckRef.current = null;
-      clearInterval(intervalId);
       authListener.subscription.unsubscribe();
     };
-  }, [isEmailVerifyStep]);
+  }, [isEmailVerifyStep, email]);
 
   const emailResendOnCooldown = useMemo(() => {
     if (!emailSentAt) return false;
@@ -1202,6 +1061,23 @@ export default function Register() {
   };
 
 
+  const prewarmFacialVerifier = useCallback(async () => {
+    if (facialWarmupStartedRef.current) return;
+    if (!registrationAttemptToken || !email.trim()) return;
+    facialWarmupStartedRef.current = true;
+    try {
+      await supabase.functions.invoke("facial-verification", {
+        body: {
+          warmup: true,
+          email: email.trim().toLowerCase(),
+          registrationAttemptToken,
+        },
+      });
+    } catch {
+      facialWarmupStartedRef.current = false;
+    }
+  }, [email, registrationAttemptToken]);
+
   const verifyIdAndContinue = async () => {
     setAttempted(true);
     if (!idImageBase64 || !registrationAttemptToken || !email.trim()) {
@@ -1260,6 +1136,7 @@ export default function Register() {
       setCameraReady(false);
       setLivenessPhase("idle");
       setStep(4);
+      void prewarmFacialVerifier();
     } catch (e) {
       setIdVerifyError(e instanceof Error ? e.message : "Something went wrong.");
     } finally {
@@ -1318,6 +1195,11 @@ export default function Register() {
     },
     [],
   );
+
+  useEffect(() => {
+    if (step !== 4) return;
+    void prewarmFacialVerifier();
+  }, [prewarmFacialVerifier, step]);
 
   const runFacialVerification = async () => {
     if (!idImageBase64 || !registrationAttemptToken || !email.trim()) {
@@ -1388,7 +1270,7 @@ export default function Register() {
           livenessFramesBase64: frames,
           poseLabels,
         }),
-        150_000,
+        FACE_VERIFY_CLIENT_TIMEOUT_MS,
         "Verification timed out. Ensure Docker is running, wait a moment, and try again.",
       );
     } catch (e) {
@@ -1432,6 +1314,7 @@ export default function Register() {
 
     setConfirmError("");
     setEmailSendError("");
+    setEmailOtp("");
     setDidAttemptInitialVerificationEmail(false);
     setStep(7);
   };
@@ -1452,31 +1335,61 @@ export default function Register() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, confirmPin]);
 
-  // Send verification email after MPIN confirmation
+  // Send verification email after MPIN confirmation. Never keep the signup session.
   const onFinish = async () => {
     if (isSendingVerificationEmail) return false;
 
     setIsSendingVerificationEmail(true);
     setEmailSendError("");
+    ignoreSignupSessionRef.current = true;
 
-    // Only send verification email - profile will be saved AFTER verification
-    const emailSend = await sendVerificationEmail(email.trim(), mpin || pin);
-    if (emailSend.error) {
-      setEmailSendError(mapVerificationEmailSendError(emailSend.error));
-      if (__DEV__) {
-        console.log("Email send error:", JSON.stringify(emailSend.error));
-      }
+    const emailSend = await sendRegistrationVerificationEmail({
+      email: email.trim(),
+      pin: mpin || pin,
+      attemptToken: registrationAttemptToken,
+      emailRedirectTo: registrationEmailRedirectTo(),
+    });
+    await discardSessionAfterSignup();
+    ignoreSignupSessionRef.current = false;
+
+    if (!emailSend.ok) {
+      setEmailSendError(emailSend.message);
       setIsSendingVerificationEmail(false);
       return false;
     }
 
-    if (__DEV__) {
-      console.log("Verification email sent:", JSON.stringify(emailSend.data));
-    }
     setEmailSentAt(Date.now());
     setEmailSeconds(EMAIL_RESEND_COOLDOWN_SEC);
+    setEmailOtp("");
     setIsSendingVerificationEmail(false);
     return true;
+  };
+
+  const onVerifyEmailOtp = async (rawOtp: string) => {
+    const token = normalizeSignupOtp(rawOtp);
+    if (!isCompleteSignupOtp(token) || otpVerifyInFlightRef.current) return;
+    if (profileFinalizeInFlightRef.current || profileSaving) return;
+
+    otpVerifyInFlightRef.current = true;
+    setOtpVerifying(true);
+    setEmailVerifyError("");
+
+    const result = await verifyRegistrationEmailOtp({
+      email: email.trim(),
+      otp: token,
+    });
+    if (!result.ok) {
+      setEmailVerifyError(result.message);
+      setEmailOtp("");
+      setOtpVerifying(false);
+      otpVerifyInFlightRef.current = false;
+      return;
+    }
+
+    setEmailVerified(true);
+    setOtpVerifying(false);
+    otpVerifyInFlightRef.current = false;
+    void runEmailVerificationCheckRef.current?.();
   };
 
   // Save profile AFTER email is verified
@@ -1576,18 +1489,8 @@ export default function Register() {
       }
     }
 
-    // Cache user data for instant loading on Home/Account screens
-    await AsyncStorage.setItem("apoyo_user_cache", JSON.stringify({
-      first_name: firstName.trim(),
-      contact_number: fullMobile,
-      email: profileEmail,
-      barangay: barangayName,
-      address: composedAddress,
-    }));
+    await signOutAfterRegistration();
 
-    if (__DEV__) {
-      console.log("Profile saved successfully:", JSON.stringify(profileRes.data));
-    }
     setProfileSaving(false);
     return true;
   };
@@ -1624,9 +1527,13 @@ export default function Register() {
     setIsSendingVerificationEmail(false);
     setEmailSentAt(null);
     setEmailSeconds(EMAIL_RESEND_COOLDOWN_SEC);
+    setEmailOtp("");
+    setOtpVerifying(false);
+    otpVerifyInFlightRef.current = false;
     setProfileSaving(false);
     setProfileError("");
     profileFinalizeInFlightRef.current = false;
+    void discardSessionAfterSignup();
   }, []);
 
   const restartRegistration = useCallback(async () => {
@@ -1676,6 +1583,9 @@ export default function Register() {
         setAttempted(false);
         setConfirmPin("");
         setConfirmError("");
+        setEmailOtp("");
+        setEmailVerifyError("");
+        void discardSessionAfterSignup();
         setStep(6);
         break;
       default:
@@ -2307,7 +2217,7 @@ export default function Register() {
               <View style={styles.emailVerifyTop}>
                 <Text style={styles.titleLarge}>Verify your email</Text>
                 <Text style={styles.subtitle}>
-                  We sent a confirmation link to{" "}
+                  We sent a confirmation code to{" "}
                   <Text style={styles.bold}>{email.trim() || "your email"}</Text>
                 </Text>
 
@@ -2332,11 +2242,11 @@ export default function Register() {
                     }
                   />
                   <EmailVerifyStepRow
-                    label="Open email and confirm"
+                    label="Enter the code from your email"
                     detail={
-                      emailVerifyUiPhase === "checking"
-                        ? "Checking whether you confirmed…"
-                        : "Tap the link in the email, then return here"
+                      otpVerifying || emailVerifyUiPhase === "checking"
+                        ? "Confirming your email…"
+                        : "Type the 6-digit code, or open the email link on this device"
                     }
                     status={
                       emailVerified || emailVerifyUiPhase === "verified" || emailVerifyUiPhase === "saving"
@@ -2355,7 +2265,7 @@ export default function Register() {
                         ? "Saving your profile…"
                         : emailVerified
                           ? "Almost done"
-                          : "Runs automatically after confirmation"
+                          : "Runs automatically after you confirm"
                     }
                     status={
                       profileSaving
@@ -2366,6 +2276,35 @@ export default function Register() {
                     }
                   />
                 </View>
+
+                {didAttemptInitialVerificationEmail && !emailSendError && !emailVerified ? (
+                  <View style={styles.otpWrap}>
+                    <Text style={styles.otpLabel}>Confirmation code</Text>
+                    <View style={styles.inputWrap}>
+                      <TextInput
+                        value={emailOtp}
+                        onChangeText={(value) => {
+                          const next = normalizeSignupOtp(value);
+                          setEmailOtp(next);
+                          if (emailVerifyError) setEmailVerifyError("");
+                          if (isCompleteSignupOtp(next)) {
+                            void onVerifyEmailOtp(next);
+                          }
+                        }}
+                        keyboardType="number-pad"
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        autoComplete="one-time-code"
+                        textContentType="oneTimeCode"
+                        maxLength={SIGNUP_OTP_MAX_LEN}
+                        placeholder="6-digit code"
+                        placeholderTextColor="#B3B3B3"
+                        style={styles.otpInput}
+                        editable={!otpVerifying && !profileSaving}
+                      />
+                    </View>
+                  </View>
+                ) : null}
 
                 {emailSendError ? <Text style={styles.error}>{emailSendError}</Text> : null}
                 {emailVerifyError ? <Text style={styles.error}>{emailVerifyError}</Text> : null}
@@ -2393,21 +2332,26 @@ export default function Register() {
                   <TouchableOpacity
                     activeOpacity={0.85}
                     onPress={async () => {
+                      ignoreSignupSessionRef.current = true;
                       setIsSendingVerificationEmail(true);
                       setEmailSendError("");
-                      const resend = await sendVerificationEmail(email.trim(), mpin || pin);
+                      const resend = await sendRegistrationVerificationEmail({
+                        email: email.trim(),
+                        pin: mpin || pin,
+                        attemptToken: registrationAttemptToken,
+                        emailRedirectTo: registrationEmailRedirectTo(),
+                      });
+                      await discardSessionAfterSignup();
+                      ignoreSignupSessionRef.current = false;
                       setIsSendingVerificationEmail(false);
-                      if (resend.error) {
-                        setEmailSendError(mapVerificationEmailSendError(resend.error));
-                        if (__DEV__) {
-                          console.log("Email resend error:", JSON.stringify(resend.error));
-                        }
+                      if (!resend.ok) {
+                        setEmailSendError(resend.message);
                         return;
                       }
                       setEmailSendError("");
+                      setEmailOtp("");
                       setEmailSentAt(Date.now());
                       setEmailSeconds(EMAIL_RESEND_COOLDOWN_SEC);
-                      void runEmailVerificationCheckRef.current?.();
                     }}
                     style={styles.resendBtn}
                   >
@@ -2418,8 +2362,8 @@ export default function Register() {
 
                 <View style={styles.emailVerifyInfoBox}>
                   <Text style={styles.infoText}>
-                    After you tap the link in your email, return to this app. We’ll detect confirmation
-                    automatically — you don’t need to press anything else.
+                    Enter the code from the email to confirm this address. You will not be signed in until
+                    the code is accepted.
                   </Text>
                 </View>
 
@@ -2536,7 +2480,7 @@ export default function Register() {
 
                 <View style={[styles.infoBox, styles.idInfoBox]}>
                   <Text style={styles.infoText}>
-                    We match your first and last name, plus birth date or voter ID when visible. Minor spelling differences are OK.
+                    We match the information in your valid ID to our records.
                   </Text>
                 </View>
 
@@ -3706,6 +3650,24 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 8,
     gap: 4,
+  },
+  otpWrap: {
+    marginTop: 18,
+  },
+  otpLabel: {
+    fontFamily: FONT,
+    fontWeight: "700",
+    color: DARK,
+    fontSize: 15,
+    marginBottom: 8,
+  },
+  otpInput: {
+    fontSize: 22,
+    letterSpacing: 6,
+    color: DARK,
+    fontFamily: FONT,
+    fontWeight: "700",
+    paddingVertical: 0,
   },
   emailVerifyStepRow: {
     flexDirection: "row",

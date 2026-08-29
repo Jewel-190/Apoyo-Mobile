@@ -206,6 +206,13 @@ export function normalizeServiceStatus(raw?: string | null): ServiceStatus {
   return "Pending";
 }
 
+/** Applicants may only delete their own unfinished drafts — not submitted requests. */
+export function applicantCanDeleteRequest(
+  status: ServiceStatus | string | null | undefined
+): boolean {
+  return normalizeServiceStatus(status) === "Draft";
+}
+
 export function statusDisplayLabel(raw?: string | null): string {
   return normalizeServiceStatus(raw);
 }

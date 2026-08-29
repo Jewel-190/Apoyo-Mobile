@@ -1,12 +1,11 @@
 import { Ionicons } from "@expo/vector-icons";
-import { Stack, useRouter } from "expo-router";
+import { useRouter } from "expo-router";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Platform,
   Pressable,
   ScrollView,
-  StatusBar,
   StyleSheet,
   Text,
   useWindowDimensions,
@@ -163,16 +162,6 @@ export function LegalReadOnlyModal({ slug }: { slug: LegalPageSlug }) {
 
   return (
     <View style={styles.root}>
-      <Stack.Screen
-        options={{
-          presentation: "transparentModal",
-          animation: "fade",
-          headerShown: false,
-          contentStyle: { backgroundColor: "transparent" },
-        }}
-      />
-      <StatusBar barStyle="light-content" />
-
       <View
         style={[
           styles.overlay,

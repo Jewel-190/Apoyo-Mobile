@@ -4,7 +4,7 @@ import { Image as ExpoImage } from "expo-image";
 import * as ImagePicker from "expo-image-picker";
 import { useFocusEffect } from "@react-navigation/native";
 import { useRouter } from "expo-router";
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -19,7 +19,9 @@ import {
   View,
 } from "react-native";
 import { NAV_TOTAL_HEIGHT } from "../../components/BottomNavBar";
+import { mergeCachedUserProfile } from "@/AppCore/ApplicantProfileContact";
 import { ROUTES } from "@/AppCore/AppRoutePaths";
+import Constants from "expo-constants";
 import { signOutLocalSession } from "@/AppCore/AppLogout";
 import { formatRegisteredVoterId } from "@/AppCore/RegisteredVoterId";
 import { supabase } from "@/AppCore/SupabaseClient";
@@ -41,6 +43,10 @@ const MUTED = ACCOUNT_MUTED;
 const FONT = ACCOUNT_FONT;
 
 const CACHE_USER = "apoyo_user_cache";
+const APP_VERSION =
+  Constants.expoConfig?.version ??
+  Constants.nativeAppVersion ??
+  "1.0.0";
 
 function formatUserFullName(row: {
   first_name?: string | null;
@@ -95,6 +101,65 @@ export default function Account() {
     }, 1000);
   };
 
+  const applyProfileRow = useCallback((row: {
+    first_name?: string | null;
+    middle_name?: string | null;
+    last_name?: string | null;
+    suffix?: string | null;
+    contact_number?: string | null;
+    email?: string | null;
+    avatar_url?: string | null;
+    voter_id_number?: string | null;
+  }) => {
+    const fullName = formatUserFullName(row);
+    if (fullName) setName(fullName);
+    else if (row.first_name) setName(row.first_name);
+    if (row.contact_number) setPhone(row.contact_number);
+    if (row.email) setEmail(row.email);
+    setVin(formatVin(row.voter_id_number));
+    if (row.avatar_url) {
+      setAvatarUrl(row.avatar_url);
+      ExpoImage.prefetch(row.avatar_url);
+    } else if (row.avatar_url === null) {
+      setAvatarUrl(null);
+    }
+  }, []);
+
+  const loadProfile = useCallback(async () => {
+    const cached = await AsyncStorage.getItem(CACHE_USER);
+    if (cached) {
+      try {
+        applyProfileRow(JSON.parse(cached));
+      } catch {
+        // Ignore a corrupt cache and fetch from the server.
+      }
+    }
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) return;
+
+    const { data } = await supabase
+      .from("users")
+      .select(
+        "first_name, middle_name, last_name, suffix, contact_number, email, avatar_url, voter_id_number, barangay"
+      )
+      .eq("id", user.id)
+      .single();
+
+    if (!data) return;
+
+    applyProfileRow(data);
+    await mergeCachedUserProfile(data);
+  }, [applyProfileRow]);
+
+  useFocusEffect(
+    useCallback(() => {
+      void loadProfile();
+    }, [loadProfile])
+  );
+
   useFocusEffect(
     useCallback(() => {
       if (Platform.OS !== "android" || !showingSettings) return undefined;
@@ -105,59 +170,6 @@ export default function Account() {
       return () => sub.remove();
     }, [showingSettings])
   );
-
-  useEffect(() => {
-    (async () => {
-      // Load from cache first (instant)
-      const cached = await AsyncStorage.getItem(CACHE_USER);
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        const cachedName = formatUserFullName(parsed);
-        if (cachedName) setName(cachedName);
-        else if (parsed.first_name) setName(parsed.first_name);
-        if (parsed.contact_number) setPhone(parsed.contact_number);
-        if (parsed.email) setEmail(parsed.email);
-        const cachedVin = formatVin(parsed.voter_id_number);
-        if (cachedVin) setVin(cachedVin);
-        if (parsed.avatar_url) {
-          setAvatarUrl(parsed.avatar_url);
-          // Prefetch image into memory for instant display
-          ExpoImage.prefetch(parsed.avatar_url);
-        }
-      }
-
-      // Fetch fresh data from Supabase in background
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) {
-        const { data } = await supabase
-          .from("users")
-          .select("first_name, middle_name, last_name, suffix, contact_number, email, avatar_url, voter_id_number, barangay")
-          .eq("id", user.id)
-          .single();
-        
-        if (data) {
-          const fullName = formatUserFullName(data);
-          if (fullName) setName(fullName);
-          if (data.contact_number) setPhone(data.contact_number);
-          if (data.email) setEmail(data.email);
-          setVin(formatVin(data.voter_id_number));
-          if (data.avatar_url) {
-            setAvatarUrl(data.avatar_url);
-            // Prefetch fresh avatar URL
-            ExpoImage.prefetch(data.avatar_url);
-          } else {
-            setAvatarUrl(null);
-          }
-          const cachedRaw = await AsyncStorage.getItem(CACHE_USER);
-          const previous = cachedRaw ? JSON.parse(cachedRaw) : {};
-          await AsyncStorage.setItem(
-            CACHE_USER,
-            JSON.stringify({ ...previous, ...data })
-          );
-        }
-      }
-    })();
-  }, []);
 
   const handleAvatarUpload = async () => {
     setShowAvatarModal(false);
@@ -216,14 +228,7 @@ export default function Account() {
       if (updateError) throw updateError;
 
       setAvatarUrl(newAvatarUrl);
-
-      // Update cache
-      const cached = await AsyncStorage.getItem(CACHE_USER);
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        parsed.avatar_url = newAvatarUrl;
-        await AsyncStorage.setItem(CACHE_USER, JSON.stringify(parsed));
-      }
+      await mergeCachedUserProfile({ avatar_url: newAvatarUrl });
     } catch (err: any) {
       console.log("Avatar upload error:", err);
       Alert.alert("Error", err.message || "Failed to upload avatar");
@@ -278,13 +283,6 @@ export default function Account() {
   ];
 
   const settingsItems: MenuItem[] = [
-    {
-      icon: "notifications",
-      iconColor: "#E8A817",
-      iconBg: "#FFF3D0",
-      label: "Notification Settings",
-      onPress: () => router.push(ROUTES.notificationSettings),
-    },
     {
       icon: "lock-closed",
       iconColor: "#4A5252",
@@ -370,6 +368,8 @@ export default function Account() {
             <AccountMenuCard key={item.label} {...item} />
           ))}
         </View>
+
+        <Text style={styles.versionText}>Version {APP_VERSION}</Text>
       </ScrollView>
 
       <AccountConfirmModal
@@ -486,5 +486,14 @@ const styles = StyleSheet.create({
   menuWrap: {
     paddingHorizontal: 16,
     paddingTop: 10,
+  },
+  versionText: {
+    marginTop: 28,
+    textAlign: "center",
+    fontFamily: FONT,
+    fontWeight: "400",
+    fontSize: 14,
+    color: MUTED,
+    opacity: 0.7,
   },
 });

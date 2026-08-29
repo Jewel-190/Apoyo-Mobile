@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "APOYOCAPSTONE",
-    "slug": "APOYOCAPSTONE",
+    "name": "Apoyo",
+    "slug": "apoyo",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/apoyologo.png",
-    "scheme": "apoyocapstone",
+    "icon": "./assets/images/androidicon.png",
+    "scheme": "apoyo",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
@@ -13,11 +13,15 @@
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/images/apoyologo.png",
-        "backgroundColor": "#E6F4FE"
+        "foregroundImage": "./assets/images/androidicon.png",
+        "backgroundColor": "#FFFFFF"
       },
       "edgeToEdgeEnabled": false,
-      "package": "com.anonymous.APOYOCAPSTONE"
+      "package": "com.anonymous.APOYOCAPSTONE",
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ]
     },
     "web": {
       "output": "static",
@@ -44,19 +48,21 @@
         {
           "cameraPermission": "Allow $(PRODUCT_NAME) to use the camera to verify your identity against your ID."
         }
-      ]
+      ],
+      "expo-secure-store"
     ],
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
     },
     "extra": {
-      "supabaseUrl": "https://yrlkynetbegvwmqaiuvr.supabase.co",
-      "supabaseAnonKey": "sb_publishable_opaD6jDXjj2pUFRv38MXuQ_V9_n0qd0",
+      "supabaseUrl": "https://api.apoyo-dasma.online",
+      "supabaseAnonKey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRXP1A7WOeoJeXxjNni43kdQwgnWNReilDMblYTn_I0",
       "router": {},
       "eas": {
-        "projectId": "e32695cb-f3be-4258-bb91-fa0462de7519"
+        "projectId": "1698e76f-e928-4425-8f5a-a8218821c716"
       }
-    }
+    },
+    "owner": "apoyocapstones-team"
   }
 }

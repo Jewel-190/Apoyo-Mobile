@@ -20,6 +20,7 @@ import BottomNavBar, {
   tabMaskColor,
 } from "@/components/BottomNavBar";
 import { AppBackGate } from "@/components/AppBackGate";
+import { AuthEmailLinkGate } from "@/components/AuthEmailLinkGate";
 import { PinRecoveryGate } from "@/components/PinRecoveryGate";
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
@@ -43,7 +44,12 @@ export default function RootLayout() {
       await hydrateCatalogRuntimeFromCache();
       if (await readPinRecoveryPending()) return;
       const { data } = await supabase.auth.getSession();
-      const uid = data.session?.user?.id;
+      const user = data.session?.user;
+      if (user && !user.email_confirmed_at) {
+        await supabase.auth.signOut({ scope: "local" });
+        return;
+      }
+      const uid = user?.id;
       if (uid) {
         void syncStatusApplicationsWithServer(uid).catch(() => {});
       }
@@ -77,6 +83,7 @@ export default function RootLayout() {
   return (
     <NotificationsProvider>
       <PinRecoveryGate />
+      <AuthEmailLinkGate />
       <AppBackGate />
       <RootChrome />
     </NotificationsProvider>
@@ -90,6 +97,47 @@ const TAB_SCREEN_OPTIONS = {
   gestureEnabled: false,
 };
 
+const LEGAL_MODAL_OPTIONS = {
+  presentation: "transparentModal" as const,
+  animation: "none" as const,
+  headerShown: false,
+  contentStyle: { backgroundColor: "transparent" },
+  freezeOnBlur: true,
+};
+
+function AppStack() {
+  return (
+    <Stack
+      screenOptions={{ headerShown: false }}
+      initialRouteName="index"
+    >
+      <Stack.Screen name="index" />
+      <Stack.Screen name="Home/Home" options={TAB_SCREEN_OPTIONS} />
+      <Stack.Screen name="Status/Status" options={TAB_SCREEN_OPTIONS} />
+      <Stack.Screen name="Notification/Notifications" options={TAB_SCREEN_OPTIONS} />
+      <Stack.Screen name="Account/Account" options={TAB_SCREEN_OPTIONS} />
+      <Stack.Screen name="phase1/legal/[slug]" options={LEGAL_MODAL_OPTIONS} />
+      <Stack.Screen name="Account/TermsAndConditions" options={LEGAL_MODAL_OPTIONS} />
+      <Stack.Screen name="Account/UserAcceptance" options={LEGAL_MODAL_OPTIONS} />
+      <Stack.Screen
+        name="phase1/register"
+        options={{
+          animation: "fade",
+          animationDuration: 220,
+        }}
+      />
+      <Stack.Screen
+        name="phase1/forgot-pin"
+        options={{
+          animation: "fade",
+          animationDuration: 220,
+          gestureEnabled: false,
+        }}
+      />
+    </Stack>
+  );
+}
+
 function RootChrome() {
   const pathname = usePathname();
   const showTabBar = isMainTabPath(pathname);
@@ -97,61 +145,7 @@ function RootChrome() {
   return (
     <View style={styles.root}>
       <StatusBar style="light" backgroundColor="#008E8A" translucent={false} />
-      <Stack
-        screenOptions={{ headerShown: false }}
-        initialRouteName="index"
-      >
-        <Stack.Screen name="index" />
-        <Stack.Screen name="Home/Home" options={TAB_SCREEN_OPTIONS} />
-        <Stack.Screen name="Status/Status" options={TAB_SCREEN_OPTIONS} />
-        <Stack.Screen name="Notification/Notifications" options={TAB_SCREEN_OPTIONS} />
-        <Stack.Screen name="Account/Account" options={TAB_SCREEN_OPTIONS} />
-        <Stack.Screen
-          name="phase1/legal/[slug]"
-          options={{
-            presentation: "transparentModal",
-            animation: "fade",
-            animationDuration: 220,
-            headerShown: false,
-            contentStyle: { backgroundColor: "transparent" },
-          }}
-        />
-        <Stack.Screen
-          name="Account/TermsAndConditions"
-          options={{
-            presentation: "transparentModal",
-            animation: "fade",
-            animationDuration: 220,
-            headerShown: false,
-            contentStyle: { backgroundColor: "transparent" },
-          }}
-        />
-        <Stack.Screen
-          name="Account/UserAcceptance"
-          options={{
-            presentation: "transparentModal",
-            animation: "fade",
-            animationDuration: 220,
-            headerShown: false,
-            contentStyle: { backgroundColor: "transparent" },
-          }}
-        />
-        <Stack.Screen
-          name="phase1/register"
-          options={{
-            animation: "fade",
-            animationDuration: 220,
-          }}
-        />
-        <Stack.Screen
-          name="phase1/forgot-pin"
-          options={{
-            animation: "fade",
-            animationDuration: 220,
-            gestureEnabled: false,
-          }}
-        />
-      </Stack>
+      <AppStack />
       {showTabBar ? <BottomNavBar maskColor={tabMaskColor(pathname)} /> : null}
     </View>
   );

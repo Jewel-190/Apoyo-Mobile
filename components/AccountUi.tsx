@@ -248,6 +248,8 @@ export function AccountSubpage({
   const body = scroll ? (
     <ScrollView
       showsVerticalScrollIndicator={false}
+      keyboardShouldPersistTaps="handled"
+      keyboardDismissMode="on-drag"
       contentContainerStyle={[styles.subpageScroll, contentContainerStyle]}
     >
       {children}

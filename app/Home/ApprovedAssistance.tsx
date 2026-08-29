@@ -42,6 +42,7 @@ import {
 import { requirementSlotsGroupedForService } from "@/AppCore/StatusCatalogBridge";
 import { useAssistanceCatalog } from "@/AppCore/UseAssistanceCatalog";
 import { supabase } from "@/AppCore/SupabaseClient";
+import { applicantRecordFromRequest, APPLICANT_SNAPSHOT_SELECT } from "@/AppCore/ApplicantSnapshot";
 import { markRequestNotificationsRead } from "@/AppCore/UserNotificationsQuery";
 import { RequestStatusTimelinePanel } from "@/components/RequestStatusTimelinePanel";
 import {
@@ -72,6 +73,15 @@ type RequestDetailsRow = {
   financial_request_type?: string | null;
   payload?: unknown;
   case_study_date?: string | null;
+  applicant_first_name?: string | null;
+  applicant_middle_name?: string | null;
+  applicant_last_name?: string | null;
+  applicant_suffix?: string | null;
+  applicant_sex?: string | null;
+  applicant_birth_date?: string | null;
+  applicant_email?: string | null;
+  applicant_contact_number?: string | null;
+  applicant_address?: string | null;
 };
 
 type ProfileRow = {
@@ -89,7 +99,7 @@ type ProfileRow = {
 type AuditStatusLogRow = RequestTimelineAuditRow;
 
 const ASSISTANCE_REQUEST_ROW_SELECT =
-  "id,status,request_code,user_id,service_id,service_name,assistance_name,category_slug,created_at,updated_at,submitted_at,additional_info,financial_request_type,payload,case_study_date";
+  `id,status,request_code,user_id,service_id,service_name,assistance_name,category_slug,created_at,updated_at,submitted_at,additional_info,financial_request_type,payload,case_study_date,${APPLICANT_SNAPSHOT_SELECT}`;
 
 function firstParam(v?: string | string[]) {
   if (Array.isArray(v)) return (v[0] || "").toString();
@@ -351,16 +361,23 @@ export default function ApprovedAssistance() {
       const row = (data as RequestDetailsRow | null) || null;
       setRequestRow(row);
 
-      if (row?.user_id) {
-        const { data: prof, error: profErr } = await supabase
-          .from("users")
-          .select(
-            "first_name,middle_name,last_name,suffix,contact_number,email,address,birth_date,sex"
-          )
-          .eq("id", row.user_id)
-          .maybeSingle();
-        if (!profErr && prof) {
-          setProfileRow(prof as ProfileRow);
+      if (row) {
+        const snapshot = applicantRecordFromRequest(row as Record<string, unknown>);
+        if (snapshot) {
+          setProfileRow(snapshot);
+        } else if (row.user_id) {
+          const { data: prof, error: profErr } = await supabase
+            .from("users")
+            .select(
+              "first_name,middle_name,last_name,suffix,contact_number,email,address,birth_date,sex"
+            )
+            .eq("id", row.user_id)
+            .maybeSingle();
+          if (!profErr && prof) {
+            setProfileRow(prof as ProfileRow);
+          } else {
+            setProfileRow(null);
+          }
         } else {
           setProfileRow(null);
         }

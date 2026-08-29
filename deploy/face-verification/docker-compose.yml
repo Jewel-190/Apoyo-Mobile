@@ -9,9 +9,12 @@
 #   # Open http://localhost:8000 → register → create "Verification" application → copy API key into .env COMPREFACE_API_KEY
 #   docker compose up -d --force-recreate apoyo-face-verifier
 #
-# Point Supabase secrets:
-#   FACE_VERIFY_SERVICE_URL=https://your-server:8090
-#   FACE_VERIFY_SERVICE_KEY=<same as .env>
+# Point Supabase edge secrets (ApoyoAdmin supabase/.env + config.toml):
+#   FACE_VERIFY_SERVICE_URL=http://face-verifier:8080
+#   FACE_VERIFY_SERVICE_KEY=<same as this .env>
+# Start local Supabase first so supabase_network_ApoyoAdmin exists, then:
+#   docker compose up -d
+# After `npx supabase stop` / `start`, re-run compose so the verifier re-joins the network.
 
 name: apoyo-face-verification
 
@@ -25,6 +28,12 @@ x-logging: &default-logging
 
 volumes:
   postgres-data:
+
+networks:
+  default:
+  supabase:
+    name: supabase_network_ApoyoAdmin
+    external: true
 
 services:
   compreface-postgres-db:
@@ -54,7 +63,7 @@ services:
       MAX_FILE_SIZE: ${max_file_size}
       MAX_REQUEST_SIZE: ${max_request_size}B
       CONNECTION_TIMEOUT: ${connection_timeout:-10000}
-      READ_TIMEOUT: ${read_timeout:-60000}
+      READ_TIMEOUT: ${read_timeout:-180000}
 
   compreface-admin:
     image: exadel/compreface-admin:1.2.0
@@ -80,7 +89,7 @@ services:
     environment:
       ML_PORT: 3000
       IMG_LENGTH_LIMIT: ${max_detect_size}
-      UWSGI_PROCESSES: ${uwsgi_processes:-2}
+      UWSGI_PROCESSES: ${uwsgi_processes:-1}
       UWSGI_THREADS: ${uwsgi_threads:-1}
 
   compreface-fe:
@@ -95,7 +104,7 @@ services:
       - compreface-core
     environment:
       CLIENT_MAX_BODY_SIZE: ${max_request_size}
-      PROXY_READ_TIMEOUT: ${read_timeout:-60000}ms
+      PROXY_READ_TIMEOUT: ${read_timeout:-180000}ms
       PROXY_CONNECT_TIMEOUT: ${connection_timeout:-10000}ms
 
   apoyo-face-verifier:
@@ -107,6 +116,11 @@ services:
     depends_on:
       - compreface-api
       - compreface-core
+    networks:
+      default:
+      supabase:
+        aliases:
+          - face-verifier
     environment:
       COMPREFACE_API_URL: ${COMPREFACE_API_URL:-http://compreface-api:8080}
       COMPREFACE_API_KEY: ${COMPREFACE_API_KEY}
@@ -118,5 +132,6 @@ services:
       BLINK_REQUIRED: ${BLINK_REQUIRED:-true}
       BLINK_MIN_EAR_DELTA: ${BLINK_MIN_EAR_DELTA:-0.015}
       POSE_MIN_YAW: ${POSE_MIN_YAW:-0.04}
-      VERIFY_TIMEOUT_SEC: ${VERIFY_TIMEOUT_SEC:-120}
+      VERIFY_TIMEOUT_SEC: ${VERIFY_TIMEOUT_SEC:-180}
       ID_VERIFY_TIMEOUT_SEC: ${ID_VERIFY_TIMEOUT_SEC:-90}
+      COMPREFACE_HTTP_TIMEOUT_SEC: ${COMPREFACE_HTTP_TIMEOUT_SEC:-180}

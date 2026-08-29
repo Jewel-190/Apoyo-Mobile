@@ -11,8 +11,7 @@
  *   1. `npx expo install expo-notifications expo-device`
  *   2. Implement `getExpoPushTokenAsync()` below (see the TODO) to request perms
  *      and fetch the Expo push token.
- *   3. Call `registerForPushNotificationsAsync()` after login and when the user
- *      enables push in NotificationSettings.
+ *   3. Call `registerForPushNotificationsAsync()` after login.
  */
 
 import { Platform } from "react-native";

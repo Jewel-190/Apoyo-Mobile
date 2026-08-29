@@ -21,7 +21,7 @@ export const STORAGE_KEYS = {
   /** Status screen list of submitted applications. */
   statusApplicationsV1: "apoyo_status_applications_v1",
 
-  /** Notification preferences (set in NotificationSettings). */
+  /** Notification preferences (defaults on; no in-app settings UI yet). */
   pushEnabled: "apoyo_notif_push_enabled",
   inAppEnabled: "apoyo_notif_inapp_enabled",
 

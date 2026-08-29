@@ -1,7 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import { CommonActions } from "@react-navigation/native";
-import { Stack, useLocalSearchParams, useNavigation, useRouter } from "expo-router";
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { useLocalSearchParams, useNavigation, useRouter } from "expo-router";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   NativeScrollEvent,
@@ -9,7 +9,6 @@ import {
   Platform,
   Pressable,
   ScrollView,
-  StatusBar,
   StyleSheet,
   Text,
   useWindowDimensions,
@@ -29,6 +28,7 @@ import {
   getLegalPageSections,
   legalContentFingerprint,
   legalPageHasContent,
+  peekLegalSettings,
   type LegalPageSlug,
   type LegalSection,
   type LegalSettingsValue,
@@ -71,16 +71,23 @@ export default function LegalDocumentScreen() {
     () => routePage?.slug ?? null
   );
   const page = getLegalPage(activeSlug);
+  const cachedLegal = peekLegalSettings();
 
-  const [settings, setSettings] = useState<LegalSettingsValue | null>(null);
-  const [fingerprint, setFingerprint] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [settings, setSettings] = useState<LegalSettingsValue | null>(
+    () => cachedLegal
+  );
+  const [fingerprint, setFingerprint] = useState(
+    () => (cachedLegal ? legalContentFingerprint(cachedLegal) : "")
+  );
+  const [loading, setLoading] = useState(() => !cachedLegal);
   const [error, setError] = useState("");
   const [agreed, setAgreed] = useState(false);
   const [reachedEnd, setReachedEnd] = useState(false);
   const [viewportH, setViewportH] = useState(0);
   const [contentH, setContentH] = useState(0);
   const [submitting, setSubmitting] = useState(false);
+  const viewportHRef = useRef(0);
+  const contentHRef = useRef(0);
 
   const pageIndex = page
     ? LEGAL_PAGES.findIndex((entry) => entry.slug === page.slug)
@@ -91,12 +98,18 @@ export default function LegalDocumentScreen() {
   const hasContent = legalPageHasContent(sections);
   const contentFits =
     viewportH > 0 && contentH > 0 && contentH <= viewportH + SCROLL_END_PAD;
-  const canCheck = hasContent && (reachedEnd || contentFits);
+  const canCheck = hasContent && !loading && !error && (reachedEnd || contentFits);
   const canContinue = acceptMode && agreed && canCheck && hasContent && !submitting;
+
+  const noteIfContentFits = useCallback((viewport: number, content: number) => {
+    if (viewport > 0 && content > 0 && content <= viewport + SCROLL_END_PAD) {
+      setReachedEnd(true);
+    }
+  }, []);
 
   const load = useCallback(async (force = false) => {
     if (!routePage) return;
-    setLoading(true);
+    if (force || !peekLegalSettings()) setLoading(true);
     setError("");
     try {
       const value = await fetchLegalSettings({ force });
@@ -116,10 +129,6 @@ export default function LegalDocumentScreen() {
   }, [load]);
 
   useEffect(() => {
-    router.prefetch("/phase1/register");
-  }, [router]);
-
-  useEffect(() => {
     if (routePage?.slug) setActiveSlug(routePage.slug);
   }, [routePage?.slug]);
 
@@ -128,6 +137,7 @@ export default function LegalDocumentScreen() {
     setAgreed(false);
     setReachedEnd(false);
     setContentH(0);
+    contentHRef.current = 0;
     if (!page || !fingerprint) return;
     void (async () => {
       const existing = await readLegalAcceptance();
@@ -135,12 +145,14 @@ export default function LegalDocumentScreen() {
       if (existing?.fingerprint === fingerprint && existing.pages[page.slug]) {
         setReachedEnd(true);
         setAgreed(true);
+      } else {
+        noteIfContentFits(viewportHRef.current, contentHRef.current);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [page, fingerprint]);
+  }, [page, fingerprint, noteIfContentFits]);
 
   const onScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
     const { layoutMeasurement, contentOffset, contentSize } = event.nativeEvent;
@@ -275,16 +287,6 @@ export default function LegalDocumentScreen() {
 
   return (
     <View style={styles.root}>
-      <Stack.Screen
-        options={{
-          presentation: "transparentModal",
-          animation: "fade",
-          headerShown: false,
-          contentStyle: { backgroundColor: "transparent" },
-        }}
-      />
-      <StatusBar barStyle="light-content" />
-
       <View
         style={[
           styles.overlay,
@@ -350,8 +352,17 @@ export default function LegalDocumentScreen() {
             showsVerticalScrollIndicator
             onScroll={onScroll}
             scrollEventThrottle={16}
-            onLayout={(event) => setViewportH(event.nativeEvent.layout.height)}
-            onContentSizeChange={(_w, h) => setContentH(h)}
+            onLayout={(event) => {
+              const height = event.nativeEvent.layout.height;
+              viewportHRef.current = height;
+              setViewportH(height);
+              noteIfContentFits(height, contentHRef.current);
+            }}
+            onContentSizeChange={(_w, h) => {
+              contentHRef.current = h;
+              setContentH(h);
+              noteIfContentFits(viewportHRef.current, h);
+            }}
           >
             {body}
           </ScrollView>
@@ -491,6 +502,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 8,
     paddingBottom: 20,
+    flexGrow: 1,
   },
   doc: { gap: 18 },
   section: { gap: 8 },

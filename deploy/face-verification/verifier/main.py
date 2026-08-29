@@ -22,6 +22,7 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from id_match import verify_id_document, warm_ocr
+from warmup import WARMUP_ROUNDS, compreface_warmup_succeeded
 
 ML_MAX_SIDE = int(os.getenv("ML_MAX_SIDE", "640"))
 VERIFY_TIMEOUT_SEC = float(os.getenv("VERIFY_TIMEOUT_SEC", "120"))
@@ -42,13 +43,35 @@ MAX_IMAGE_BYTES = int(os.getenv("MAX_IMAGE_BYTES", str(15 * 1024 * 1024)))
 _LEFT_EYE = (33, 160, 158, 133, 153, 144)
 _RIGHT_EYE = (362, 385, 387, 263, 373, 380)
 _face_mesh = None
-_models_warmed = False
+_local_models_warmed = False
+_compreface_warmed = False
+_warm_lock: asyncio.Lock | None = None
+
+
+def _get_warm_lock() -> asyncio.Lock:
+    global _warm_lock
+    if _warm_lock is None:
+        _warm_lock = asyncio.Lock()
+    return _warm_lock
+
+
+async def _startup_warm() -> None:
+    try:
+        await ensure_warm()
+        print(
+            "startup_warm_done",
+            "local",
+            _local_models_warmed,
+            "compreface",
+            _compreface_warmed,
+        )
+    except Exception as exc:
+        print("startup_warm_error", str(exc))
 
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
-    # Warm ML models in the background so the first /verify is not a multi-minute cold start.
-    asyncio.create_task(asyncio.to_thread(_warm_models))
+    asyncio.create_task(_startup_warm())
     yield
 
 
@@ -125,9 +148,9 @@ def _resize_for_ml(image_bytes: bytes, max_side: int = ML_MAX_SIDE) -> bytes:
     return buf.getvalue()
 
 
-def _warm_models() -> None:
-    global _models_warmed
-    if _models_warmed:
+def _warm_local_models() -> None:
+    global _local_models_warmed
+    if _local_models_warmed:
         return
     started = time.perf_counter()
     try:
@@ -144,7 +167,7 @@ def _warm_models() -> None:
             warm_ocr()
         except Exception as ocr_exc:
             print("ocr_warmup_error", str(ocr_exc))
-        _models_warmed = True
+        _local_models_warmed = True
         print("models_warmed", round(time.perf_counter() - started, 2), "s")
     except Exception as exc:
         print("model_warmup_error", str(exc))
@@ -329,6 +352,17 @@ def _anti_spoof_real(image_bytes: bytes) -> tuple[bool, str | None]:
         return False, "ANTI_SPOOF_ERROR"
 
 
+def _compreface_http_timeout() -> httpx.Timeout:
+    read_s = float(os.getenv("COMPREFACE_HTTP_TIMEOUT_SEC", "180"))
+    return httpx.Timeout(connect=30.0, read=read_s, write=60.0, pool=30.0)
+
+
+def _warmup_face_bytes() -> bytes:
+    path = os.path.join(os.path.dirname(__file__), "warmup_face.jpg")
+    with open(path, "rb") as handle:
+        return handle.read()
+
+
 async def _compreface_verify(source: bytes, target: bytes) -> tuple[float, str | None]:
     if not COMPREFACE_API_KEY:
         return 0.0, "COMPREFACE_API_KEY not configured"
@@ -340,8 +374,20 @@ async def _compreface_verify(source: bytes, target: bytes) -> tuple[float, str |
     }
     headers = {"x-api-key": COMPREFACE_API_KEY}
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        res = await client.post(url, headers=headers, files=files)
+    res = None
+    for attempt in range(2):
+        try:
+            async with httpx.AsyncClient(timeout=_compreface_http_timeout()) as client:
+                res = await client.post(url, headers=headers, files=files)
+            break
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            print("compreface_timeout", attempt + 1, type(exc).__name__)
+            if attempt == 0:
+                continue
+            return 0.0, "COMPREFACE_TIMEOUT"
+
+    if res is None:
+        return 0.0, "COMPREFACE_TIMEOUT"
 
     if res.status_code >= 400:
         text = res.text[:500]
@@ -362,6 +408,34 @@ async def _compreface_verify(source: bytes, target: bytes) -> tuple[float, str |
             if sim > best:
                 best = sim
     return best / 100.0 if best > 1 else best, None
+
+
+async def _warm_compreface() -> bool:
+    global _compreface_warmed
+    if _compreface_warmed:
+        return True
+    try:
+        face = _warmup_face_bytes()
+    except OSError as exc:
+        print("compreface_warmup_missing_face", str(exc))
+        return False
+
+    ok = True
+    for round_idx in range(WARMUP_ROUNDS):
+        _similarity, code = await _compreface_verify(face, face)
+        print("compreface_warmup", round_idx + 1, code)
+        if not compreface_warmup_succeeded(code):
+            ok = False
+    _compreface_warmed = ok
+    return ok
+
+
+async def ensure_warm() -> None:
+    async with _get_warm_lock():
+        if not _local_models_warmed:
+            await asyncio.to_thread(_warm_local_models)
+        if not _compreface_warmed:
+            await _warm_compreface()
 
 
 def _check_liveness_frames(frames: list[bytes], pose_labels: list[str] | None = None) -> tuple[bool, str | None]:
@@ -420,8 +494,28 @@ def _auth_or_403(api_key: str | None) -> None:
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+async def health() -> dict[str, object]:
+    ready = _local_models_warmed and _compreface_warmed
+    return {
+        "status": "ok" if ready else "warming",
+        "models_warmed": _local_models_warmed,
+        "compreface_warmed": _compreface_warmed,
+    }
+
+
+@app.post("/warmup")
+async def warmup(
+    x_api_key: str | None = Header(default=None, alias="x-api-key"),
+) -> dict[str, object]:
+    _auth_or_403(x_api_key)
+    await ensure_warm()
+    ready = _local_models_warmed and _compreface_warmed
+    return {
+        "ok": True,
+        "ready": ready,
+        "models_warmed": _local_models_warmed,
+        "compreface_warmed": _compreface_warmed,
+    }
 
 
 @app.post("/verify-id", response_model=VerifyIdResponse)
@@ -457,6 +551,7 @@ async def verify(
     x_api_key: str | None = Header(default=None, alias="x-api-key"),
 ) -> VerifyResponse:
     _auth_or_403(x_api_key)
+    await ensure_warm()
 
     try:
         id_bytes = _decode_image(body.id_image_base64)
@@ -482,7 +577,7 @@ async def verify(
         print("verify_timeout", VERIFY_TIMEOUT_SEC)
         return VerifyResponse(
             ok=False,
-            error="Verification timed out. The server is still loading models—wait 30 seconds and try again.",
+            error="Verification timed out. Please try again.",
             code="TIMEOUT",
         )
 
@@ -509,6 +604,12 @@ async def verify(
             ok=False,
             error="Could not detect a clear face on your ID or selfie. Retake both in good lighting.",
             code="NO_FACE",
+        )
+    if cf_code == "COMPREFACE_TIMEOUT":
+        return VerifyResponse(
+            ok=False,
+            error="Face comparison is busy. Please try again.",
+            code="TIMEOUT",
         )
     if cf_code:
         return VerifyResponse(ok=False, error="Face comparison service error.", code=cf_code)

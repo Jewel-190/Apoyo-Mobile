@@ -13,6 +13,7 @@ export const ROUTES = {
   onboarding: "/phase1/onboarding",
   login: "/phase1/login",
   register: "/phase1/register",
+  authCallback: "/auth-callback",
   legalTerms: "/phase1/legal/terms-and-conditions",
   legalUserAcceptance: "/phase1/legal/user-acceptance",
 
@@ -31,7 +32,6 @@ export const ROUTES = {
   termsAndConditions: "/Account/TermsAndConditions",
   userAcceptance: "/Account/UserAcceptance",
   contactUs: "/Account/ContactUs",
-  notificationSettings: "/Account/Settings/NotificationSettings",
   changePin: "/Account/Settings/ChangePin",
   forgotPin: "/phase1/forgot-pin",
 } as const;

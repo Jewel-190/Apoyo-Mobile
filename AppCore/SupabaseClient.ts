@@ -7,10 +7,10 @@
  */
 
 import { createClient } from "@supabase/supabase-js";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import Constants from "expo-constants";
 
 import type { Database } from "./DatabaseTypes";
+import { authStorage } from "./SecureAuthStorage";
 
 type SupabaseExtras = {
   supabaseUrl?: string;
@@ -20,9 +20,9 @@ type SupabaseExtras = {
 const extras = (Constants.expoConfig?.extra ?? {}) as SupabaseExtras;
 
 const supabaseUrl =
-  extras.supabaseUrl || process.env.EXPO_PUBLIC_SUPABASE_URL || "";
+  process.env.EXPO_PUBLIC_SUPABASE_URL || extras.supabaseUrl || "";
 const supabaseAnonKey =
-  extras.supabaseAnonKey || process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || "";
+  process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || extras.supabaseAnonKey || "";
 
 if (!supabaseUrl || !supabaseAnonKey) {
   throw new Error(
@@ -34,7 +34,7 @@ if (!supabaseUrl || !supabaseAnonKey) {
 
 export const supabase = createClient<Database>(supabaseUrl, supabaseAnonKey, {
   auth: {
-    storage: AsyncStorage,
+    storage: authStorage,
     autoRefreshToken: true,
     persistSession: true,
     detectSessionInUrl: false,

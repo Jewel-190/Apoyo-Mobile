@@ -17,6 +17,11 @@ import {
 import { supabase } from "@/AppCore/SupabaseClient";
 import { ROUTES } from "@/AppCore/AppRoutePaths";
 import { legalPageRoute } from "@/AppCore/LegalSettings";
+import { signOutLocalSession } from "@/AppCore/AppLogout";
+import {
+  isAuthEmailConfirmed,
+  mapLoginAuthError,
+} from "@/AppCore/RegistrationAuth";
 
 const { width: SCREEN_W } = Dimensions.get("window");
 const SCREEN = Dimensions.get("screen");
@@ -29,12 +34,15 @@ const RED = "#E23B3B";
 
 const FONT = Platform.select({ ios: "SF Pro Rounded", android: "System" })!;
 
+const LOGIN_ATTEMPTS_KEY = "apoyo_mobile_login_attempts";
+const LOGIN_LOCK_KEY = "apoyo_mobile_login_lock_until";
+const MAX_LOGIN_ATTEMPTS = 5;
+const LOGIN_LOCKOUT_MS = 5 * 60 * 1000;
+
 export default function Login() {
   const params = useLocalSearchParams<{ email?: string }>();
-  // step: 0=email/mobile entry, 1=enter PIN
+  // step: 0=email entry, 1=enter PIN
   const [step, setStep] = useState(0);
-  const [useMobile, setUseMobile] = useState(true);
-  const [mobile, setMobile] = useState("");
   const [email, setEmail] = useState("");
   const [pin, setPin] = useState("");
   const [loginError, setLoginError] = useState("");
@@ -46,7 +54,6 @@ export default function Login() {
     const fromParam = String(params.email ?? "").trim();
     if (!fromParam) return;
     setEmail(fromParam);
-    setUseMobile(false);
     setStep(1);
     setPin("");
     setLoginError("");
@@ -75,15 +82,6 @@ export default function Login() {
     };
   }, []);
 
-  const mobileError = useMemo(() => {
-    const t = mobile.trim();
-    if (!t) return "";
-    if (!/^\d+$/.test(t)) return "Numbers only";
-    if (t.length !== 10) return "Enter 10 digits (e.g. 9XXXXXXXXX)";
-    if (!t.startsWith("9")) return "Must start with 9";
-    return "";
-  }, [mobile]);
-
   const emailError = useMemo(() => {
     const t = email.trim();
     if (!t) return "";
@@ -94,58 +92,64 @@ export default function Login() {
   }, [email]);
 
   const canProceed = useMemo(() => {
-    if (useMobile) return mobile.trim().length > 0 && !mobileError;
     return email.trim().length > 0 && !emailError;
-  }, [useMobile, mobile, email, mobileError, emailError]);
+  }, [email, emailError]);
 
   const canLogin = useMemo(() => pin.length === 6, [pin]);
 
-  const onToggle = () => {
-    setUseMobile((v) => !v);
-    setLoginError("");
-  };
-
   const onNext = () => {
     if (!canProceed) return;
-    if (useMobile) {
-      setLoginError("Mobile login not yet implemented. Please use email.");
-      return;
-    }
     setLoginError("");
     setStep(1);
   };
 
   const onLogin = async () => {
     if (!canLogin || isLogging) return;
+
+    const lockUntil = Number((await AsyncStorage.getItem(LOGIN_LOCK_KEY)) || 0);
+    if (Date.now() < lockUntil) {
+      const seconds = Math.ceil((lockUntil - Date.now()) / 1000);
+      setLoginError(`Too many attempts. Try again in ${seconds}s.`);
+      return;
+    }
+
     setIsLogging(true);
     setLoginError("");
 
     try {
-      // Use Supabase Auth to sign in with email + PIN
       const { data, error } = await supabase.auth.signInWithPassword({
         email: email.trim(),
-        password: pin, // PIN is used as password
+        password: pin,
       });
 
       if (error) {
-        if (error.message.includes("Invalid login credentials")) {
-          setLoginError("Invalid email or PIN. Please try again.");
-        } else if (error.message.includes("Email not confirmed")) {
-          setLoginError("Please verify your email before logging in.");
+        const attempts =
+          Number((await AsyncStorage.getItem(LOGIN_ATTEMPTS_KEY)) || 0) + 1;
+        if (attempts >= MAX_LOGIN_ATTEMPTS) {
+          await AsyncStorage.setItem(
+            LOGIN_LOCK_KEY,
+            String(Date.now() + LOGIN_LOCKOUT_MS)
+          );
+          await AsyncStorage.removeItem(LOGIN_ATTEMPTS_KEY);
         } else {
-          setLoginError(error.message);
+          await AsyncStorage.setItem(LOGIN_ATTEMPTS_KEY, String(attempts));
         }
+        setLoginError(mapLoginAuthError(error));
         setPin("");
         setIsLogging(false);
         return;
       }
 
-      // Login successful - session is automatically managed by Supabase
-      if (__DEV__) {
-        console.log("Login successful, user:", data.user?.id);
+      await AsyncStorage.multiRemove([LOGIN_ATTEMPTS_KEY, LOGIN_LOCK_KEY]);
+
+      if (!isAuthEmailConfirmed(data.user, email)) {
+        await signOutLocalSession();
+        setLoginError(mapLoginAuthError({ message: "Email not confirmed" }));
+        setPin("");
+        setIsLogging(false);
+        return;
       }
 
-      // Cache user data for instant loading on Home/Account screens
       if (data.user?.id) {
         const { data: userData } = await supabase
           .from("users")
@@ -153,11 +157,15 @@ export default function Login() {
             "first_name, middle_name, last_name, suffix, sex, birth_date, email, contact_number, address, barangay, voter_id_number, avatar_url, created_at, registered_voter_id"
           )
           .eq("id", data.user.id)
-          .single();
-        
-        if (userData) {
-          await AsyncStorage.setItem("apoyo_user_cache", JSON.stringify(userData));
+          .maybeSingle();
+
+        if (!userData) {
+          setIsLogging(false);
+          router.replace(ROUTES.register);
+          return;
         }
+
+        await AsyncStorage.setItem("apoyo_user_cache", JSON.stringify(userData));
       }
 
       setIsLogging(false);
@@ -217,48 +225,22 @@ export default function Login() {
                 <Text style={styles.title}>Hello, Welcome!</Text>
                 <Text style={styles.subtitle}>Login to Apoyo</Text>
 
-                {useMobile ? (
-                  <View style={{ marginTop: 18 }}>
-                    <View style={styles.inputWrapMobile}>
-                      <View style={styles.prefix}>
-                        <Text style={styles.prefixText}>+63</Text>
-                      </View>
-                      <TextInput
-                        value={mobile}
-                        onChangeText={(v) => setMobile(v.replace(/[^\d]/g, "").slice(0, 10))}
-                        keyboardType="number-pad"
-                        placeholder="9XXXXXXXXX"
-                        placeholderTextColor="#B3B3B3"
-                        maxLength={10}
-                        style={styles.inputMobile}
-                      />
-                    </View>
-                    {!!mobileError && <Text style={styles.error}>{mobileError}</Text>}
+                <View style={{ marginTop: 18 }}>
+                  <View style={styles.inputWrap}>
+                    <TextInput
+                      value={email}
+                      onChangeText={setEmail}
+                      keyboardType="email-address"
+                      autoCapitalize="none"
+                      placeholder="Email Address"
+                      placeholderTextColor="#B3B3B3"
+                      style={styles.inputFull}
+                    />
                   </View>
-                ) : (
-                  <View style={{ marginTop: 18 }}>
-                    <View style={styles.inputWrap}>
-                      <TextInput
-                        value={email}
-                        onChangeText={setEmail}
-                        keyboardType="email-address"
-                        autoCapitalize="none"
-                        placeholder="Email Address"
-                        placeholderTextColor="#B3B3B3"
-                        style={styles.inputFull}
-                      />
-                    </View>
-                    {!!emailError && <Text style={styles.error}>{emailError}</Text>}
-                  </View>
-                )}
+                  {!!emailError && <Text style={styles.error}>{emailError}</Text>}
+                </View>
 
                 {!!loginError && <Text style={styles.error}>{loginError}</Text>}
-
-                <TouchableOpacity onPress={onToggle} style={{ marginTop: 14 }}>
-                  <Text style={styles.toggleText}>
-                    {useMobile ? "Login via Email" : "Login via Mobile Number"}
-                  </Text>
-                </TouchableOpacity>
 
                 <TouchableOpacity
                   onPress={onNext}
@@ -421,13 +403,6 @@ const styles = StyleSheet.create({
 
   inputWrap: { borderWidth: 1, borderColor: BORDER, borderRadius: 12, height: 54, justifyContent: "center", paddingHorizontal: 14, backgroundColor: "#fff" },
   inputFull: { fontSize: 16, color: DARK, fontFamily: FONT, fontWeight: "500", paddingVertical: 0 },
-
-  inputWrapMobile: { borderWidth: 1, borderColor: BORDER, borderRadius: 12, height: 54, flexDirection: "row", alignItems: "center", overflow: "hidden", backgroundColor: "#fff" },
-  prefix: { width: 70, height: "100%", alignItems: "center", justifyContent: "center" },
-  prefixText: { fontSize: 15, color: "#4A4A4A", fontFamily: FONT, fontWeight: "700" },
-  inputMobile: { flex: 1, fontSize: 16, paddingRight: 14, color: DARK, fontFamily: FONT, fontWeight: "500" },
-
-  toggleText: { textAlign: "center", color: TEAL, fontSize: 15, fontFamily: FONT, fontWeight: "700" },
 
   error: { marginTop: 8, color: RED, fontFamily: FONT, fontWeight: "500" },
 

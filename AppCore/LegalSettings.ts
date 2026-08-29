@@ -44,6 +44,11 @@ let legalMemory: LegalSettingsValue | null = null;
 let legalFetchedAtMs = 0;
 let legalInflight: Promise<LegalSettingsValue> | null = null;
 
+/** Sync snapshot so the legal screen can render without a loading flash. */
+export function peekLegalSettings(): LegalSettingsValue | null {
+  return legalMemory;
+}
+
 function emptyPageRecord(): LegalPageRecord {
   return { sections: [] };
 }
@@ -163,11 +168,10 @@ export function legalContentFingerprint(value: LegalSettingsValue): string {
 export function legalPageRoute(
   slug: LegalPageSlug,
   mode?: "accept" | "view"
-): { pathname: "/phase1/legal/[slug]"; params: { slug: LegalPageSlug; mode?: string } } {
-  return {
-    pathname: "/phase1/legal/[slug]",
-    params: mode ? { slug, mode } : { slug },
-  };
+): `/phase1/legal/${LegalPageSlug}` | `/phase1/legal/${LegalPageSlug}?mode=${string}` {
+  return mode
+    ? `/phase1/legal/${slug}?mode=${mode}`
+    : `/phase1/legal/${slug}`;
 }
 
 async function readCachedLegal(

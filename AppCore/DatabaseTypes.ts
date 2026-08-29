@@ -350,6 +350,18 @@ export type Database = {
           submitted_at: string | null
           updated_at: string
           user_id: string | null
+          applicant_first_name: string | null
+          applicant_middle_name: string | null
+          applicant_last_name: string | null
+          applicant_suffix: string | null
+          applicant_sex: string | null
+          applicant_birth_date: string | null
+          applicant_email: string | null
+          applicant_contact_number: string | null
+          applicant_address: string | null
+          applicant_barangay: string | null
+          applicant_voter_id_number: string | null
+          applicant_snapshot_at: string | null
         }
         Insert: {
           additional_info?: string | null
@@ -369,6 +381,18 @@ export type Database = {
           submitted_at?: string | null
           updated_at?: string
           user_id: string
+          applicant_first_name?: string | null
+          applicant_middle_name?: string | null
+          applicant_last_name?: string | null
+          applicant_suffix?: string | null
+          applicant_sex?: string | null
+          applicant_birth_date?: string | null
+          applicant_email?: string | null
+          applicant_contact_number?: string | null
+          applicant_address?: string | null
+          applicant_barangay?: string | null
+          applicant_voter_id_number?: string | null
+          applicant_snapshot_at?: string | null
         }
         Update: {
           additional_info?: string | null
@@ -388,6 +412,18 @@ export type Database = {
           submitted_at?: string | null
           updated_at?: string
           user_id?: string | null
+          applicant_first_name?: string | null
+          applicant_middle_name?: string | null
+          applicant_last_name?: string | null
+          applicant_suffix?: string | null
+          applicant_sex?: string | null
+          applicant_birth_date?: string | null
+          applicant_email?: string | null
+          applicant_contact_number?: string | null
+          applicant_address?: string | null
+          applicant_barangay?: string | null
+          applicant_voter_id_number?: string | null
+          applicant_snapshot_at?: string | null
         }
         Relationships: [
           {
@@ -1755,6 +1791,10 @@ export type Database = {
         Returns: Json
       }
       is_registration_email_available: { Args: { p_email: string }; Returns: boolean }
+      reclaim_unconfirmed_registration_email: {
+        Args: { p_attempt_token: string; p_email: string }
+        Returns: boolean
+      }
       format_request_code: {
         Args: { p_code: string; p_seq: number; p_ts: string }
         Returns: string

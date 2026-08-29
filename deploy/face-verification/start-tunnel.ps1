@@ -11,7 +11,7 @@ if (-not (Test-Path (Join-Path $root "cloudflared.exe"))) {
 Write-Host "Starting tunnel to http://localhost:8090"
 Write-Host "Copy the https://....trycloudflare.com URL, then run:"
 Write-Host "  cd ..\.."
-Write-Host "  npm run supabase -- secrets set FACE_VERIFY_SERVICE_URL=https://YOUR-URL.trycloudflare.com FACE_VERIFY_SERVICE_KEY=1234567890"
+Write-Host "  npm run supabase -- secrets set FACE_VERIFY_SERVICE_URL=https://YOUR-URL.trycloudflare.com FACE_VERIFY_SERVICE_KEY=<your-verifier-key>"
 Write-Host ""
 
 Push-Location $root

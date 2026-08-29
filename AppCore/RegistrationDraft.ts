@@ -67,7 +67,12 @@ export async function readRegistrationDraft(): Promise<RegistrationDraftV1 | nul
     if (typeof parsed.step !== "number" || parsed.step < 0 || parsed.step > 8) {
       return null;
     }
-    return parsed;
+    return {
+      ...parsed,
+      mpin: "",
+      pin: "",
+      confirmPin: "",
+    };
   } catch {
     return null;
   }
@@ -85,6 +90,9 @@ export async function writeRegistrationDraft(
     DRAFT_KEY,
     JSON.stringify({
       ...draft,
+      mpin: "",
+      pin: "",
+      confirmPin: "",
       idImageBase64,
       updatedAt: Date.now(),
     })

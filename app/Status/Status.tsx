@@ -14,6 +14,7 @@ import {
 import { getCatalogLookupRuntime } from "@/AppCore/CatalogLookupRuntime";
 import { useAssistanceCatalog } from "@/AppCore/UseAssistanceCatalog";
 import { supabase } from "@/AppCore/SupabaseClient";
+import { deleteOwnDraftRequest } from "@/AppCore/AssistanceRequestSql";
 import {
   readStatusApplicationsCache,
   syncStatusApplicationsWithServer,
@@ -41,7 +42,7 @@ import {
   statusApplicationRealId,
 } from "@/AppCore/AssistanceStatusApplicationsCache";
 import type { Category, ServiceStatus } from "@/AppCore/AppUiDomainTypes";
-import { statusBadgeTheme } from "@/AppCore/RequestStatusPresentation";
+import { applicantCanDeleteRequest, statusBadgeTheme } from "@/AppCore/RequestStatusPresentation";
 import { NAV_TOTAL_HEIGHT } from "../../components/BottomNavBar";
 
 const FONT = "SF Pro Rounded";
@@ -104,9 +105,6 @@ function StatusCardSkeleton() {
           </View>
           <View style={styles.skeletonTitle} />
           <View style={styles.skeletonMeta} />
-        </View>
-        <View style={styles.cardFooter}>
-          <View style={styles.skeletonDelete} />
         </View>
       </View>
     </View>
@@ -285,6 +283,11 @@ export default function Status() {
   }, [activeFilter, cardApps]);
 
   const deleteRequestFromStatus = async (item: ApplicationItem) => {
+    if (!applicantCanDeleteRequest(item.status)) {
+      Alert.alert("Cannot delete", "Submitted requests cannot be deleted.");
+      return;
+    }
+
     const realId = item.id.startsWith("draft_")
       ? item.id.replace("draft_", "")
       : item.id;
@@ -292,11 +295,7 @@ export default function Status() {
     try {
       setDeletingId(item.id);
 
-      const { error } = await supabase
-        .from("assistance_requests")
-        .delete()
-        .eq("id", realId);
-      if (error) throw error;
+      await deleteOwnDraftRequest(realId);
 
       setApps((prev) => {
         const removedKey = statusApplicationRealId(item);
@@ -314,6 +313,7 @@ export default function Status() {
   };
 
   const confirmDeleteRequest = (item: ApplicationItem) => {
+    if (!applicantCanDeleteRequest(item.status) || interactionsLocked) return;
     setDeleteTarget(item);
     setDeleteConfirmOpen(true);
   };
@@ -508,6 +508,7 @@ export default function Status() {
           >
             {filtered.map((a) => {
               const isOpening = openingId === a.id;
+              const canDelete = applicantCanDeleteRequest(a.status);
               return (
               <View key={a.id} style={styles.cardWrap}>
                 <View style={styles.card}>
@@ -567,23 +568,25 @@ export default function Status() {
                     ) : null}
                   </Pressable>
 
-                  <View style={styles.cardFooter}>
-                    <Pressable
-                      onPress={() => confirmDeleteRequest(a)}
-                      disabled={interactionsLocked}
-                      style={({ pressed }) => [
-                        styles.cardDeleteBtn,
-                        pressed && { opacity: 0.85 },
-                        deletingId === a.id && { opacity: 0.6 },
-                      ]}
-                    >
-                      <Ionicons
-                        name={deletingId === a.id ? "hourglass-outline" : "trash-outline"}
-                        size={15}
-                        color="#FFFFFF"
-                      />
-                    </Pressable>
-                  </View>
+                  {canDelete ? (
+                    <View style={styles.cardFooter}>
+                      <Pressable
+                        onPress={() => confirmDeleteRequest(a)}
+                        disabled={interactionsLocked}
+                        style={({ pressed }) => [
+                          styles.cardDeleteBtn,
+                          pressed && { opacity: 0.85 },
+                          deletingId === a.id && { opacity: 0.6 },
+                        ]}
+                      >
+                        <Ionicons
+                          name={deletingId === a.id ? "hourglass-outline" : "trash-outline"}
+                          size={15}
+                          color="#FFFFFF"
+                        />
+                      </Pressable>
+                    </View>
+                  ) : null}
                 </View>
               </View>
             );
@@ -597,11 +600,11 @@ export default function Status() {
           <Pressable style={styles.modalCard} onPress={() => {}}>
             <Ionicons name="trash-outline" size={52} color={DANGER} style={styles.modalTrashIcon} />
 
-            <Text style={styles.modalTitle}>Delete this request?</Text>
+            <Text style={styles.modalTitle}>Delete this draft?</Text>
 
             <Text style={styles.modalSub}>
               "{deleteTarget?.title || "Request"}"{"\n"}
-              This action cannot be undone.
+              This draft will be removed. Submitted requests cannot be deleted.
             </Text>
 
             <View style={styles.modalBtns}>
@@ -778,12 +781,6 @@ const styles = StyleSheet.create({
     width: "62%",
     borderRadius: 5,
     backgroundColor: "#F0F2F2",
-  },
-  skeletonDelete: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: "#E8EEEE",
   },
   cardOpeningOverlay: {
     ...StyleSheet.absoluteFillObject,

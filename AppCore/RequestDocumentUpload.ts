@@ -17,6 +17,16 @@ export const REQUEST_DOCUMENTS_BUCKET = "request-documents";
  * the value enforced in app/Home/request/RequestFields.tsx (attachment UI). */
 export const MAX_REQUEST_FILE_BYTES = 5 * 1024 * 1024;
 
+const ALLOWED_REQUEST_MIME =
+  /^(image\/(jpeg|jpg|pjpeg|png|webp|heic|heif|gif)|application\/pdf)$/i;
+
+function isAllowedRequestFile(name: string, mimeType?: string) {
+  if (mimeType && mimeType !== "application/octet-stream") {
+    return ALLOWED_REQUEST_MIME.test(mimeType);
+  }
+  return /\.(jpe?g|png|webp|heic|heif|gif|pdf)$/i.test(name);
+}
+
 export type UploadFileInput = {
   uri: string;
   name: string;
@@ -81,10 +91,17 @@ export async function uploadRequestDocument(params: {
 }): Promise<UploadedFile> {
   const { userId, requestId, fileType, file } = params;
 
+  if (!isAllowedRequestFile(file.name, file.mimeType)) {
+    throw new Error("Only PDF and image files (JPG, PNG, WebP, HEIC, GIF) are allowed.");
+  }
+
   const sanitized = sanitizeFileName(file.name);
   const path = `${userId}/${requestId}/${fileType}_${sanitized}`;
 
   const arrayBuffer = await readPickedFileAsArrayBuffer(file.uri);
+  if (arrayBuffer.byteLength > MAX_REQUEST_FILE_BYTES) {
+    throw new Error("File is too large. Maximum size is 5 MB.");
+  }
 
   const { error } = await supabase.storage
     .from(REQUEST_DOCUMENTS_BUCKET)

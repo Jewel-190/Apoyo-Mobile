@@ -12,8 +12,10 @@ const FACE_VERIFY_SERVICE_KEY = Deno.env.get("FACE_VERIFY_SERVICE_KEY") ?? "";
 
 const MAX_IMAGE_BYTES = 15 * 1024 * 1024;
 const MIN_LIVENESS_FRAMES = 4;
+const FACE_VERIFY_FETCH_TIMEOUT_MS = 180_000;
 
 type RequestBody = {
+  warmup?: boolean;
   email?: string;
   registrationAttemptToken?: string;
   idImageBase64?: string;
@@ -113,6 +115,45 @@ Deno.serve(async (request: Request) => {
     return jsonResponse({ ok: false, error: "Missing email" }, 200);
   }
 
+  const supabaseAdmin = createClient(PROJECT_URL, SERVICE_ROLE_KEY, {
+    auth: { persistSession: false },
+  });
+
+  const tokenOk = await validateRegistrationToken(supabaseAdmin, email, tokenStr);
+  if (!tokenOk) {
+    return jsonResponse(
+      { ok: false, error: "Invalid or expired registration session" },
+      200,
+    );
+  }
+
+  if (body.warmup === true) {
+    try {
+      const warmRes = await fetch(`${FACE_VERIFY_SERVICE_URL}/warmup`, {
+        method: "POST",
+        headers: { "x-api-key": FACE_VERIFY_SERVICE_KEY },
+        signal: AbortSignal.timeout(FACE_VERIFY_FETCH_TIMEOUT_MS),
+      });
+      const payload = (await warmRes.json()) as { ok?: boolean; ready?: boolean };
+      return jsonResponse({
+        ok: payload.ok ?? warmRes.ok,
+        ready: payload.ready ?? false,
+        code: "WARM",
+      });
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error("face_verifier_warmup", msg);
+      return jsonResponse(
+        {
+          ok: false,
+          error: "Face verification is still starting up. Try again in a moment.",
+          code: "WARMUP_FAILED",
+        },
+        200,
+      );
+    }
+  }
+
   if (!selfieB64) {
     return jsonResponse({ ok: false, error: "Missing selfieImageBase64" }, 200);
   }
@@ -142,18 +183,6 @@ Deno.serve(async (request: Request) => {
     }
   }
 
-  const supabaseAdmin = createClient(PROJECT_URL, SERVICE_ROLE_KEY, {
-    auth: { persistSession: false },
-  });
-
-  const tokenOk = await validateRegistrationToken(supabaseAdmin, email, tokenStr);
-  if (!tokenOk) {
-    return jsonResponse(
-      { ok: false, error: "Invalid or expired registration session" },
-      200,
-    );
-  }
-
   try {
     const verifyRes = await fetch(`${FACE_VERIFY_SERVICE_URL}/verify`, {
       method: "POST",
@@ -167,7 +196,7 @@ Deno.serve(async (request: Request) => {
         liveness_frames_base64: livenessFrames,
         pose_labels: poseLabels,
       }),
-      signal: AbortSignal.timeout(110_000),
+      signal: AbortSignal.timeout(FACE_VERIFY_FETCH_TIMEOUT_MS),
     });
 
     const payload = (await verifyRes.json()) as VerifierResponse;

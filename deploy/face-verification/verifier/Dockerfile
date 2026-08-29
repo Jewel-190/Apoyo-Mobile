@@ -17,7 +17,7 @@ RUN pip install --no-cache-dir \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY main.py id_match.py .
+COPY main.py id_match.py warmup.py warmup_face.jpg .
 
 # Pre-download ML weights (anti-spoof + OCR) to avoid multi-minute first requests.
 RUN python -c "from deepface import DeepFace; import numpy as np; img = np.zeros((224,224,3), dtype=np.uint8); DeepFace.extract_faces(img, anti_spoofing=True, enforce_detection=False)" \

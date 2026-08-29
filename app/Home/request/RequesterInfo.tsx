@@ -239,7 +239,6 @@ export default function RequesterInfo() {
         const {
           data: { user },
         } = await supabase.auth.getUser();
-        console.log("RequesterInfo: supabase.auth.getUser() ->", user);
         if (!user) return;
         setAuthUserId(user.id);
 
@@ -259,12 +258,6 @@ export default function RequesterInfo() {
 
           const joinedRequest = Array.isArray(joinedRows) ? joinedRows[0] : null;
 
-          console.log("RequesterInfo: request-user join query ->", {
-            requestTable: "assistance_requests",
-            joinedRequest,
-            joinedError,
-          });
-
           const joinedUser = (joinedRequest as any)?.users;
           if (!joinedError && joinedUser) {
             profile = Array.isArray(joinedUser) ? joinedUser[0] : joinedUser;
@@ -281,11 +274,6 @@ export default function RequesterInfo() {
             .limit(1);
 
           const directProfile = Array.isArray(directRows) ? directRows[0] : null;
-
-          console.log("RequesterInfo: direct profile query ->", {
-            directProfile,
-            error,
-          });
 
           if (error || !directProfile) {
             setProfileLoadError(error?.message || "No profile returned");

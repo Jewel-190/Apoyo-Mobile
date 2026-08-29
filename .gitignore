@@ -46,6 +46,7 @@ android/local.properties
 .env.*
 .env.local
 .env.*.local
+!.env.example
 
 # TypeScript
 *.tsbuildinfo
@@ -79,6 +80,8 @@ coverage/
 .gradle/
 build/
 expo-env.d.ts
+__pycache__/
+*.pyc
 
 # Scratch / one-off SQL dumps from local debugging
 .tmp_*
