@@ -59,21 +59,54 @@ Paid third parties: **Cloudflare**, **Resend** (email), **Hostinger** (domain). 
 
 ---
 
-## 3. Whole-system technology stack
+## 3. Whole-system technology stack — how and why
 
-| Layer | Technology | Where |
-|-------|------------|--------|
-| Citizen UI | **Expo ~54**, **React 19.1**, **React Native 0.81**, **expo-router 6**, New Architecture | this repo |
-| Navigation | File-based routes in `app/` + bottom tabs | this repo |
-| Session | **expo-secure-store** (chunked) + AsyncStorage fallback | `AppCore/SecureAuthStorage.ts` |
-| Camera / files | **expo-camera**, image/document pickers, **expo-file-system** | registration + requests |
-| Backend | **Supabase local**: PostgreSQL 17, GoTrue, PostgREST, Storage, Deno Edge, Kong | Apoyo-Admin |
-| Staff UI | React 19 + Vite 7 + Tailwind 4 | Apoyo-Admin |
-| Public site | React 19 + Vite 7 + Tailwind 4 | Apoyo-Web |
-| Face stack | CompreFace 1.2, FastAPI, DeepFace, MediaPipe, EasyOCR | `deploy/face-verification/` |
-| Hosting | Docker Desktop, nginx (web/admin), Cloudflare Tunnel, Resend, Hostinger | office PC |
+### 3.1 Why Expo / React Native (not a mobile website, not Flutter)
 
-Client library: **`@supabase/supabase-js`**. Config: `EXPO_PUBLIC_SUPABASE_URL` / `EXPO_PUBLIC_SUPABASE_ANON_KEY`, with fallbacks in `app.json` `expo.extra` (public anon key only).
+Registration needs **camera frames**, **OS-backed secret storage**, and an installable **Android** package. A **PWA in Chrome** cannot meet that bar (background camera + hardware-backed session). **Flutter** would split the team across Dart vs the React used in Admin/Web. **Expo 54** ships **React Native 0.81** with **New Architecture** (Fabric/TurboModules) so camera and SecureStore talk to native modules efficiently.
+
+**expo-router** maps files under `app/` to screens and to **deep links** (`apoyo://…`). Email confirmation from Resend must open **this app**, not the public website. That is why Auth `additional_redirect_urls` in Apoyo-Admin includes the `apoyo://` and `apoyocapstone://` schemes.
+
+**expo-camera** (`CameraView`) streams frames for liveness. **expo-image-picker** / **document-picker** are for **ID stills** and **request PDFs/images** — different threat: ID can be a photo of a card; liveness cannot.
+
+**@supabase/supabase-js** is the same protocol as the web apps (Auth + REST + Storage + `functions.invoke`). One backend, three clients. Public env: `EXPO_PUBLIC_*` or `app.json` `expo.extra` (**anon key only**).
+
+### 3.2 Why the MPIN is a GoTrue password
+
+Citizens will not maintain a 12-character password. Implementing `users.mpin_hash` ourselves means we re-implement **hashing, timing-safe compare, reset, lockout**. **GoTrue** already does that if the PIN **is** `signUp`/`signInWithPassword`’s `password` field. Postgres never stores the PIN in `public.users`. Apoyo-Admin sets **`minimum_password_length = 6`** so GoTrue does not reject sign-up. Staff passwords are a **different** code path (8+ in superadmin credential APIs).
+
+**expo-secure-store** (chunked): the session JSON exceeds SecureStore’s per-key size on some devices, so it is split. Fallback **AsyncStorage** is only for web/dev where the OS keystore API does not exist.
+
+### 3.3 Why the phone never calls CompreFace
+
+If the APK contained `http://office-pc:8090`, (1) the verifier would have to be **on the tunnel** (faces on the public internet), and (2) the **API key** would ship in the binary. Instead:
+
+1. Phone sends frames to **Edge Functions** over HTTPS (`api.apoyo-dasma.online`).
+2. Deno validates a **registration-attempt token** (pre-auth).
+3. Deno calls **`http://face-verifier:8080`** on Docker’s **internal network**, with `FACE_VERIFY_SERVICE_KEY` from server env.
+
+| Technology | Applied to | Why not the alternative |
+|------------|------------|-------------------------|
+| **CompreFace** | 1:1 face **verification** (selfie vs ID), threshold ~0.85 | Cloud Face APIs (AWS/Azure) export **biometrics** and add a vendor. CompreFace is Dockerized 1:1 verification, which is the actual problem (not 1:N search of all citizens). |
+| **DeepFace anti-spoof** | “Is this frame a live face or a print/screen?” | Matching ≠ anti-spoof. Without this, a printed ID photo held to the camera can still **match** CompreFace. |
+| **MediaPipe** | Blink (EAR) + head pose across **several** frames | One still image is not liveness. MediaPipe is CPU-feasible inside the verifier container. |
+| **Frame hashing (SHA-256 / aHash)** | Reject duplicate/near-duplicate frames | Stops “same JPEG uploaded 4 times” from counting as multi-frame liveness. |
+| **EasyOCR + RapidFuzz** | ID text vs voter registry fields | No guaranteed MRZ/barcode on all PH IDs. Fuzzy match absorbs OCR errors. |
+| **FastAPI** | `/verify`, `/verify-id`, `/warmup`, `/health` | ML stack is Python. Deno should not load PyTorch. Warmup avoids cold-start timeouts through Kong. |
+
+### 3.4 Backend and hosting (shared with Admin/Web)
+
+**PostgreSQL + RLS:** the phone uses the **anon key** (public) plus a **user JWT** after login. RLS is what stops client A from reading client B’s `assistance_requests` even if they call PostgREST directly.
+
+**Kong** on `api.apoyo-dasma.online`: one hostname for Auth, REST, Storage, Functions so the app’s `supabaseUrl` is a single HTTPS origin (certificate via Cloudflare).
+
+**Private Storage + signed URLs:** `request-documents` is not a public bucket. A leaked object path should not download medical files. The app uploads with the user JWT; viewing uses short-lived signed URLs.
+
+**Cloudflare Tunnel:** the office PC usually has **no stable public IP**. The phone on cellular still reaches Auth because Cloudflare is the public anycast front; `cloudflared` on the PC is **outbound-only**.
+
+**Resend:** GoTrue SMTP for confirmation/recovery. The app does not embed the Resend key.
+
+**nginx** serves **Web and Admin only**. The APK does not go through nginx.
 
 ---
 
