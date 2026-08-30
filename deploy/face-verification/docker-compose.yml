@@ -97,7 +97,7 @@ services:
     restart: unless-stopped
     logging: *default-logging
     ports:
-      - "8000:80"
+      - "127.0.0.1:8000:80"
     depends_on:
       - compreface-api
       - compreface-admin
@@ -112,7 +112,7 @@ services:
     restart: unless-stopped
     logging: *default-logging
     ports:
-      - "${VERIFIER_HOST_PORT:-8090}:8080"
+      - "127.0.0.1:${VERIFIER_HOST_PORT:-8090}:8080"
     depends_on:
       - compreface-api
       - compreface-core
