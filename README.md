@@ -142,29 +142,139 @@ Sessions on device: **SecureStore** (encrypted OS storage), chunked because of s
 
 ---
 
-## 6. Face and ID verification (this repo’s Docker stack)
+## 6. Face and ID verification — full pipeline and why Docker
 
-Compose file: `deploy/face-verification/docker-compose.yml`.
+Registration is not “upload a selfie and hope.” Apoyo must answer **three different questions**:
 
-| Service | Job |
-|---------|-----|
-| `compreface-*` | Exadel CompreFace 1.2 (API, admin UI on `127.0.0.1:8000`, ML core, its own Postgres) |
-| `apoyo-face-verifier` | Custom **FastAPI** app on `127.0.0.1:8090` |
+1. **Is this ID the voter we looked up?** (OCR vs `registered_voters` / registration profile)
+2. **Is a live person in front of the camera?** (liveness + anti-spoof)
+3. **Is that live person the same face as the ID photo?** (1:1 verification)
 
-Verifier endpoints (shared secret header `x-api-key`, **not** called from the phone):
+Those questions use **different models**. One cloud Face API cannot replace the stack without sending **biometrics off the office PC** and adding a fourth paid vendor. Implementation: `deploy/face-verification/`.
 
-| Path | Purpose |
-|------|---------|
-| `GET /health` | Models warming vs ready |
-| `POST /warmup` | Load MediaPipe / DeepFace / OCR / CompreFace |
-| `POST /verify-id` | OCR + fuzzy match vs registration profile |
-| `POST /verify` | Multi-frame liveness, then selfie↔ID similarity (threshold ~0.85) |
+### 6.1 End-to-end path (phone → models)
 
-`/verify` rejects static replays (hash / aHash), optional pose sequence, blink (EAR), then DeepFace anti-spoof, then CompreFace.
+The **APK never talks to Docker**. If it did, port 8090 would have to be public and the verifier API key would sit inside the binary.
 
-The verifier joins Docker network `supabase_network_ApoyoAdmin` as alias **`face-verifier`**. Edge functions use `FACE_VERIFY_SERVICE_URL=http://face-verifier:8080`.
+```
+Citizen (expo-camera)
+    |  HTTPS  POST /functions/v1/id-document-verification
+    |  HTTPS  POST /functions/v1/facial-verification
+    |  body: images + registration-attempt token (not a logged-in JWT yet)
+    v
+Kong :54321  (api.apoyo-dasma.online via Cloudflare)
+    v
+Edge Function (Deno, Apoyo-Admin)
+    |  checks registration-attempt token
+    |  adds x-api-key (FACE_VERIFY_SERVICE_KEY from supabase/.env)
+    |  HTTP to http://face-verifier:8080   <-- Docker DNS, not the internet
+    v
+apoyo-face-verifier  (FastAPI, this repo)
+    |  /verify-id  --> EasyOCR + RapidFuzz
+    |  /verify     --> liveness pipeline, then CompreFace
+    v
+CompreFace API / core  (Java + ML containers)
+```
 
-**Do not** put `:8090` on the Cloudflare tunnel.
+`FACE_VERIFY_SERVICE_URL` for Edge must be **`http://face-verifier:8080`**. `127.0.0.1:8090` is the **Windows host** loopback. Inside the Edge container, `127.0.0.1` is **that container**, so Deno cannot reach the verifier that way. Compose attaches the verifier to `supabase_network_ApoyoAdmin` with alias `face-verifier` so functions can resolve it.
+
+### 6.2 What the citizen does on device
+
+Registration is ordered (see `app/phase1/register.tsx`):
+
+1. Voter lookup (Postgres) — who they claim to be.
+2. **ID still** (`expo-image-picker`) → Edge `id-document-verification` → verifier **`POST /verify-id`**.
+3. **Live capture** (`expo-camera`): several frames (straight / left / right / blink as the UI prompts) → Edge `facial-verification` → verifier **`POST /verify`**.
+4. Only then MPIN + email. Face success is bound to a **registration-attempt token**, not to a finished Auth user.
+
+ID capture and liveness capture are **different APIs** on purpose. A gallery photo of a card is valid for OCR. A gallery photo is **not** valid as liveness (that is a classic spoof).
+
+### 6.3 POST /verify-id — ID document vs profile
+
+Code: `deploy/face-verification/verifier/id_match.py`.
+
+- Decode the ID image (OpenCV), cap long side (~1600 px) so OCR stays fast.
+- **EasyOCR** (`en`, CPU) reads text lines.
+- **RapidFuzz** compares that text to the registration profile (name tokens, birth date patterns, etc.). Thresholds (e.g. name >= 72) absorb OCR noise; PH IDs are not a guaranteed MRZ/barcode we control.
+- Pass/fail scores go back through the Edge Function to the app.
+
+This is **not** face matching. It is “does this plastic match the voter row?”
+
+### 6.4 POST /verify — liveness then 1:1 face match
+
+Code: `deploy/face-verification/verifier/main.py`. Gate: header **`x-api-key`** must equal `FACE_VERIFY_SERVICE_KEY`.
+
+Default knobs (compose `.env`): at least **4** frames, similarity **>= 0.85**, anti-spoof on, blink on.
+
+Pipeline (fail closed — any stage can reject):
+
+| Stage | Mechanism | Attack it stops |
+|-------|-----------|-----------------|
+| 1. Enough frames | `LIVENESS_MIN_FRAMES` (default 4) | Single JPEG pretending to be a session |
+| 2. Frame diversity | SHA-256 of bytes + **aHash Hamming** distance | Same file uploaded four times; tiny crops of one photo |
+| 3. Pose (optional) | MediaPipe Face Mesh **yaw**; left / right / front | Holding a phone still on a printed photo |
+| 4. Blink (optional) | Eye aspect ratio (**EAR**) delta across frames | Open-eye printout with no blink |
+| 5. Anti-spoof | **DeepFace** `extract_faces(..., anti_spoofing=True)` | Screen replay / paper face that still “looks like” a face |
+| 6. 1:1 match | **CompreFace** `POST /api/v1/verification/verify` ID vs a live frame | Sibling / random person who passed liveness |
+
+**Why both DeepFace and CompreFace?** CompreFace answers *similarity of two faces*. DeepFace answers *is this a real capture*. A printed ID held to the camera can **match** the ID photo on CompreFace and still be a spoof; anti-spoof is a separate classifier.
+
+**Why MediaPipe in Docker, not only on the phone?** The UI already prompts pose/blink, but **enforcement** must happen on the server. A patched APK could skip the UI and POST four identical frames. Hash + EAR + yaw run where the attacker does not control the code.
+
+**Warmup:** PyTorch / DeepFace / EasyOCR / CompreFace are slow on first load. FastAPI **`/warmup`** and startup tasks load weights so Kong does not 504 the first registrant. **`GET /health`** reports `ok` vs `warming`.
+
+### 6.5 Docker Compose topology
+
+File: `deploy/face-verification/docker-compose.yml`. Project name: `apoyo-face-verification`.
+
+```
+                    [host loopback only]
+  127.0.0.1:8000 --> compreface-fe          operator UI (NOT on Cloudflare)
+  127.0.0.1:8090 --> apoyo-face-verifier    health/debug (NOT on Cloudflare)
+
+  Docker network "default" (face stack)
+    compreface-postgres-db     CompreFace's own Postgres volume
+    compreface-api             verification HTTP API
+    compreface-admin           apps / API keys
+    compreface-core            embeddings / detect (ML)
+    compreface-fe              UI in front of admin+api
+    apoyo-face-verifier        our FastAPI (build ./verifier)
+
+  Docker network "supabase_network_ApoyoAdmin" (external)
+    alias face-verifier --> same apoyo-face-verifier
+    (Kong / edge-runtime already live here after npx supabase start)
+```
+
+CompreFace is **several containers** because upstream designed it that way (API, admin, ML core, UI, DB). We did not reimplement embeddings; we **wrap** their verification API after our liveness gates.
+
+Logs are capped (`json-file` max 10m x 3) so debug output cannot fill the disk.
+
+**Start order:** `npx supabase start` first (creates `supabase_network_ApoyoAdmin`), then `docker compose up` in this folder. After `supabase stop`, compose must be run again so the verifier **re-joins** that network.
+
+### 6.6 Why this is on Docker
+
+| Reason | What that means technically |
+|--------|-----------------------------|
+| **Linux ML stack on a Windows PC** | CompreFace images, PyTorch/DeepFace, EasyOCR, Java APIs are **Linux**. Docker Desktop (WSL2) is the ABI. Native Windows Python would fight wheels and would not match another office PC. |
+| **Isolation** | Models and CompreFace Postgres are **not** mixed into Supabase’s Postgres. A face-stack wipe does not drop `assistance_requests`. |
+| **Reproducibility** | Image tags `exadel/compreface-*:1.2.0` + `build: ./verifier` pin versions. Cutover is `compose up`, not “install CUDA by hand.” |
+| **Private network** | Edge Functions reach `face-verifier` **without a public hostname**. That is why compose declares `networks.supabase`. |
+| **Resource control** | Java heap (`-Xmx1g`), CompreFace `uwsgi` processes, `restart: unless-stopped` — knobs we lose if models run loose on the host. |
+| **No extra vendor** | AWS Rekognition / Azure Face would be a **fourth subscription** and **PII leaving Dasmariñas**. Docker keeps inference on the city’s disk. |
+| **Not in the APK** | Phones have uneven CPUs. On-device DeepFace+CompreFace would drain battery, skip server-side enforcement, and ship weights to every citizen. |
+| **Not on the tunnel** | Cloudflare ingress is only `:4173`, `:4174`, `:54321`. `:8000` and `:8090` bind **`127.0.0.1`**. Operators can still open CompreFace locally to paste `COMPREFACE_API_KEY`. |
+
+**Why not one mega-container?** CompreFace already splits API/core/DB. FastAPI is a **small** policy layer (liveness + OCR + auth header). Merging them would make CompreFace upgrades harder and mix Python with Java.
+
+**Why not a GPU requirement?** Defaults assume **CPU** (EasyOCR `gpu=False`, CompreFace core on CPU). The office PC must run without a datacenter GPU. Timeouts (`VERIFY_TIMEOUT_SEC`, Kong/edge) are sized for that.
+
+### 6.7 What is not face verification
+
+- Logging in with MPIN later does **not** re-run liveness.
+- Assistance **document uploads** go to Storage (`request-documents`), not through CompreFace.
+- Superadmin **does not** need the face stack to review a case; they see submitted files. Face is a **registration gate** only.
+
+Do **not** add `8090` or `8000` to `cloudflared` config.
 
 ---
 
